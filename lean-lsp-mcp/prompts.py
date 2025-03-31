@@ -20,11 +20,12 @@ Out of the available mcp tools these are very important:
     VERY USEFUL!! This is your main tool to understand the proof state and its evolution!!
     Use these very often!
 
-## Proof Process
+`lean_hover_info`
+    Use this to understand the meaning of terms and lean syntax in general.
 
-1. Extensive diagnostics phase!! Make sure to use all the tools available to you:
-    - `lean_file_contents` if you are unsure of the line numbers.
-    - `lean_goal` and `lean_term_goal` to further understand the evolution of the proof state.
-    - `lean_diagnostic_messages`
+## Suggested Proof Process
+
+1. Extensive diagnostics phase!!
 2. Suggest a small edit to make any progress towards proofing the current sorry.
+3. Repeat until the proof is done.
 """

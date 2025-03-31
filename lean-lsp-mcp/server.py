@@ -139,7 +139,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 
 mcp = FastMCP(
-    "Lean LSP",
+    "Lean LSP MCP",
     version="0.1.0",
     description="Interact with the Lean prover via the LSP",
     dependencies=["leanclient"],
@@ -348,6 +348,36 @@ def term_goal(ctx: Context, file_path: str, line: int, column: Optional[int] = N
         rendered = rendered.replace("```lean\n", "").replace("\n```", "")
     return rendered
 
+
+@mcp.tool("lean_hover_info")
+def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
+    """Get the hover information at a specific location in a Lean file.
+
+    Use this information to look up information about lean syntax, variables, functions, etc.
+
+    Args:
+        file_path (str): Absolute path to the Lean file.
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed).
+
+    Returns:
+        str: Hover information at the specified location or error message.
+    """
+    rel_path = get_relative_file_path(file_path)
+    if not rel_path:
+        return "No valid lean file found."
+
+    update_file(ctx, rel_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    hover_info = client.get_hover(rel_path, line - 1, column - 1)
+    if hover_info is None:
+        return "No hover information available. Try another position?"
+    
+    info = hover_info.get("contents", None)
+    if info is not None:
+        return info.get("value", "No hover information available.")
+    
 
 if __name__ == "__main__":
     mcp.run()
