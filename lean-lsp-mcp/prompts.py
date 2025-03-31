@@ -13,8 +13,7 @@ You are an AI that has studied all of known mathematics. Proof the theorem in th
 Out of the available mcp tools these are very important:
 
 `lean_diagnostic_messages`
-    Use this in the beginning of the proof to understand the situation.
-    Use `lean_diagnostic_messages` to check if the proof is correct. `lean_goal` is not good enough for this because you might not check the right coordinates.
+    Use this to understand the current proof situation.
 
 `lean_goal` & `lean_term_goal`
     VERY USEFUL!! This is your main tool to understand the proof state and its evolution!!
@@ -22,6 +21,9 @@ Out of the available mcp tools these are very important:
 
 `lean_hover_info`
     Use this to understand the meaning of terms and lean syntax in general.
+
+`lean_proofs_complete`
+    Use this to check whether all proofs in a file are complete.
 
 ## Suggested Proof Process
 

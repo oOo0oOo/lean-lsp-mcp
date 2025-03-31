@@ -139,7 +139,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 
 mcp = FastMCP(
-    "Lean LSP MCP",
+    "Lean LSP",
     version="0.1.0",
     description="Interact with the Lean prover via the LSP",
     dependencies=["leanclient"],
@@ -252,6 +252,8 @@ def file_contents(
 @mcp.tool("lean_diagnostic_messages")
 def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
     """Get all diagnostic messages for a Lean file.
+
+    Attention! "no goals to be solved" indicates a mistake. Keep going!
 
     Args:
         file_path (str): Absolute path to the Lean file.
@@ -378,6 +380,33 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     if info is not None:
         return info.get("value", "No hover information available.")
     
+
+@mcp.tool("lean_proofs_complete")
+def proofs_complete(ctx: Context, file_path: str) -> str:
+    """Always check if all proofs in the file are complete in the end.
+
+    Attention! "no goals to be solved" indicates a mistake. Keep going!
+    
+    Args:
+        file_path (str): Absolute path to the Lean file.
+
+    Returns:
+        str: Message indicating if the proofs are complete or not.
+    """
+    rel_path = get_relative_file_path(file_path)
+    if not rel_path:
+        return "No valid lean file found."
+    
+    update_file(ctx, rel_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    diagnostics = client.get_diagnostics(rel_path)
+    
+    if diagnostics is None or len(diagnostics) > 0:
+        return "Proof not complete! " + str(diagnostics)
+    
+    return "All proofs are complete!"
+
 
 if __name__ == "__main__":
     mcp.run()
