@@ -83,7 +83,15 @@ def get_file_contents(rel_path: str) -> Optional[str]:
     return data
 
 
-def update_file(ctx: Context, rel_path: str) -> bool:
+def update_file(ctx: Context, rel_path: str) -> str:
+    """Update the file contents in the context.
+    Args:
+        ctx (Context): Context object.
+        rel_path (str): Relative file path.
+
+    Returns:
+        str: Updated file contents.
+    """
     # Get file contents
     data = get_file_contents(rel_path)
 
@@ -91,10 +99,10 @@ def update_file(ctx: Context, rel_path: str) -> bool:
     file_contents: Dict[str, str] = ctx.request_context.lifespan_context.file_contents
     if rel_path not in file_contents:
         file_contents[rel_path] = data
-        return True
+        return data
 
     elif data == file_contents[rel_path]:
-        return False
+        return data
 
     # Update file_contents
     file_contents[rel_path] = data
@@ -102,7 +110,7 @@ def update_file(ctx: Context, rel_path: str) -> bool:
     # Reload file in LSP
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.close_files([rel_path])
-    return True
+    return data
 
 
 # Server and context
@@ -211,7 +219,7 @@ def lsp_restart(ctx: Context, rebuild: bool = True) -> bool:
 @mcp.tool("lean_file_contents")
 def file_contents(
     ctx: Context, file_path: str, annotate_lines: bool = True
-) -> Optional[str]:
+) -> str:
     """Get the text contents of a Lean file.
 
     IMPORTANT! Look up the file_contents for the currently open file including line number annotations.
@@ -226,7 +234,7 @@ def file_contents(
     """
     rel_path = get_relative_file_path(file_path)
     if not rel_path:
-        return None
+        return "No valid lean file found."
 
     data = get_file_contents(rel_path)
 
@@ -242,18 +250,18 @@ def file_contents(
 
 
 @mcp.tool("lean_diagnostic_messages")
-def diagnostic_messages(ctx: Context, file_path: str) -> Optional[List[str]]:
+def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
     """Get all diagnostic messages for a Lean file.
 
     Args:
         file_path (str): Absolute path to the Lean file.
 
     Returns:
-        List[str]: Diagnostic messages or None if no valid lean file, or no file loaded.
+        List[str] | str: Diagnostic messages or error message.
     """
     rel_path = get_relative_file_path(file_path)
     if not rel_path:
-        return None
+        return "No valid lean file found."
 
     update_file(ctx, rel_path)
 
@@ -272,38 +280,36 @@ def diagnostic_messages(ctx: Context, file_path: str) -> Optional[List[str]]:
 
 
 @mcp.tool("lean_goal")
-def goal(ctx: Context, file_path: str, line: int, column: int) -> Optional[str]:
+def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
     """Get the proof goal at a specific location in a Lean file.
 
-    VERY USEFUL! This is your main tool to understand the proof state and its evolution!!
+    VERY USEFUL AND CHEAP! This is your main tool to understand the proof state and its evolution!!
     Use this multiple times after every edit to the file!
 
-    Solved proof state = "no goals".
-    Always check before a `sorry`, otherwise you will only get "no goals".
-    None or empty goals means:
-        - Either: You have used the wrong line/column, re-do the coordinates and try again until you find valid goals.
-        - Or: This is in term mode: Convert to tactic mode first.
+    Solved proof state returns "no goals".
 
     Args:
         file_path (str): Absolute path to the Lean file.
         line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
+        column (int, optional): Column number (1-indexed). Defaults to None => end of line.
 
     Returns:
-        Optional[str]: Goal at the specified location or None if no valid goal or lean file.
+        str: Goal at the specified location or error message.
     """
     rel_path = get_relative_file_path(file_path)
     if not rel_path:
-        return None
+        return "No valid lean file found."
 
-    update_file(ctx, rel_path)
-    print(f"{rel_path}")
+    content = update_file(ctx, rel_path)
+
+    if column is None:
+        column = len(content.splitlines()[line - 1])
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    print(line, column)
+
     goal = client.get_goal(rel_path, line - 1, column - 1)
     if goal is None:
-        return None
+        return "Not a valid goal position. Try again?"
 
     rendered = goal.get("rendered", None)
     if rendered is not None:
@@ -312,32 +318,31 @@ def goal(ctx: Context, file_path: str, line: int, column: int) -> Optional[str]:
 
 
 @mcp.tool("lean_term_goal")
-def term_goal(ctx: Context, file_path: str, line: int, column: int) -> Optional[str]:
+def term_goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
     """Get the term goal at a specific location in a Lean file.
 
     Use this to get a better understanding of the proof state.
-    None or empty goals means:
-        - Either: You have used the wrong line/column, re-do the coordinates and try again until you find valid goals.
-        - Or: This is in tactic mode: Convert to term mode first.
 
     Args:
         file_path (str): Absolute path to the Lean file.
         line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
+        column (int, optional): Column number (1-indexed). Defaults to None => end of line.
 
     Returns:
-        Optional[str]: Term goal at the specified location or None if no valid goal or lean file.
+        str: Term goal at the specified location or error message.
     """
     rel_path = get_relative_file_path(file_path)
     if not rel_path:
-        return None
+        return "No valid lean file found."
 
-    update_file(ctx, rel_path)
+    content = update_file(ctx, rel_path)
+    if column is None:
+        column = len(content.splitlines()[line - 1])
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     term_goal = client.get_term_goal(rel_path, line - 1, column - 1)
     if term_goal is None:
-        return None
+        return "Not a valid term goal position. Try again?"
     rendered = term_goal.get("goal", None)
     if rendered is not None:
         rendered = rendered.replace("```lean\n", "").replace("\n```", "")

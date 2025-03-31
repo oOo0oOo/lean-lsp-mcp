@@ -12,11 +12,13 @@ You are an AI that has studied all of known mathematics. Proof the theorem in th
 ## MCP tools
 Out of the available mcp tools these are very important:
 
+`lean_diagnostic_messages`
+    Use this in the beginning of the proof to understand the situation.
+    Use `lean_diagnostic_messages` to check if the proof is correct. `lean_goal` is not good enough for this because you might not check the right coordinates.
+
 `lean_goal` & `lean_term_goal`
     VERY USEFUL!! This is your main tool to understand the proof state and its evolution!!
     Use these very often!
-
-`lean_diagnostic_messages`
 
 ## Proof Process
 
