@@ -1,6 +1,6 @@
 [project]
 name = "lean-lsp-mcp"
-version = "0.0.1"
+version = "0.0.2"
 description = "MCP server to interact with Lean prover via LSP"
 readme = "README.md"
 requires-python = ">=3.10"
