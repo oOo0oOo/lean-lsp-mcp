@@ -22,8 +22,19 @@ MCP that allows agentic interaction with the [Lean theorem prover](https://lean-
 
 ## Setup
 
-1. Add JSON configuration to your IDE/Setup.
-2. Configure env variable LEAN_PROJECT_PATH.
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
+2. Add JSON configuration to your IDE/Setup.
+3. Configure env variable LEAN_PROJECT_PATH.
+
+### Install uv
+
+[Install uv](https://docs.astral.sh/uv/getting-started/installation/) for your system.
+
+E.g. on Linux/MacOS:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
 ### VSCode Insiders
 
