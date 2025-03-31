@@ -217,9 +217,7 @@ def lsp_restart(ctx: Context, rebuild: bool = True) -> bool:
 
 # File level tools
 @mcp.tool("lean_file_contents")
-def file_contents(
-    ctx: Context, file_path: str, annotate_lines: bool = True
-) -> str:
+def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> str:
     """Get the text contents of a Lean file.
 
     IMPORTANT! Look up the file_contents for the currently open file including line number annotations.
@@ -320,7 +318,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
 
 
 @mcp.tool("lean_term_goal")
-def term_goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
+def term_goal(
+    ctx: Context, file_path: str, line: int, column: Optional[int] = None
+) -> str:
     """Get the term goal at a specific location in a Lean file.
 
     Use this to get a better understanding of the proof state.
@@ -375,18 +375,18 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     if hover_info is None:
         return "No hover information available. Try another position?"
-    
+
     info = hover_info.get("contents", None)
     if info is not None:
         return info.get("value", "No hover information available.")
-    
+
 
 @mcp.tool("lean_proofs_complete")
 def proofs_complete(ctx: Context, file_path: str) -> str:
     """Always check if all proofs in the file are complete in the end.
 
     Attention! "no goals to be solved" indicates a mistake. Keep going!
-    
+
     Args:
         file_path (str): Absolute path to the Lean file.
 
@@ -396,15 +396,15 @@ def proofs_complete(ctx: Context, file_path: str) -> str:
     rel_path = get_relative_file_path(file_path)
     if not rel_path:
         return "No valid lean file found."
-    
+
     update_file(ctx, rel_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     diagnostics = client.get_diagnostics(rel_path)
-    
+
     if diagnostics is None or len(diagnostics) > 0:
         return "Proof not complete! " + str(diagnostics)
-    
+
     return "All proofs are complete!"
 
 
