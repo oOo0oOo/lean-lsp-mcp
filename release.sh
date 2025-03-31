@@ -30,4 +30,5 @@ git push
 git push --tags
 
 # Publish using uv
+uv build
 uv publish

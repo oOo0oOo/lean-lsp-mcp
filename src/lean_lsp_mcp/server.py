@@ -140,7 +140,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 mcp = FastMCP(
     "Lean LSP",
-    version="0.1.0",
     description="Interact with the Lean prover via the LSP",
     dependencies=["leanclient"],
     lifespan=app_lifespan,
