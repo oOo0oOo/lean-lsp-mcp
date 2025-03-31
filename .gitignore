@@ -1,5 +1,7 @@
 __pycache__/
 .venv/
 .ruff_cache/
+dist/
+*.egg-info/
 
 test_env/

@@ -122,11 +122,18 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.1.0"
-source = { virtual = "." }
+version = "0.0.1"
+source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
     { name = "mcp", extra = ["cli"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "ruff" },
+]
+lint = [
     { name = "ruff" },
 ]
 
@@ -134,8 +141,10 @@ dependencies = [
 requires-dist = [
     { name = "leanclient", specifier = ">=0.1.7" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.5.0" },
-    { name = "ruff", specifier = ">=0.11.2" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
+    { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.2.0" },
 ]
+provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"

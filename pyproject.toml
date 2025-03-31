@@ -1,11 +1,30 @@
 [project]
 name = "lean-lsp-mcp"
-version = "0.1.0"
+version = "0.0.1"
 description = "MCP server to interact with Lean prover via LSP"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 dependencies = [
     "leanclient>=0.1.7",
-    "mcp[cli]>=1.5.0",
-    "ruff>=0.11.2",
+    "mcp[cli]>=1.5.0"
 ]
+
+[project.optional-dependencies]
+lint = [
+    "ruff>=0.2.0",
+]
+dev = [
+    "ruff>=0.2.0",
+]
+
+[tool.setuptools]
+packages = ["lean_lsp_mcp"]
+package-dir = {"" = "src"}
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+lean-lsp-mcp = "lean_lsp_mcp:main"

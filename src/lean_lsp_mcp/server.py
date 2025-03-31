@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from prompts import PROMPT_AUTOMATIC_PROOF
+from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
 
 # Configure logging to stderr instead of stdout to avoid interfering with LSP JSON communication
 logging.basicConfig(
