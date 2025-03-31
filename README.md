@@ -52,7 +52,7 @@ OR manually add config to `settings.json` (global):
 }
 ```
 
-2. Next change the env variable LEAN_PROJECT_PATH to point to the root of your Lean project. This is required for the MCP to work. You can also remove this from the config and set this env variable differently.
+2. Next change the env variable `LEAN_PROJECT_PATH` to point to the root of your Lean project. This is required for the MCP to work. You can also remove this from the config and set this env variable differently.
 
 3. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started:
 
@@ -65,7 +65,7 @@ OR manually add config to `settings.json` (global):
 
 2. "+ Add a new global MCP Server" > ("Create File")
 
-3. Paste the server config into `mcp.json` file:
+3. Paste the server config into `mcp.json` file and adjust the `LEAN_PROJECT_PATH` to point to the root of your Lean project:
 
 ```json
 {
@@ -74,7 +74,7 @@ OR manually add config to `settings.json` (global):
             "command": "uvx",
             "args": ["lean-lsp-mcp"],
             "env": {
-                "LEAN_PROJECT_PATH": "path to lean project root"
+                "LEAN_PROJECT_PATH": "/path/to/lean/project"
             }
         }
     }
@@ -89,7 +89,7 @@ OR manually add config to `settings.json` (global):
 Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers) or [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) should work with similar configs (untested).
 
 
-## Features
+## Tools
 
 Lean LSP MCP currently provides various tools to interact with the Lean LSP server:
 
@@ -123,7 +123,7 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
 ### Project-level tools
 
 - **lean_project_path**:
-    Get the path to the Lean project root directory.
+    Get the path to the current Lean project root directory.
 
 - **lean_project_functional**:
     Check if the Lean project and LSP server are functional and responding properly.
