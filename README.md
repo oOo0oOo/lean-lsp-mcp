@@ -11,7 +11,7 @@
   <a href="">
     <img src="https://img.shields.io/github/last-commit/oOo0oOo/lean-lsp-mcp" alt="last update" />
   </a>
-  <a href="https://github.com/oOo0oOo/leanclient/blob/master/LICENSE">
+  <a href="https://github.com/oOo0oOo/lean-lsp-mcp/blob/master/LICENSE">
     <img src="https://img.shields.io/github/license/oOo0oOo/lean-lsp-mcp.svg" alt="license" />
   </a>
 </p>
