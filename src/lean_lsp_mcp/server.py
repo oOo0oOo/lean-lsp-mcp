@@ -377,7 +377,8 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
 
     info = hover_info.get("contents", None)
     if info is not None:
-        return info.get("value", "No hover information available.")
+        info = info.get("value", "No hover information available.")
+        return info.replace("```lean\n", "").replace("\n```", "")
 
 
 @mcp.tool("lean_proofs_complete")
