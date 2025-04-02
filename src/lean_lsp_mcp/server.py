@@ -113,6 +113,27 @@ def update_file(ctx: Context, rel_path: str) -> str:
     return data
 
 
+def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
+    """Format the diagnostics messages.
+
+    Args:
+        diagnostics (List[Dict]): List of diagnostics.
+
+    Returns:
+        List[str]: Formatted diagnostics messages.
+    """
+    msgs = []
+    # Format more compact
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range", None))
+        if r is None:
+            r_text = "No range"
+        else:
+            r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1} - l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
+        msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
+    return msgs
+
+
 # Server and context
 @dataclass
 class AppContext:
@@ -266,16 +287,7 @@ def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     diagnostics = client.get_diagnostics(rel_path)
-    msgs = []
-    # Format more compact
-    for diag in diagnostics:
-        r = diag.get("fullRange", diag.get("range", None))
-        if r is None:
-            r_text = "No range"
-        else:
-            r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1} - l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
-        msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
-    return msgs
+    return format_diagnostics(diagnostics)
 
 
 @mcp.tool("lean_goal")
@@ -403,9 +415,53 @@ def proofs_complete(ctx: Context, file_path: str) -> str:
     diagnostics = client.get_diagnostics(rel_path)
 
     if diagnostics is None or len(diagnostics) > 0:
-        return "Proof not complete! " + str(diagnostics)
+        return "Proof not complete!\n" + "\n".join(format_diagnostics(diagnostics))
 
     return "All proofs are complete!"
+
+
+@mcp.tool("lean_completions")
+def completions(
+    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 100
+) -> List[str] | str:
+    """Find possible completions at a location in a Lean file.
+
+    VERY USEFUL! Check available identifiers and imports:
+    - Dot Completion: Displays relevant identifiers after typing a dot (e.g., `Nat.`, `x.`, or `.`).
+    - Identifier Completion: Suggests matching identifiers after typing part of a name.
+    - Import Completion: Lists importable files after typing import at the beginning of a file.
+
+    Args:
+        file_path (str): Absolute path to the Lean file.
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed).
+        max_completions (int, optional): Maximum number of completions to return. Defaults to 100.
+
+    Returns:
+        List[str] | str: List of possible completions or error message.
+    """
+    rel_path = get_relative_file_path(file_path)
+    if not rel_path:
+        return "No valid lean file found."
+    update_file(ctx, rel_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    completions = client.get_completions(rel_path, line - 1, column - 1)
+
+    formatted = []
+    for completion in completions:
+        label = completion.get("label", None)
+        if label is not None:
+            formatted.append(label)
+
+    if not formatted:
+        return "No completions available. Try another position?"
+
+    if len(formatted) > max_completions:
+        formatted = formatted[:max_completions] + [
+            f"{len(formatted) - max_completions} more, start typing and check again..."
+        ]
+    return formatted
 
 
 if __name__ == "__main__":

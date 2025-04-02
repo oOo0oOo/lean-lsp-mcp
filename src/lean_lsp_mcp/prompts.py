@@ -22,10 +22,15 @@ Out of the available mcp tools these are extra important:
 `lean_hover_info`
     Use this to understand the meaning of terms and lean syntax in general.
 
+`lean_completions`
+    VERY USEFUL! Check available identifiers and imports.
+
 `lean_proofs_complete`
     Use this to check whether all proofs in a file are complete.
 
 ## Lean diagnostic aids
+
+DO NOT KEEP THESE IN THE CODE UNNECESSARILY, THEY ARE EXPENSIVE TO COMPUTE.
 
 `exact?` `apply?` `rw?` `hint`
     Find theorems that can be used to solve the goal.

@@ -123,6 +123,9 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
 - **lean_hover_info**:
     Retrieve hover information for symbols, terms, and expressions in a Lean file.
 
+- **lean_completions**:
+    Code auto-completion: Find available identifiers or import suggestions.
+
 - **lean_proofs_complete**:
     Check if all proofs in a file are complete.
 
