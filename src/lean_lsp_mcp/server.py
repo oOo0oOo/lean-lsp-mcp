@@ -240,7 +240,7 @@ def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
 
 @mcp.tool("lean_goal")
 def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
-    """Get the proof goal at a specific location in a Lean file.
+    """Get the proof goals at a specific location or line in a Lean file.
 
     VERY USEFUL AND CHEAP! This is your main tool to understand the proof state and its evolution!!
     Use this multiple times after every edit to the file!
@@ -250,7 +250,7 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     Args:
         file_path (str): Absolute path to the Lean file.
         line (int): Line number (1-indexed)
-        column (int, optional): Column number (1-indexed). Defaults to None => end of line.
+        column (int, optional): Column number (1-indexed). Defaults to None => Both before and after the line.
 
     Returns:
         str: Goal at the specified location or error message.
@@ -260,20 +260,34 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
         return "No valid lean file found."
 
     content = update_file(ctx, rel_path)
-
-    if column is None:
-        column = len(content.splitlines()[line - 1])
-
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 
-    goal = client.get_goal(rel_path, line - 1, column - 1)
-    if goal is None:
-        return "Not a valid goal position. Try again?"
+    def format_goal(goal, default_msg):
+        if goal is None:
+            return default_msg
+        rendered = goal.get("rendered")
+        return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
 
-    rendered = goal.get("rendered", None)
-    if rendered is not None:
-        rendered = rendered.replace("```lean\n", "").replace("\n```", "")
-    return rendered
+    if column is None:
+        lines = content.splitlines()
+        if line < 1 or line > len(lines):
+            return "Line number out of range. Try again?"
+        column_end = len(lines[line - 1]) - 1
+        goal_start = client.get_goal(rel_path, line - 1, 0)
+        goal_end = client.get_goal(rel_path, line - 1, column_end)
+
+        if goal_start is None and goal_end is None:
+            return "No goals found on line. Try another position?"
+
+        start_text = format_goal(goal_start, "No goal found at the start of the line.")
+        end_text = format_goal(goal_end, "No goal found at the end of the line.")
+        if start_text == end_text:
+            return start_text
+        return f"Before:\n{start_text}\nAfter:\n{end_text}"
+
+    else:
+        goal = client.get_goal(rel_path, line - 1, column - 1)
+        return format_goal(goal, "Not a valid goal position. Try again?")
 
 
 @mcp.tool("lean_term_goal")

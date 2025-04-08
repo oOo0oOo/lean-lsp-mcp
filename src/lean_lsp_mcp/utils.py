@@ -38,6 +38,6 @@ def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
         if r is None:
             r_text = "No range"
         else:
-            r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1} - l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
+            r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1}-l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
         msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
     return msgs
