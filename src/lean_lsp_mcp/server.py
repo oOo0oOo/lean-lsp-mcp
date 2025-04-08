@@ -120,7 +120,9 @@ def update_file(ctx: Context, rel_path: str) -> str:
     hashed_file = hash(file_content)
 
     # Check if file_contents have changed
-    file_content_hashes: Dict[str, str] = ctx.request_context.lifespan_context.file_content_hashes
+    file_content_hashes: Dict[str, str] = (
+        ctx.request_context.lifespan_context.file_content_hashes
+    )
     if rel_path not in file_content_hashes:
         file_content_hashes[rel_path] = hashed_file
         return file_content
@@ -267,7 +269,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
         if goal is None:
             return default_msg
         rendered = goal.get("rendered")
-        return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
+        return (
+            rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
+        )
 
     if column is None:
         lines = content.splitlines()
@@ -439,23 +443,26 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
         List[Dict] | str: List of search results or error message
     """
     try:
-        headers = {
-            "User-Agent": "lean-lsp-mcp/0.1",
-            "Content-Type": "application/json"
-        }
-        payload = json.dumps({"num_results": str(max_results), "query": [query]}).encode('utf-8')
+        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+        payload = json.dumps(
+            {"num_results": str(max_results), "query": [query]}
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             "https://leansearch.net/search",
             data=payload,
             headers=headers,
-            method="POST"
+            method="POST",
         )
 
         with urllib.request.urlopen(req, timeout=10) as response:
-            results = json.loads(response.read().decode('utf-8'))
+            results = json.loads(response.read().decode("utf-8"))
 
-        return [r["result"] for r in results[0]] if results and results[0] else "No results found."
+        return (
+            [r["result"] for r in results[0]]
+            if results and results[0]
+            else "No results found."
+        )
 
     except Exception as e:
         return f"Error: {str(e)}"
