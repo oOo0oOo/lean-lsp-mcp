@@ -2,12 +2,13 @@ import os
 import sys
 import logging
 from typing import List, Optional, Dict
-
-from leanclient import LeanLSPClient
-
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import urllib
+import json
+
+from leanclient import LeanLSPClient
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -424,6 +425,40 @@ def completions(
             f"{len(formatted) - max_completions} more, start typing and check again..."
         ]
     return formatted
+
+
+@mcp.tool("lean_leansearch")
+def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
+    """Search for Lean theorems, definitions, and tactics using leansearch.net API.
+
+    Args:
+        query (str): Natural language search query
+        max_results (int, optional): Max results. Defaults to 5.
+
+    Returns:
+        List[Dict] | str: List of search results or error message
+    """
+    try:
+        headers = {
+            "User-Agent": "lean-lsp-mcp/0.1",
+            "Content-Type": "application/json"
+        }
+        payload = json.dumps({"num_results": str(max_results), "query": [query]}).encode('utf-8')
+
+        req = urllib.request.Request(
+            "https://leansearch.net/search",
+            data=payload,
+            headers=headers,
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            results = json.loads(response.read().decode('utf-8'))
+
+        return [r["result"] for r in results[0]] if results and results[0] else "No results found."
+
+    except Exception as e:
+        return f"Error: {str(e)}"
 
 
 if __name__ == "__main__":
