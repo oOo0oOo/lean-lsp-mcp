@@ -33,6 +33,45 @@ if not LEAN_PROJECT_PATH:
     sys.exit(1)
 
 
+# Server and context
+@dataclass
+class AppContext:
+    client: LeanLSPClient
+    file_content_hashes: Dict[str, str]
+
+
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    with StdoutToStderr():
+        try:
+            client = LeanLSPClient(LEAN_PROJECT_PATH)
+            logger.info(f"Connected to Lean project at {LEAN_PROJECT_PATH}")
+        except Exception as e:
+            client = LeanLSPClient(LEAN_PROJECT_PATH, initial_build=False)
+            logger.error(f"Could not do initial build, error: {e}")
+
+    try:
+        context = AppContext(client=client, file_content_hashes={})
+        yield context
+    finally:
+        logger.info("Closing Lean LSP client")
+        context.client.close()
+
+
+mcp = FastMCP(
+    "Lean LSP",
+    description="Interact with the Lean prover via the LSP",
+    dependencies=["leanclient"],
+    lifespan=app_lifespan,
+    env_vars={
+        "LEAN_PROJECT_PATH": {
+            "description": "Path to the Lean project root",
+            "required": True,
+        }
+    },
+)
+
+
 # File operations
 def get_relative_file_path(file_path: str) -> Optional[str]:
     """Convert path relative to project path.
@@ -75,25 +114,26 @@ def update_file(ctx: Context, rel_path: str) -> str:
     Returns:
         str: Updated file contents.
     """
-    # Get file contents
-    data = get_file_contents(rel_path)
+    # Get file contents and hash
+    file_content = get_file_contents(rel_path)
+    hashed_file = hash(file_content)
 
     # Check if file_contents have changed
-    file_contents: Dict[str, str] = ctx.request_context.lifespan_context.file_contents
-    if rel_path not in file_contents:
-        file_contents[rel_path] = data
-        return data
+    file_content_hashes: Dict[str, str] = ctx.request_context.lifespan_context.file_content_hashes
+    if rel_path not in file_content_hashes:
+        file_content_hashes[rel_path] = hashed_file
+        return file_content
 
-    elif data == file_contents[rel_path]:
-        return data
+    elif hashed_file == file_content_hashes[rel_path]:
+        return file_content
 
     # Update file_contents
-    file_contents[rel_path] = data
+    file_content_hashes[rel_path] = hashed_file
 
     # Reload file in LSP
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.close_files([rel_path])
-    return data
+    return file_content
 
 
 def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
@@ -115,45 +155,6 @@ def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
             r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1} - l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
         msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
     return msgs
-
-
-# Server and context
-@dataclass
-class AppContext:
-    client: LeanLSPClient
-    file_contents: Dict[str, str]
-
-
-@asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    with StdoutToStderr():
-        try:
-            client = LeanLSPClient(LEAN_PROJECT_PATH)
-            logger.info(f"Connected to Lean project at {LEAN_PROJECT_PATH}")
-        except Exception as e:
-            client = LeanLSPClient(LEAN_PROJECT_PATH, initial_build=False)
-            logger.error(f"Could not do initial build, error: {e}")
-
-    try:
-        context = AppContext(client=client, file_contents={})
-        yield context
-    finally:
-        logger.info("Closing Lean LSP client")
-        context.client.close()
-
-
-mcp = FastMCP(
-    "Lean LSP",
-    description="Interact with the Lean prover via the LSP",
-    dependencies=["leanclient"],
-    lifespan=app_lifespan,
-    env_vars={
-        "LEAN_PROJECT_PATH": {
-            "description": "Path to the Lean project root",
-            "required": True,
-        }
-    },
-)
 
 
 # Meta level tools
