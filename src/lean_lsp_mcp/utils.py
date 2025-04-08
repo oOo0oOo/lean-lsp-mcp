@@ -1,5 +1,6 @@
 import os
 import sys
+from typing import List, Dict
 
 
 class StdoutToStderr:
@@ -19,3 +20,24 @@ class StdoutToStderr:
             os.dup2(self.original_stdout_fd, sys.stdout.fileno())
             os.close(self.original_stdout_fd)
             self.original_stdout_fd = None
+
+
+def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
+    """Format the diagnostics messages.
+
+    Args:
+        diagnostics (List[Dict]): List of diagnostics.
+
+    Returns:
+        List[str]: Formatted diagnostics messages.
+    """
+    msgs = []
+    # Format more compact
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range", None))
+        if r is None:
+            r_text = "No range"
+        else:
+            r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1} - l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
+        msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
+    return msgs

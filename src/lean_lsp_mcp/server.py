@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from mcp.server.fastmcp import Context, FastMCP
 
 from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
-from lean_lsp_mcp.utils import StdoutToStderr
+from lean_lsp_mcp.utils import StdoutToStderr, format_diagnostics
 
 
 # Configure logging to stderr instead of stdout to avoid interfering with LSP JSON communication
@@ -99,7 +99,7 @@ def get_relative_file_path(file_path: str) -> Optional[str]:
     return None
 
 
-def get_file_contents(rel_path: str) -> Optional[str]:
+def get_file_contents(rel_path: str) -> str:
     with open(os.path.join(LEAN_PROJECT_PATH, rel_path), "r") as f:
         data = f.read()
     return data
@@ -134,27 +134,6 @@ def update_file(ctx: Context, rel_path: str) -> str:
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.close_files([rel_path])
     return file_content
-
-
-def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
-    """Format the diagnostics messages.
-
-    Args:
-        diagnostics (List[Dict]): List of diagnostics.
-
-    Returns:
-        List[str]: Formatted diagnostics messages.
-    """
-    msgs = []
-    # Format more compact
-    for diag in diagnostics:
-        r = diag.get("fullRange", diag.get("range", None))
-        if r is None:
-            r_text = "No range"
-        else:
-            r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1} - l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
-        msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
-    return msgs
 
 
 # Meta level tools
@@ -217,7 +196,7 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
         annotate_lines (bool, optional): Annotate lines with line numbers. Defaults to False.
 
     Returns:
-        Optional[str]: Text contents of the Lean file or None if file does not exist.
+        str: Text contents of the Lean file or None if file does not exist.
     """
     rel_path = get_relative_file_path(file_path)
     if not rel_path:
