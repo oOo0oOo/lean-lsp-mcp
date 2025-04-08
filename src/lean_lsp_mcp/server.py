@@ -180,21 +180,6 @@ def project_path() -> str:
     return os.environ["LEAN_PROJECT_PATH"]
 
 
-@mcp.tool("lean_project_functional")
-def project_functional(ctx: Context) -> bool:
-    """Check if the Lean project and the LSP are functional.
-
-    Returns:
-        bool: True if the Lean project is functional, False otherwise.
-    """
-    try:
-        client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        client.get_env(return_dict=False)
-        return True
-    except Exception:
-        return False
-
-
 @mcp.tool("lean_lsp_restart")
 def lsp_restart(ctx: Context, rebuild: bool = True) -> bool:
     """Restart the LSP server. Can also rebuild the lean project.
