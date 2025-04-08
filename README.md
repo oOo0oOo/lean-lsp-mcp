@@ -36,14 +36,15 @@ E.g. on Linux/MacOS:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### VSCode Insiders
+### VSCode
 
-VSCode Insiders (bleeding edge version of VSCode) has introduced [agent mode](https://code.visualstudio.com/blogs/2025/02/24/introducing-copilot-agent-mode) in February 2025. This feature will eventually be released in the stable version of VSCode.
+VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visualstudio.com/blogs/2025/04/07/agentMode). For VSCode you might have to enable `Chat > Agent: Enable` in the settings.
 
 1. One-click config setup:
 
-[<img alt="Install in VS Code Insiders" src="https://img.shields.io/badge/VS_Code_Insiders-VS_Code_Insiders?style=flat-square&label=Install%20MCP%20Server&color=24bfa5">](https://insiders.vscode.dev/redirect?url=vscode-insiders%3Amcp%2Finstall%3F%257B%2522name%2522%253A%2522lean-lsp%2522%252C%2522command%2522%253A%2522uvx%2522%252C%2522args%2522%253A%255B%2522lean-lsp-mcp%2522%255D%252C%2522env%2522%253A%257B%2522LEAN_PROJECT_PATH%2522%253A%2522path%2520to%2520lean%2520project%2520root%2522%257D%257D)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%2C%22env%22%3A%7B%22LEAN_PROJECT_PATH%22%3A%22path%2520to%2520lean%2520project%2520root%22%7D%7D)
 
+[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%2C%22env%22%3A%7B%22LEAN_PROJECT_PATH%22%3A%22path%2520to%2520lean%2520project%2520root%22%7D%7D&quality=insiders)
 
 OR manually add config to `settings.json` (global):
 
