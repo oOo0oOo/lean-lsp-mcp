@@ -115,7 +115,7 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
     Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
 
 - **lean_goal**:
-    Get the proof goal at a specific location in a Lean file. 
+    Get the proof goal at a specific location in a Lean file.
 
 - **lean_term_goal**:
     Get the term goal at a specific position.
@@ -129,6 +129,9 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
 - **lean_proofs_complete**:
     Check if all proofs in a file are complete.
 
+- **lean_leansearch**:
+    Search for theorems in Mathlib using leansearch.net (natural language search).
+
 ### File operations
 
 - **lean_file_contents**:
@@ -138,9 +141,6 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
 
 - **lean_project_path**:
     Get the path to the current Lean project root directory.
-
-- **lean_project_functional**:
-    Check if the Lean project and LSP server are functional and responding properly.
 
 - **lean_lsp_restart**:
     Restart the LSP server and optionally rebuild the Lean project.

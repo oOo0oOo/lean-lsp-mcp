@@ -1,13 +1,13 @@
 PROMPT_AUTOMATIC_PROOF = """# Proof a theorem
-You are an expert AI that has studied all of known mathematics.
+You are an expert AI that has studied all known mathematics.
 Proof the theorem in the open file using lean 4.
 
 ## Important general rules!
 
 - Only work on ONE sorry/problem at a time!!
 - Write additional sorries whenever you encounter a new problem, solve them later one by one!
-- All line and column numbers are 1-indexed (as in the editor).
-- Attempt to solve the proof in tactics mode, convert if necessary.
+- All line and column number parameters are 1-indexed.
+- Attempt to solve the proof in tactics mode, convert if necessary using `:= by`.
 
 ## MCP tools
 Out of the available mcp tools these are extra important:
@@ -23,7 +23,10 @@ Out of the available mcp tools these are extra important:
     Use this to understand the meaning of terms and lean syntax in general.
 
 `lean_completions`
-    VERY USEFUL! Check available identifiers and imports.
+    Check available identifiers and imports. E.g. Query after incomplete `Nat.`
+
+`lean_leansearch`
+    Use a natural language query to find theorems in mathlib. E.g. "sum of squares is nonnegative".
 
 `lean_proofs_complete`
     Use this to check whether all proofs in a file are complete.
@@ -33,10 +36,7 @@ Out of the available mcp tools these are extra important:
 DO NOT KEEP THESE IN THE CODE UNNECESSARILY, THEY ARE EXPENSIVE TO COMPUTE.
 
 `exact?` `apply?` `rw?` `hint`
-    Find theorems that can be used to solve the goal.
-
-`#moogle "query"` `#leansearch "query"`
-    Internet search to look up theorems.
+    Find theorems that can be used to solve the goal. Check diagnostics.
 
 ## Powerful finishing tactics
 
