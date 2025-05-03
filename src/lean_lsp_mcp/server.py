@@ -11,6 +11,7 @@ import json
 from leanclient import LeanLSPClient
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.prompts import base
 
 from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
 from lean_lsp_mcp.utils import StdoutToStderr, format_diagnostics
@@ -466,6 +467,17 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
 
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+# Prompts
+@mcp.prompt()
+def auto_proof_instructions() -> str:
+    """Get the description of the Lean LSP MCP and how to use it to automatically prove theorems.
+
+    Returns:
+        str: Description of the Lean LSP MCP.
+    """
+    return PROMPT_AUTOMATIC_PROOF
 
 
 if __name__ == "__main__":

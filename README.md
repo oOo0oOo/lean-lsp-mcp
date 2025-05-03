@@ -53,7 +53,7 @@ OR manually add config to `settings.json` (global):
     "mcp": {
         "servers": {
             "lean-lsp": {
-                "command": ["uvx"],
+                "command": "uvx",
                 "args": ["lean-lsp-mcp"],
                 "env": {
                     "LEAN_PROJECT_PATH": "/path/to/lean/project"
@@ -108,7 +108,7 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
 ### Meta tools
 
 - **lean_auto_proof_instructions**:
-    Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet.
+    Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet, it is also available as a prompt.
 
 ### Core interactions
 
@@ -146,6 +146,10 @@ Lean LSP MCP currently provides various tools to interact with the Lean LSP serv
 - **lean_lsp_restart**:
     Restart the LSP server and optionally rebuild the Lean project.
 
+## Prompts
+
+- **lean_auto_proof_instructions**:
+    Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems.
 
 ## Related Projects
 
