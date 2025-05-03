@@ -11,7 +11,6 @@ import json
 from leanclient import LeanLSPClient
 
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.prompts import base
 
 from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
 from lean_lsp_mcp.utils import StdoutToStderr, format_diagnostics
@@ -150,7 +149,12 @@ def auto_proof() -> str:
     Returns:
         str: Description of the Lean LSP MCP.
     """
-    return PROMPT_AUTOMATIC_PROOF
+    try:
+        toolchain = get_file_contents("lean-toolchain")
+        lean_version = toolchain.split(":")[1].strip()
+    except Exception:
+        lean_version = "v4"
+    return PROMPT_AUTOMATIC_PROOF.format(lean_version=lean_version)
 
 
 # Project level tools
@@ -223,7 +227,8 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
 def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
     """Get all diagnostic messages for a Lean file.
 
-    Attention! "no goals to be solved" indicates a mistake. Keep going!
+    Attention:
+        "no goals to be solved" indicates some code needs to be removed. Keep going!
 
     Args:
         file_path (str): Absolute path to the Lean file.
@@ -334,7 +339,7 @@ def term_goal(
 def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     """Get the hover information at a specific location in a Lean file.
 
-    Use this information to look up information about lean syntax, variables, functions, etc.
+    Hover information provides documentation about any lean syntax, variables, functions, etc. in your code.
 
     Args:
         file_path (str): Absolute path to the Lean file.
@@ -365,7 +370,10 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
 def proofs_complete(ctx: Context, file_path: str) -> str:
     """Always check if all proofs in the file are complete in the end.
 
-    Attention! "no goals to be solved" indicates a mistake. Keep going!
+    Attention:
+        "no goals to be solved" indicates code needs to be removed.
+        Warnings (e.g. linter) indicate an unfinished proof.
+        Keep going!
 
     Args:
         file_path (str): Absolute path to the Lean file.
@@ -392,9 +400,9 @@ def proofs_complete(ctx: Context, file_path: str) -> str:
 def completions(
     ctx: Context, file_path: str, line: int, column: int, max_completions: int = 100
 ) -> List[str] | str:
-    """Find possible completions at a location in a Lean file.
+    """Find possible code completions at a location in a Lean file.
 
-    VERY USEFUL! Check available identifiers and imports:
+    Check available identifiers and imports:
     - Dot Completion: Displays relevant identifiers after typing a dot (e.g., `Nat.`, `x.`, or `.`).
     - Identifier Completion: Suggests matching identifiers after typing part of a name.
     - Import Completion: Lists importable files after typing import at the beginning of a file.
@@ -477,7 +485,7 @@ def auto_proof_instructions() -> str:
     Returns:
         str: Description of the Lean LSP MCP.
     """
-    return PROMPT_AUTOMATIC_PROOF
+    return auto_proof()
 
 
 if __name__ == "__main__":
