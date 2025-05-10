@@ -23,10 +23,11 @@ MCP that allows agentic interaction with the [Lean theorem prover](https://lean-
 ## Setup
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
-2. Add JSON configuration to your IDE/Setup.
-3. Configure env variable LEAN_PROJECT_PATH.
+2. Make sure your Lean project builds quickly by running `lake build` manually in a terminal in the project root.
+3. Add JSON configuration to your IDE/Setup.
+4. Configure env variable LEAN_PROJECT_PATH.
 
-### Install uv
+### 1. Install uv
 
 [Install uv](https://docs.astral.sh/uv/getting-started/installation/) for your system.
 
@@ -36,7 +37,19 @@ E.g. on Linux/MacOS:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### VSCode
+### 2. Run lake build
+
+`lean-lsp-mcp` will run `lake build` in the project root upon startup. Some IDEs (like Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster startup time and avoids timeouts.
+
+E.g. on Linux/MacOS:
+```bash
+cd /path/to/lean/project
+lake build
+```
+
+Note: Your build does not necessarily need to be successful, some errors or warnings (e.g. `declaration uses 'sorry'`) are OK.
+
+### 3. VSCode Setup
 
 VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visualstudio.com/blogs/2025/04/07/agentMode). For VSCode you might have to enable `Chat > Agent: Enable` in the settings.
 
@@ -71,7 +84,7 @@ OR manually add config to `settings.json` (global):
 ![VS Code Agent Mode](media/vscode_agent_mode.png)
 
 
-### Cursor
+### 3. Cursor Setup
 
 1. Open MCP Settings (File > Preferences > Cursor Settings > MCP)
 
