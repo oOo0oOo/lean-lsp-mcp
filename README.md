@@ -116,58 +116,124 @@ Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstar
 
 ## Tools
 
-Lean LSP MCP currently provides various tools to interact with the Lean LSP server:
+Lean LSP MCP currently provides various tools to interact with the Lean theorem prover:
 
 ### Meta tools
 
-- **lean_auto_proof_instructions**:
-    Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet, it is also available as a prompt.
+#### lean_auto_proof_instructions
+
+Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet, it is also available as a prompt. You can check out the current instruction prompt in [prompts.py](https://github.com/oOo0oOo/lean-lsp-mcp/blob/main/src/lean_lsp_mcp/prompts.py).
 
 ### Core interactions
 
-- **lean_diagnostic_messages**:
-    Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
+#### lean_diagnostic_messages
 
-- **lean_goal**:
-    Get the proof goal at a specific location in a Lean file.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
 
-- **lean_term_goal**:
-    Get the term goal at a specific position.
+<details>
+<summary>Example output</summary>
 
-- **lean_hover_info**:
-    Retrieve hover information for symbols, terms, and expressions in a Lean file.
+l20c42-l20c46, severity: 1<br>
+simp made no progress
 
-- **lean_completions**:
-    Code auto-completion: Find available identifiers or import suggestions.
+l21c11-l21c45, severity: 1<br>
+function expected at
+  h_empty
+term has type
+  T ∩ compl T = ∅
 
-- **lean_proofs_complete**:
-    Check if all proofs in a file are complete.
+...
+</details>
 
-- **lean_leansearch**:
-    Search for theorems in Mathlib using leansearch.net (natural language search).
+#### lean_goal
+
+Get the proof goal at a specific location (line or line & column) in a Lean file.
+
+<details>
+<summary>Example output (line)</summary>
+Before:<br>
+S : Type u_1<br>
+inst✝¹ : Fintype S<br>
+inst✝ : Nonempty S<br>
+P : Finset (Set S)<br>
+hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
+hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
+compl : Set S → Set S := fun T ↦ univ \ T<br>
+hcompl : ∀ T ∈ P, compl T ∉ P<br>
+all_subsets : Finset (Set S) := Finset.univ<br>
+h_comp_in_P : ∀ T ∉ P, compl T ∈ P<br>
+h_partition : ∀ (T : Set S), T ∈ P ∨ compl T ∈ P<br>
+⊢ P.card = 2 ^ (Fintype.card S - 1)<br>
+After:<br>
+no goals
+</details>
+
+#### lean_term_goal
+
+Get the term goal at a specific position (line & column) in a Lean file.
+
+#### lean_hover_info
+
+Retrieve hover information (documentation) for symbols, terms, and expressions in a Lean file (at a specific line & column).
+
+<details>
+<summary>Example output (hover info on a `sorry`)</summary>
+The `sorry` tactic is a temporary placeholder for an incomplete tactic proof,<br>
+closing the main goal using `exact sorry`.<br><br>
+
+This is intended for stubbing-out incomplete parts of a proof while still having a syntactically correct proof skeleton.<br>
+Lean will give a warning whenever a proof uses `sorry`, so you aren't likely to miss it,<br>
+but you can double check if a theorem depends on `sorry` by looking for `sorryAx` in the output<br>
+of the `#print axioms my_thm` command, the axiom used by the implementation of `sorry`.<br>
+</details>
+
+#### lean_completions
+
+Code auto-completion: Find available identifiers or import suggestions at a specific position (line & column) in a Lean file.
+
+#### lean_leansearch
+
+Search for theorems in Mathlib using leansearch.net (natural language search).
+
+<details>
+<summary>Example output (query by LLM: "finite set, subset, complement, cardinality, half, partition")</summary>
+<br>
+{"module_name": ["Mathlib", "Data", "Fintype", "Card"], "kind": "theorem", "name": ["Finset", "card_compl"], "signature": " [DecidableEq \u03b1] [Fintype \u03b1] (s : Finset \u03b1) : #s\u1d9c = Fintype.card \u03b1 - #s", "type": "\u2200 {\u03b1 : Type u_1} [inst : DecidableEq \u03b1] [inst_1 : Fintype \u03b1] (s : Finset \u03b1), s\u1d9c.card = Fintype.card \u03b1 - s.card", "value": ":=\n  Finset.card_univ_diff s", "docstring": null, "informal_name": "Cardinality of Complement Set in Finite Type", "informal_description": "For a finite type $\\alpha$ with decidable equality and a finite subset $s \\subseteq \\alpha$, the cardinality of the complement of $s$ equals the difference between the cardinality of $\\alpha$ and the cardinality of $s$, i.e.,\n$$|s^c| = \\text{card}(\\alpha) - |s|.$$"}
+
+...<br>
+More answers like above<br>
+...
+</details>
+
+#### lean_proofs_complete
+
+Check if all proofs in a file are complete. This is currently very simple and will be improved in the future.
 
 ### File operations
 
-- **lean_file_contents**:
-    Get the contents of a Lean file, optionally with line number annotations.
+#### lean_file_contents
+
+Get the contents of a Lean file, optionally with line number annotations.
 
 ### Project-level tools
 
-- **lean_project_path**:
-    Get the path to the current Lean project root directory.
+#### lean_project_path
 
-- **lean_lsp_restart**:
-    Restart the LSP server and optionally rebuild the Lean project.
+Get the path to the current Lean project root directory.
+
+#### lean_lsp_restart
+
+Restart the LSP server and optionally rebuild the Lean project.
 
 ## Prompts
 
-- **lean_auto_proof_instructions**:
-    Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems.
+#### lean_auto_proof_instructions
+
+Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. See above (Meta tools).
 
 ## Related Projects
 
-- [LeanTool](https://github.com/GasStationManager/LeanTool): Provides an MCP "code interpreter" for Lean.
-
+- [LeanTool](https://github.com/GasStationManager/LeanTool)
 
 ## License & Citation
 
