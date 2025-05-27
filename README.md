@@ -2,7 +2,7 @@
   lean-lsp-mcp
 </h1>
 
-<h4 align="center">Lean Theorem Prover MCP</h4>
+<h3 align="center">Lean Theorem Prover MCP</h3>
 
 <p align="center">
   <a href="https://pypi.org/project/lean-lsp-mcp/">
@@ -16,16 +16,23 @@
   </a>
 </p>
 
-MCP that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient).
+MCP that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient). This server provides a range of tools for AI models to understand, analyze and interact with Lean projects.
 
 **Currently beta testing**: Please help us by submitting bug reports, feedback and feature requests.
 
+## Key Features
+
+* **Rich Lean Interaction**: Access diagnostics, goal states, term information, and hover documentation.
+* **Agent-Focused Toolset:** Includes tools for theorem search (leansearch.net), code completion, and project builds.
+* **Easy Setup**: Simple configuration for various IDEs, including VSCode and Cursor.
+
 ## Setup
 
+### Overview
+
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
-2. Make sure your Lean project builds quickly by running `lake build` manually in a terminal in the project root.
-3. Add JSON configuration to your IDE/Setup.
-4. Configure env variable LEAN_PROJECT_PATH.
+2. Make sure your Lean project builds quickly by running `lake build` manually.
+3. Add JSON configuration to your IDE/Setup and configure LEAN_PROJECT_PATH.
 
 ### 1. Install uv
 
@@ -37,7 +44,7 @@ E.g. on Linux/MacOS:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2. Run lake build
+### 2. Run `lake build`
 
 `lean-lsp-mcp` will run `lake build` in the project root upon startup. Some IDEs (like Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster startup time and avoids timeouts.
 
@@ -49,7 +56,7 @@ lake build
 
 Note: Your build does not necessarily need to be successful, some errors or warnings (e.g. `declaration uses 'sorry'`) are OK.
 
-### 3. VSCode Setup
+### 3. a) VSCode Setup
 
 VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visualstudio.com/blogs/2025/04/07/agentMode). For VSCode you might have to enable `Chat > Agent: Enable` in the settings.
 
@@ -81,10 +88,8 @@ OR manually add config to `settings.json` (global):
 
 3. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started:
 
-![VS Code Agent Mode](media/vscode_agent_mode.png)
 
-
-### 3. Cursor Setup
+### 3. b) Cursor Setup
 
 1. Open MCP Settings (File > Preferences > Cursor Settings > MCP)
 
@@ -106,12 +111,9 @@ OR manually add config to `settings.json` (global):
 }
 ```
 
-4. Open a Lean file and run e.g. "auto proof" in a new chat.
-
-
 ### Other Setups
 
-Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers) or [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) should work with similar configs (untested).
+Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers) or [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) should work with similar configs.
 
 
 ## Tools
@@ -231,9 +233,50 @@ Rebuild the Lean project and restart the Lean LSP server.
 
 Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. See above (Meta tools).
 
+## Example Uses
+
+Here are a few example prompts and interactions to try. All examples use VSCode (Agent Mode) and Gemini 2.5 Pro (Preview).
+
+### Using auto proof prompt
+
+Open unfinished proof. Run prompt "auto proof" in VSCode (Agent Mode) or Cursor will use the `lean_auto_proof_instructions` tool to get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems.
+
+![VS Code Agent Mode](media/auto_proof.png)
+
+### Analyze a theorem
+
+Open `Algebra/Lie/Abelian.lean`. Example prompt:
+
+"Analyze commutative_ring_iff_abelian_lie_ring thoroughly using various tools such as goal, term goal, hover info. Explain the key proof steps in english.".
+
+![Analyzing a theorem in chat](media/analyze_theorem.png)
+
+### Design proof approaches
+
+Open an incomplete proof such as [putnam 1964 b2](https://github.com/trishullab/PutnamBench/blob/main/lean4/src/putnam_1964_b2.lean). Example prompt:
+
+"First analyze the problem statement by checking the goal, hover info and looking up key declarations. Next use up to three queries to leansearch to design three different approaches to solve this problem. Very concisely present each approach and its key challenge."
+
+![Designing proof approaches](media/proof_approaches.png)
+
+## Notes on MCP Security
+
+There are many valid security concerns with the Model Context Protocol (MCP) in general!
+
+This MCP is meant as a research tool and is currently in beta.
+While it does not handle any sensitive data such as passwords or API keys, it still includes various security risks:
+- Access to your local file system.
+- No rate limiting on tool calls.
+- No input or output validation.
+
+Please be aware of these risks. Feel free to audit the code and report security issues!
+
+For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
+
 ## Related Projects
 
 - [LeanTool](https://github.com/GasStationManager/LeanTool)
+- [LeanExplore MCP](https://www.leanexplore.com/docs/mcp)
 
 ## License & Citation
 
