@@ -142,9 +142,7 @@ def update_file(ctx: Context, rel_path: str) -> str:
 # Meta level tools
 @mcp.tool("lean_auto_proof_instructions")
 def auto_proof() -> str:
-    """Get the description of the Lean LSP MCP and how to use it to automatically prove theorems.
-
-    VERY IMPORTANT! Call this at the start of every proof and whenever you are unsure about the proof process.
+    """Get a description of the Lean LSP MCP and how to use it to automatically prove theorems.
 
     Returns:
         str: Description of the Lean LSP MCP.
@@ -158,33 +156,20 @@ def auto_proof() -> str:
 
 
 # Project level tools
-@mcp.tool("lean_project_path")
-def project_path() -> str:
-    """Get the path to the Lean project root.
-
-    Returns:
-        str: Path to the Lean project.
-    """
-    return os.environ["LEAN_PROJECT_PATH"]
-
-
-@mcp.tool("lean_lsp_restart")
-def lsp_restart(ctx: Context, rebuild: bool = True) -> bool:
-    """Restart the LSP server. Can also rebuild the lean project.
+@mcp.tool("lean_build")
+def lsp_build(ctx: Context) -> bool:
+    """Restart the LSP server and rebuild the lean project.
 
     SLOW! Use only when necessary (e.g. imports) and in emergencies.
 
-    Args:
-        rebuild (bool, optional): Rebuild the Lean project. Defaults to True.
-
     Returns:
-        bool: True if the Lean LSP server was restarted, False otherwise.
+        bool: True if the Lean LSP server was restarted successfully.
     """
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         client.close()
         ctx.request_context.lifespan_context.client = LeanLSPClient(
-            os.environ["LEAN_PROJECT_PATH"], initial_build=rebuild
+            os.environ["LEAN_PROJECT_PATH"], initial_build=True
         )
     except Exception:
         return False

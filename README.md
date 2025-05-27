@@ -217,13 +217,9 @@ Get the contents of a Lean file, optionally with line number annotations.
 
 ### Project-level tools
 
-#### lean_project_path
+#### lean_build
 
-Get the path to the current Lean project root directory.
-
-#### lean_lsp_restart
-
-Restart the LSP server and optionally rebuild the Lean project.
+Rebuild the Lean project and restart the Lean LSP server.
 
 ## Prompts
 
