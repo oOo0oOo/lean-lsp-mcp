@@ -122,7 +122,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
