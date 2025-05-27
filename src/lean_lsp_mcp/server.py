@@ -13,7 +13,7 @@ from leanclient import LeanLSPClient
 from mcp.server.fastmcp import Context, FastMCP
 
 from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
-from lean_lsp_mcp.utils import StdoutToStderr, format_diagnostics
+from lean_lsp_mcp.utils import StdoutToStderr, extract_range, find_start_position, format_diagnostics
 
 
 # Configure logging to stderr instead of stdout to avoid interfering with LSP JSON communication
@@ -45,10 +45,18 @@ class AppContext:
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     with StdoutToStderr():
         try:
-            client = LeanLSPClient(LEAN_PROJECT_PATH)
+            client = LeanLSPClient(
+                LEAN_PROJECT_PATH,
+                initial_build=True,
+                print_warnings=False
+            )
             logger.info(f"Connected to Lean project at {LEAN_PROJECT_PATH}")
         except Exception as e:
-            client = LeanLSPClient(LEAN_PROJECT_PATH, initial_build=False)
+            client = LeanLSPClient(
+                LEAN_PROJECT_PATH,
+                initial_build=False,
+                print_warnings=False
+            )
             logger.error(f"Could not do initial build, error: {e}")
 
     try:
@@ -169,7 +177,9 @@ def lsp_build(ctx: Context) -> bool:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         client.close()
         ctx.request_context.lifespan_context.client = LeanLSPClient(
-            os.environ["LEAN_PROJECT_PATH"], initial_build=True
+            os.environ["LEAN_PROJECT_PATH"],
+            initial_build=True,
+            print_warnings=False
         )
     except Exception:
         return False
@@ -329,7 +339,7 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     Args:
         file_path (str): Absolute path to the Lean file.
         line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed).
+        column (int): Column number (1-indexed). Make sure to use the start or within the term, not the end.
 
     Returns:
         str: Hover information at the specified location or error message.
@@ -338,17 +348,18 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     if not rel_path:
         return "No valid lean file found."
 
-    update_file(ctx, rel_path)
-
+    file_content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     if hover_info is None:
         return "No hover information available. Try another position?"
 
-    info = hover_info.get("contents", None)
-    if info is not None:
-        info = info.get("value", "No hover information available.")
-        return info.replace("```lean\n", "").replace("\n```", "")
+    # Get the symbol and the hover information
+    h_range = hover_info.get("range")
+    symbol = extract_range(file_content, h_range)
+    info = hover_info["contents"].get("value", "No hover information available.")
+    info = info.replace("```lean\n", "").replace("\n```", "").strip()
+    return f"Hover info `{symbol}`:\n{info}"
 
 
 @mcp.tool("lean_proofs_complete")
@@ -392,6 +403,8 @@ def completions(
     - Identifier Completion: Suggests matching identifiers after typing part of a name.
     - Import Completion: Lists importable files after typing import at the beginning of a file.
 
+    Use this on incomplete lines/statements to get suggestions for completing the code.
+
     Args:
         file_path (str): Absolute path to the Lean file.
         line (int): Line number (1-indexed)
@@ -425,6 +438,52 @@ def completions(
     return formatted
 
 
+@mcp.tool("lean_declaration_file")
+def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
+    """Get the file contents where a symbol/lemma/class/structure/... is declared.
+
+    Note:
+        Symbol has to be in the file already. Add it first if necessary.
+        Lean files can be large, use `lean_hover_info` before this tool.
+
+    Args:
+        file_path (str): Absolute path to the Lean file.
+        symbol (str): Symbol to look up the declaration for. Case sensitive!
+
+    Returns:
+        str: Contents of the file where the symbol is declared or error message.
+    """
+    rel_path = get_relative_file_path(file_path)
+    if not rel_path:
+        return "No valid lean file found."
+    orig_file_content = update_file(ctx, rel_path)
+
+    # Find the first occurence of the symbol (line and column) in the file,
+    position = find_start_position(orig_file_content, symbol)
+    if not position:
+        return f"Symbol `{symbol}` (case sensitive) not found in file `{rel_path}`. Add it first, then try again."
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    declaration = client.get_declarations(rel_path, position["line"], position["column"])
+
+    if len(declaration) == 0:
+        return f"No declaration available for `{symbol}`."
+
+    # Load the declaration file
+    declaration = declaration[0]
+    uri = declaration.get("targetUri")
+    if not uri:
+        uri = declaration.get("uri")
+
+    abs_path = client._uri_to_abs(uri)
+    if not os.path.exists(abs_path):
+        return f"Could not open declaration file `{abs_path}` for `{symbol}`."
+
+    with open(abs_path, "r") as f:
+        file_content = f.read()
+
+    return f"Declaration of `{symbol}`:\n{file_content}"
+
 @mcp.tool("lean_leansearch")
 def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net API.
@@ -449,7 +508,7 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             results = json.loads(response.read().decode("utf-8"))
 
         return (

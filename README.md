@@ -187,6 +187,10 @@ but you can double check if a theorem depends on `sorry` by looking for `sorryAx
 of the `#print axioms my_thm` command, the axiom used by the implementation of `sorry`.<br>
 </details>
 
+#### lean_declaration_file
+
+Get the file contents where a symbol or term is declared.
+
 #### lean_completions
 
 Code auto-completion: Find available identifiers or import suggestions at a specific position (line & column) in a Lean file.

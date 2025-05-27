@@ -41,3 +41,48 @@ def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
             r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1}-l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
         msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
     return msgs
+
+
+def extract_range(content: str, range: dict) -> str:
+    """Extract the text from the content based on the range.
+
+    Args:
+        content (str): The content to extract from.
+        range (dict): The range to extract.
+
+    Returns:
+        str: The extracted range text.
+    """
+    start_line = range["start"]["line"]
+    start_char = range["start"]["character"]
+    end_line = range["end"]["line"]
+    end_char = range["end"]["character"]
+
+    lines = content.splitlines()
+    if start_line < 0 or end_line >= len(lines):
+        return "Range out of bounds"
+    if start_line == end_line:
+        return lines[start_line][start_char:end_char]
+    else:
+        selected_lines = lines[start_line:end_line + 1]
+        selected_lines[0] = selected_lines[0][start_char:]
+        selected_lines[-1] = selected_lines[-1][:end_char]
+        return "\n".join(selected_lines)
+
+
+def find_start_position(content: str, query: str) -> dict | None:
+    """Find the position of the query in the content.
+
+    Args:
+        content (str): The content to search in.
+        query (str): The query to find.
+
+    Returns:
+        dict | None: The position of the query in the content. {"line": int, "column": int}
+    """
+    lines = content.splitlines()
+    for line_number, line in enumerate(lines):
+        char_index = line.find(query)
+        if char_index != -1:
+            return {"line": line_number, "column": char_index}
+    return None
