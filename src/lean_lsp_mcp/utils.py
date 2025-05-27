@@ -64,7 +64,7 @@ def extract_range(content: str, range: dict) -> str:
     if start_line == end_line:
         return lines[start_line][start_char:end_char]
     else:
-        selected_lines = lines[start_line:end_line + 1]
+        selected_lines = lines[start_line : end_line + 1]
         selected_lines[0] = selected_lines[0][start_char:]
         selected_lines[-1] = selected_lines[-1][:end_char]
         return "\n".join(selected_lines)

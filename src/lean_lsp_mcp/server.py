@@ -13,7 +13,12 @@ from leanclient import LeanLSPClient
 from mcp.server.fastmcp import Context, FastMCP
 
 from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
-from lean_lsp_mcp.utils import StdoutToStderr, extract_range, find_start_position, format_diagnostics
+from lean_lsp_mcp.utils import (
+    StdoutToStderr,
+    extract_range,
+    find_start_position,
+    format_diagnostics,
+)
 
 
 # Configure logging to stderr instead of stdout to avoid interfering with LSP JSON communication
@@ -46,16 +51,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     with StdoutToStderr():
         try:
             client = LeanLSPClient(
-                LEAN_PROJECT_PATH,
-                initial_build=True,
-                print_warnings=False
+                LEAN_PROJECT_PATH, initial_build=True, print_warnings=False
             )
             logger.info(f"Connected to Lean project at {LEAN_PROJECT_PATH}")
         except Exception as e:
             client = LeanLSPClient(
-                LEAN_PROJECT_PATH,
-                initial_build=False,
-                print_warnings=False
+                LEAN_PROJECT_PATH, initial_build=False, print_warnings=False
             )
             logger.error(f"Could not do initial build, error: {e}")
 
@@ -177,9 +178,7 @@ def lsp_build(ctx: Context) -> bool:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         client.close()
         ctx.request_context.lifespan_context.client = LeanLSPClient(
-            os.environ["LEAN_PROJECT_PATH"],
-            initial_build=True,
-            print_warnings=False
+            os.environ["LEAN_PROJECT_PATH"], initial_build=True, print_warnings=False
         )
     except Exception:
         return False
@@ -464,7 +463,9 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
         return f"Symbol `{symbol}` (case sensitive) not found in file `{rel_path}`. Add it first, then try again."
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    declaration = client.get_declarations(rel_path, position["line"], position["column"])
+    declaration = client.get_declarations(
+        rel_path, position["line"], position["column"]
+    )
 
     if len(declaration) == 0:
         return f"No declaration available for `{symbol}`."
@@ -483,6 +484,7 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
         file_content = f.read()
 
     return f"Declaration of `{symbol}`:\n{file_content}"
+
 
 @mcp.tool("lean_leansearch")
 def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
