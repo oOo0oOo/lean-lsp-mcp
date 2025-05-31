@@ -88,7 +88,6 @@ OR manually add config to `settings.json` (global):
 
 3. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started:
 
-
 ### 3. b) Cursor Setup
 
 1. Open MCP Settings (File > Preferences > Cursor Settings > MCP)
@@ -111,10 +110,23 @@ OR manually add config to `settings.json` (global):
 }
 ```
 
+### 3. c) Claude Code
+
+Run one of these commands in the root directory of your Lean project (where `lakefile.toml` is located):
+
+```bash
+# Local-scoped MCP server
+claude mcp add lean-lsp uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
+
+# OR project-scoped MCP server (creates or updates a .mcp.json file in the current directory)
+claude mcp add lean-lsp -s project uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
+```
+
+You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
+
 ### Other Setups
 
-Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [Claude Code](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers) or [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) should work with similar configs.
-
+Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) should work with similar configs.
 
 ## Tools
 
