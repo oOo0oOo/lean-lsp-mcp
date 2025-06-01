@@ -50,9 +50,7 @@ def format_goal(goal, default_msg):
     if goal is None:
         return default_msg
     rendered = goal.get("rendered")
-    return (
-        rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
-    )
+    return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
 
 
 def extract_range(content: str, range: dict) -> str:

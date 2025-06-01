@@ -481,7 +481,8 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
 
 @mcp.tool("lean_multi_attempt")
 def multi_attempt(
-    ctx: Context, file_path: str, line: int, snippets: List[str]) -> List[str] | str:
+    ctx: Context, file_path: str, line: int, snippets: List[str]
+) -> List[str] | str:
     """Attempt multiple lean code snippets and return goal state and diagnostics for each snippet.
 
     This tool is useful to screen different tactics/approaches to help pick the most promising one.
