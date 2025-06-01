@@ -271,6 +271,13 @@ Open an incomplete proof such as [putnam 1964 b2](https://github.com/trishullab/
 
 ![Designing proof approaches](media/proof_approaches.png)
 
+## Disabling Tools
+
+Many IDEs allow to disable specific tools manually (e.g. lean_build).
+
+**VSCode**: Click on the Wrench/Screwdriver icon in the chat.
+**Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
+
 ## Notes on MCP Security
 
 There are many valid security concerns with the Model Context Protocol (MCP) in general!
