@@ -20,6 +20,9 @@ Your goal is to incrementally proof the provided theorem by resolving all sorrie
     Use these very often!
 - lean_hover_info
     Hover info provides documentation about terms and lean syntax in your code.
+- lean_multi_attempt
+    Attempt multiple snippets for a single line, return all goal states and diagnostics.
+    Use this to explore different tactics or approaches.
 - lean_leansearch
     Use a natural language query to find theorems in mathlib. E.g. "sum of squares is nonnegative".
     This tool uses an external API, use respectfully, e.g. not more than twice in a row.
@@ -28,15 +31,16 @@ Your goal is to incrementally proof the provided theorem by resolving all sorrie
 
 ## Powerful finishing tactics
 
-`aesop` `omega` `nlinarith` `ring` `norm_num` `simp_all` `tauto` `congr` `bv_decide`
+`aesop` `omega` `nlinarith` `ring` `norm_num` `simp_all` `tauto` `congr` `bv_decide` `canonical`
 
 Also useful early in the proof before manual steps.
 
 ## Suggested proof process
 
-1. Identify first sorry in the file.
-2. Extensive diagnostics phase!
-3. Perform minimal edits to make any progress on the identified sorry.
-4. If a tactic fails consult diagnostics then immediately try an alternative edit without asking for permission.
-5. Keep repeating from step 1 until proof is completed.
+1. Design the most promising proof strategy based on the current goal and leansearch results.
+2. Identify first sorry in the file.
+3. Extensive diagnostics phase!
+4. Perform minimal edits to make any progress on the identified sorry.
+5. If a tactic fails consult diagnostics then immediately try an alternative edit without asking for permission.
+6. Keep repeating from step 2 until proof is completed.
 """
