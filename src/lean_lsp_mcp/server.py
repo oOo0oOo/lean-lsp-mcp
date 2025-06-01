@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import urllib
 import json
 
-from leanclient import LeanLSPClient
+from leanclient import LeanLSPClient, DocumentContentChange
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -18,6 +18,7 @@ from lean_lsp_mcp.utils import (
     extract_range,
     find_start_position,
     format_diagnostics,
+    format_goal,
 )
 
 
@@ -265,14 +266,6 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 
-    def format_goal(goal, default_msg):
-        if goal is None:
-            return default_msg
-        rendered = goal.get("rendered")
-        return (
-            rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
-        )
-
     if column is None:
         lines = content.splitlines()
         if line < 1 or line > len(lines):
@@ -484,6 +477,56 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
         file_content = f.read()
 
     return f"Declaration of `{symbol}`:\n{file_content}"
+
+
+@mcp.tool("lean_multi_attempt")
+def multi_attempt(
+    ctx: Context, file_path: str, line: int, snippets: List[str]) -> List[str] | str:
+    """Attempt multiple lean code snippets and return goal state and diagnostics for each snippet.
+
+    This tool is useful to screen different tactics/approaches to help pick the most promising one.
+    Use this in your diagnostic process.
+    A new line is inserted at the specified line number and each attempt is tried before resetting the line.
+
+    Note:
+        Each snippet has to include the full line including correct initial indentation!
+        Only single line snippets are supported!
+
+    Args:
+        file_path (str): Absolute path to the Lean file.
+        line (int): Line number (1-indexed) to attempt.
+        snippets (list[str]): List of snippets to try on the line. 3+ snippets are recommended.
+
+    Returns:
+        List[str] | str: Diagnostics and goal state for each snippet or error message.
+    """
+    rel_path = get_relative_file_path(file_path)
+    if not rel_path:
+        return "No valid lean file found."
+    update_file(ctx, rel_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+
+    client.open_file(rel_path)
+
+    results = []
+    snippets[0] += "\n"  # Extra newline for the first snippet
+    for snippet in snippets:
+        # Create a DocumentContentChange for the snippet
+        change = DocumentContentChange(
+            snippet + "\n",
+            [line - 1, 0],
+            [line, 0],
+        )
+        # Apply the change to the file, capture diagnostics and goal state
+        diag = client.update_file(rel_path, [change])
+        formatted_diag = "\n".join(format_diagnostics(diag, select_line=line - 1))
+        goal = client.get_goal(rel_path, line - 1, len(snippet))
+        formatted_goal = format_goal(goal, "Missing goal")
+        results.append(f"{snippet}:\n {formatted_goal}\n\n{formatted_diag}")
+
+    # Make sure it's clean after the attempts
+    client.close_files([rel_path])
+    return results
 
 
 @mcp.tool("lean_leansearch")

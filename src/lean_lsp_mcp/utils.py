@@ -22,11 +22,12 @@ class StdoutToStderr:
             self.original_stdout_fd = None
 
 
-def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
+def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[str]:
     """Format the diagnostics messages.
 
     Args:
         diagnostics (List[Dict]): List of diagnostics.
+        select_line (int): If -1, format all diagnostics. If >= 0, only format diagnostics for this line.
 
     Returns:
         List[str]: Formatted diagnostics messages.
@@ -37,10 +38,21 @@ def format_diagnostics(diagnostics: List[Dict]) -> List[str]:
         r = diag.get("fullRange", diag.get("range", None))
         if r is None:
             r_text = "No range"
+        elif select_line >= 0 and r["start"]["line"] != select_line:
+            continue
         else:
             r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1}-l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
         msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
     return msgs
+
+
+def format_goal(goal, default_msg):
+    if goal is None:
+        return default_msg
+    rendered = goal.get("rendered")
+    return (
+        rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
+    )
 
 
 def extract_range(content: str, range: dict) -> str:

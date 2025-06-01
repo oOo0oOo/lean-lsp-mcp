@@ -209,6 +209,38 @@ Get the file contents where a symbol or term is declared.
 
 Code auto-completion: Find available identifiers or import suggestions at a specific position (line & column) in a Lean file.
 
+#### lean_multi_attempt
+
+Attempt multiple lean code snippets on a line and return goal state and diagnostics for each snippet.
+This tool is useful to screen different proof attempts before using the most promising one.
+
+<details>
+<summary>Example output (attempting `rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]` and `by_contra h_neq`)</summary>
+  rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]:<br>
+S : Type u_1<br>
+inst✝¹ : Fintype S<br>
+inst✝ : Nonempty S<br>
+P : Finset (Set S)<br>
+hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
+hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
+⊢ P.card = 2 ^ (Fintype.card S - 1)<br>
+<br>
+l14c7-l14c51, severity: 1<br>
+unknown constant 'Nat.pow_sub'<br>
+<br>
+  by_contra h_neq:<br>
+ S : Type u_1<br>
+inst✝¹ : Fintype S<br>
+inst✝ : Nonempty S<br>
+P : Finset (Set S)<br>
+hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
+hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
+h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)<br>
+⊢ False<br>
+<br>
+...
+</details>
+
 #### lean_leansearch
 
 Search for theorems in Mathlib using leansearch.net (natural language search).
@@ -276,6 +308,7 @@ Open an incomplete proof such as [putnam 1964 b2](https://github.com/trishullab/
 Many IDEs allow to disable specific tools manually (e.g. lean_build).
 
 **VSCode**: Click on the Wrench/Screwdriver icon in the chat.
+
 **Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
 ## Notes on MCP Security
