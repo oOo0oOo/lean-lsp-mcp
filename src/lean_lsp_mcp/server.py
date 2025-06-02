@@ -12,7 +12,7 @@ from leanclient import LeanLSPClient, DocumentContentChange
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
+from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.utils import (
     OutputCapture,
     StdoutToStderr,
@@ -61,7 +61,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 LEAN_PROJECT_PATH, initial_build=False, print_warnings=False
             )
             logger.error(f"Could not do initial build, error: {e}")
-
     try:
         context = AppContext(client=client, file_content_hashes={})
         yield context
@@ -71,8 +70,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 
 mcp = FastMCP(
-    "Lean LSP",
-    description="Interact with the Lean prover via the LSP",
+    name="Lean LSP",
+    instructions=INSTRUCTIONS,
     dependencies=["leanclient"],
     lifespan=app_lifespan,
     env_vars={
@@ -148,22 +147,6 @@ def update_file(ctx: Context, rel_path: str) -> str:
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.close_files([rel_path])
     return file_content
-
-
-# Meta level tools
-@mcp.tool("lean_auto_proof_instructions")
-def auto_proof() -> str:
-    """Get a description of the Lean LSP MCP and how to use it to automatically prove theorems.
-
-    Returns:
-        str: Description of the Lean LSP MCP.
-    """
-    try:
-        toolchain = get_file_contents("lean-toolchain")
-        lean_version = toolchain.split(":")[1].strip()
-    except Exception:
-        lean_version = "v4"
-    return PROMPT_AUTOMATIC_PROOF.format(lean_version=lean_version)
 
 
 # Project level tools
@@ -574,17 +557,6 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
 
     except Exception as e:
         return f"leansearch.net error:\n{str(e)}"
-
-
-# Prompts
-@mcp.prompt()
-def auto_proof_instructions() -> str:
-    """Get the description of the Lean LSP MCP and how to use it to automatically prove theorems.
-
-    Returns:
-        str: Description of the Lean LSP MCP.
-    """
-    return auto_proof()
 
 
 if __name__ == "__main__":

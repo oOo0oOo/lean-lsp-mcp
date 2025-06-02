@@ -253,26 +253,15 @@ More answers like above<br>
 
 Check if all proofs in a file are complete. This is currently very simple and will be improved in the future.
 
-### Project-level tools
-
-#### lean_auto_proof_instructions
-
-Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet, it is also available as a prompt. You can check out the current instruction prompt in [prompts.py](https://github.com/oOo0oOo/lean-lsp-mcp/blob/main/src/lean_lsp_mcp/prompts.py).
-
 #### lean_file_contents
 
 Get the contents of a Lean file, optionally with line number annotations.
 
+### Project-level tools
+
 #### lean_build
 
 Rebuild the Lean project and restart the Lean LSP server.
-
-## Prompts
-
-#### lean_auto_proof_instructions
-
-Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. See above (Meta tools).
-Currently many clients do not support prompts yet.
 
 ## Disabling Tools
 
@@ -286,11 +275,12 @@ Many IDEs allow to disable specific tools manually (e.g. lean_build).
 
 Here are a few example prompts and interactions to try. All examples use VSCode (Agent Mode) and Gemini 2.5 Pro (Preview).
 
-### Using auto proof prompt
+### Use tools to assist with a proof
 
-Open unfinished proof. Run prompt "auto proof" in VSCode (Agent Mode) or Cursor will use the `lean_auto_proof_instructions` tool to get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems.
-
-![VS Code Agent Mode](media/auto_proof.png)
+After installing the MCP, tools are **automatically available** to the agent.
+E.g. Open a Lean file with a sorry and run the following prompt: "Solve this sorry"
+The agent should use various tools such as `lean_goal` to understand and create a proof.
+You can also ask the agent to use tools explicitly, e.g. "Help me write this proof using tools." or "Use tools to analyze the goal and hover information, then write a proof."
 
 ### Analyze a theorem
 
