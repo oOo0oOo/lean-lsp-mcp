@@ -14,6 +14,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from lean_lsp_mcp.prompts import PROMPT_AUTOMATIC_PROOF
 from lean_lsp_mcp.utils import (
+    OutputCapture,
     StdoutToStderr,
     extract_range,
     find_start_position,
@@ -167,23 +168,28 @@ def auto_proof() -> str:
 
 # Project level tools
 @mcp.tool("lean_build")
-def lsp_build(ctx: Context) -> bool:
-    """Restart the LSP server and rebuild the lean project.
+def lsp_build(ctx: Context) -> str:
+    """Build the Lean project and restart the LSP Server.
 
-    SLOW! Use only when necessary (e.g. imports) and in emergencies.
+    Use only when necessary (e.g. imports).
 
     Returns:
-        bool: True if the Lean LSP server was restarted successfully.
+        str: Build output or error message.
     """
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         client.close()
-        ctx.request_context.lifespan_context.client = LeanLSPClient(
-            os.environ["LEAN_PROJECT_PATH"], initial_build=True, print_warnings=False
-        )
-    except Exception:
-        return False
-    return True
+
+        with OutputCapture() as output:
+            ctx.request_context.lifespan_context.client = LeanLSPClient(
+                os.environ["LEAN_PROJECT_PATH"],
+                initial_build=True,
+                print_warnings=False,
+            )
+        build_output = output.get_output()
+    except Exception as e:
+        return f"Error during build:\n{str(e)}\n{build_output}"
+    return build_output
 
 
 # File level tools

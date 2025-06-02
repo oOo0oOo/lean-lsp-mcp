@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from typing import List, Dict
 
 
@@ -20,6 +21,39 @@ class StdoutToStderr:
             os.dup2(self.original_stdout_fd, sys.stdout.fileno())
             os.close(self.original_stdout_fd)
             self.original_stdout_fd = None
+
+
+class OutputCapture:
+    """Capture any output to stdout and stderr at the file descriptor level."""
+
+    def __init__(self):
+        self.original_stdout_fd = None
+        self.original_stderr_fd = None
+        self.temp_file = None
+        self.captured_output = ""
+
+    def __enter__(self):
+        self.temp_file = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        self.original_stdout_fd = os.dup(sys.stdout.fileno())
+        self.original_stderr_fd = os.dup(sys.stderr.fileno())
+        os.dup2(self.temp_file.fileno(), sys.stdout.fileno())
+        os.dup2(self.temp_file.fileno(), sys.stderr.fileno())
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        os.dup2(self.original_stdout_fd, sys.stdout.fileno())
+        os.dup2(self.original_stderr_fd, sys.stderr.fileno())
+        os.close(self.original_stdout_fd)
+        os.close(self.original_stderr_fd)
+
+        self.temp_file.flush()
+        self.temp_file.seek(0)
+        self.captured_output = self.temp_file.read()
+        self.temp_file.close()
+        os.unlink(self.temp_file.name)
+
+    def get_output(self):
+        return self.captured_output
 
 
 def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[str]:
