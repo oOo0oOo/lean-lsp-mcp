@@ -271,7 +271,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
         if line < 1 or line > len(lines):
             return "Line number out of range. Try again?"
         column_end = len(lines[line - 1])
-        column_start = next((i for i, c in enumerate(lines[line - 1]) if not c.isspace()), 0)
+        column_start = next(
+            (i for i, c in enumerate(lines[line - 1]) if not c.isspace()), 0
+        )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
 
@@ -565,7 +567,7 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
         )
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"leansearch.net error:\n{str(e)}"
 
 
 # Prompts

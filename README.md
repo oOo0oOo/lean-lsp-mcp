@@ -16,14 +16,14 @@
   </a>
 </p>
 
-MCP that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient). This server provides a range of tools for AI models to understand, analyze and interact with Lean projects.
+MCP that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient). This server provides a range of tools for LLM agents to understand, analyze and interact with Lean projects.
 
-**Currently beta testing**: Please help us by submitting bug reports, feedback and feature requests.
+**Currently beta testing**: Please help us by submitting bug reports and feature requests!
 
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, and hover documentation.
-* **Agent-Focused Toolset:** Includes tools for theorem search (leansearch.net), code completion, and project builds.
+* **Agent-Focused Toolset**: Includes tools for theorem search (leansearch.net), code completion, and project builds.
 * **Easy Setup**: Simple configuration for various IDEs, including VSCode and Cursor.
 
 ## Setup
@@ -126,17 +126,11 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 ### Other Setups
 
-Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) should work with similar configs.
+Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) or [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) should work with similar configs.
 
 ## Tools
 
 Lean LSP MCP currently provides various tools to interact with the Lean theorem prover:
-
-### Meta tools
-
-#### lean_auto_proof_instructions
-
-Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet, it is also available as a prompt. You can check out the current instruction prompt in [prompts.py](https://github.com/oOo0oOo/lean-lsp-mcp/blob/main/src/lean_lsp_mcp/prompts.py).
 
 ### Core interactions
 
@@ -259,13 +253,15 @@ More answers like above<br>
 
 Check if all proofs in a file are complete. This is currently very simple and will be improved in the future.
 
-### File operations
+### Project-level tools
+
+#### lean_auto_proof_instructions
+
+Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. This is a tool call because many clients do not support prompts yet, it is also available as a prompt. You can check out the current instruction prompt in [prompts.py](https://github.com/oOo0oOo/lean-lsp-mcp/blob/main/src/lean_lsp_mcp/prompts.py).
 
 #### lean_file_contents
 
 Get the contents of a Lean file, optionally with line number annotations.
-
-### Project-level tools
 
 #### lean_build
 
@@ -276,6 +272,15 @@ Rebuild the Lean project and restart the Lean LSP server.
 #### lean_auto_proof_instructions
 
 Get detailed instructions on how to use the Lean LSP MCP to automatically prove theorems. See above (Meta tools).
+Currently many clients do not support prompts yet.
+
+## Disabling Tools
+
+Many IDEs allow to disable specific tools manually (e.g. lean_build).
+
+**VSCode**: Click on the Wrench/Screwdriver icon in the chat.
+
+**Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
 ## Example Uses
 
@@ -302,14 +307,6 @@ Open an incomplete proof such as [putnam 1964 b2](https://github.com/trishullab/
 "First analyze the problem statement by checking the goal, hover info and looking up key declarations. Next use up to three queries to leansearch to design three different approaches to solve this problem. Very concisely present each approach and its key challenge."
 
 ![Designing proof approaches](media/proof_approaches.png)
-
-## Disabling Tools
-
-Many IDEs allow to disable specific tools manually (e.g. lean_build).
-
-**VSCode**: Click on the Wrench/Screwdriver icon in the chat.
-
-**Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
 ## Notes on MCP Security
 
