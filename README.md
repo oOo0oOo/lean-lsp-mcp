@@ -22,9 +22,9 @@ MCP that allows agentic interaction with the [Lean theorem prover](https://lean-
 
 ## Key Features
 
-* **Rich Lean Interaction**: Access diagnostics, goal states, term information, and hover documentation.
+* **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
 * **Agent-Focused Toolset**: Includes tools for theorem search (leansearch.net), code completion, and project builds.
-* **Easy Setup**: Simple configuration for various IDEs, including VSCode and Cursor.
+* **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
 
@@ -46,7 +46,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ### 2. Run `lake build`
 
-`lean-lsp-mcp` will run `lake build` in the project root upon startup. Some IDEs (like Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster startup time and avoids timeouts.
+`lean-lsp-mcp` will run `lake build` in the project root upon startup. Some clients (e.g. Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster startup time and avoids timeouts.
 
 E.g. on Linux/MacOS:
 ```bash
@@ -126,7 +126,7 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 ### Other Setups
 
-Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/) or [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) should work with similar configs.
+Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/), [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) or [Goose](https://block.github.io/goose/docs/getting-started/using-extensions) should work with similar configs.
 
 ## Tools
 
@@ -265,7 +265,7 @@ Rebuild the Lean project and restart the Lean LSP server.
 
 ## Disabling Tools
 
-Many IDEs allow to disable specific tools manually (e.g. lean_build).
+Many clients allow the user to disable specific tools manually (e.g. lean_build).
 
 **VSCode**: Click on the Wrench/Screwdriver icon in the chat.
 
@@ -302,7 +302,7 @@ Open an incomplete proof such as [putnam 1964 b2](https://github.com/trishullab/
 
 There are many valid security concerns with the Model Context Protocol (MCP) in general!
 
-This MCP is meant as a research tool and is currently in beta.
+This MCP server is meant as a research tool and is currently in beta.
 While it does not handle any sensitive data such as passwords or API keys, it still includes various security risks:
 - Access to your local file system.
 - No rate limiting on tool calls.
