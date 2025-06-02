@@ -270,8 +270,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
         lines = content.splitlines()
         if line < 1 or line > len(lines):
             return "Line number out of range. Try again?"
-        column_end = len(lines[line - 1]) - 1
-        goal_start = client.get_goal(rel_path, line - 1, 0)
+        column_end = len(lines[line - 1])
+        column_start = next((i for i, c in enumerate(lines[line - 1]) if not c.isspace()), 0)
+        goal_start = client.get_goal(rel_path, line - 1, column_start)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
 
         if goal_start is None and goal_end is None:
