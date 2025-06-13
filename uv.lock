@@ -122,7 +122,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.1.9"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -139,8 +139,8 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "leanclient", specifier = ">=0.1.11" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.9.2" },
+    { name = "leanclient", specifier = ">=0.1.12" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.9.4" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
     { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.2.0" },
 ]
@@ -148,15 +148,15 @@ provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.1.11"
+version = "0.1.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/01/321f4d190cdf4e57e44969cffee340fd84e76918c7be7211944e8e282aea/leanclient-0.1.11.tar.gz", hash = "sha256:ef9acd265ee39013f443cbef3bbed97e44103fc11cb2af3cc2fef82224324242", size = 21815 }
+sdist = { url = "https://files.pythonhosted.org/packages/05/b3/8a33f29c274fbc094138b436a2114ae2b1d5036c0406a16b95b37491b24d/leanclient-0.1.12.tar.gz", hash = "sha256:c8f00b4e7d161bd0fa7d3ea30c89d1b74cb5d3f8b234852e3c4a38dacacb7086", size = 23566 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/b8/c0e3b3c83627a4aec65aa7b5d6e58b7b0e508b366fefd729cb5af05b7456/leanclient-0.1.11-py3-none-any.whl", hash = "sha256:1aa19ef1e1bd31b190e4a151cd838afe6ea88219c12aaf5fba3e03b45c499677", size = 23374 },
+    { url = "https://files.pythonhosted.org/packages/6e/df/386f2b8b411977c7ec5dafbb0236e9c34078b7e882155eefb0b93d9f3136/leanclient-0.1.12-py3-none-any.whl", hash = "sha256:31cca6d7b342a4a3bc7e3bf2b3a5ef81b9e4971481ebb298425d2f1f312a9c67", size = 25167 },
 ]
 
 [[package]]
@@ -173,7 +173,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.9.2"
+version = "1.9.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -186,9 +186,9 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/03/77c49cce3ace96e6787af624611b627b2828f0dca0f8df6f330a10eea51e/mcp-1.9.2.tar.gz", hash = "sha256:3c7651c053d635fd235990a12e84509fe32780cd359a5bbef352e20d4d963c05", size = 333066 }
+sdist = { url = "https://files.pythonhosted.org/packages/06/f2/dc2450e566eeccf92d89a00c3e813234ad58e2ba1e31d11467a09ac4f3b9/mcp-1.9.4.tar.gz", hash = "sha256:cfb0bcd1a9535b42edaef89947b9e18a8feb49362e1cc059d6e7fc636f2cb09f", size = 333294 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/a6/8f5ee9da9f67c0fd8933f63d6105f02eabdac8a8c0926728368ffbb6744d/mcp-1.9.2-py3-none-any.whl", hash = "sha256:bc29f7fd67d157fef378f89a4210384f5fecf1168d0feb12d22929818723f978", size = 131083 },
+    { url = "https://files.pythonhosted.org/packages/97/fc/80e655c955137393c443842ffcc4feccab5b12fa7cb8de9ced90f90e6998/mcp-1.9.4-py3-none-any.whl", hash = "sha256:7fcf36b62936adb8e63f89346bccca1268eeca9bf6dfb562ee10b1dfbda9dac0", size = 130232 },
 ]
 
 [package.optional-dependencies]
