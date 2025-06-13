@@ -208,6 +208,15 @@ Get the file contents where a symbol or term is declared.
 
 Code auto-completion: Find available identifiers or import suggestions at a specific position (line & column) in a Lean file.
 
+#### lean_run_code
+
+Run/compile an independent Lean code snippet/file and return the result or error message.
+<details>
+<summary>Example output (code snippet: `#eval 5 * 7 + 3`)</summary>
+l1c1-l1c6, severity: 3<br>
+38
+</details>
+
 #### lean_multi_attempt
 
 Attempt multiple lean code snippets on a line and return goal state and diagnostics for each snippet.

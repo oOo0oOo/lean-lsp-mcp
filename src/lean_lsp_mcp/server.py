@@ -407,6 +407,51 @@ def multi_attempt(
     return results
 
 
+@mcp.tool("lean_run_code")
+def run_code(ctx: Context, code: str) -> List[str] | str:
+    """Run/compile a complete Lean code snippet and return its diagnostic messages.
+
+    This tool is useful to test whether a code snippet compiles and runs correctly.
+    Use cases include testing definitions/statements, tactics, or other Lean code snippets.
+
+    The snippet has to be self-contained, i.e. it has to include all imports and definitions.
+    Use `import Mathlib` when in doubt instead of specific Mathlib imports.
+
+    Args:
+        code (str): Complete Lean code snippet to run.
+
+    Returns:
+        List[str] | str: Diagnostics messages or error message.
+    """
+    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    if lean_project_path is None:
+        return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
+
+    rel_path = "temp_snippet.lean"
+    abs_path = os.path.join(lean_project_path, rel_path)
+
+    try:
+        with open(abs_path, "w") as f:
+            f.write(code)
+    except Exception as e:
+        return f"Error writing code snippet to file `{abs_path}`:\n{str(e)}"
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    diagnostics = format_diagnostics(client.get_diagnostics(rel_path))
+    client.close_files([rel_path])
+
+    try:
+        os.remove(abs_path)
+    except Exception as e:
+        return f"Error removing temporary file `{abs_path}`:\n{str(e)}"
+
+    return (
+        diagnostics
+        if diagnostics
+        else "No diagnostics found for the code snippet (compiled successfully)."
+    )
+
+
 @mcp.tool("lean_leansearch")
 def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net API.
