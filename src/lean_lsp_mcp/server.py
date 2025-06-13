@@ -261,36 +261,6 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     return f"Hover info `{symbol}`:\n{info}"
 
 
-@mcp.tool("lean_proofs_complete")
-def proofs_complete(ctx: Context, file_path: str) -> str:
-    """Always check if all proofs in the file are complete in the end.
-
-    Attention:
-        "no goals to be solved" indicates code needs to be removed.
-        Warnings (e.g. linter) indicate an unfinished proof.
-        Keep going!
-
-    Args:
-        file_path (str): Absolute path to the Lean file.
-
-    Returns:
-        str: Message indicating if the proofs are complete or not.
-    """
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
-
-    update_file(ctx, rel_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    diagnostics = client.get_diagnostics(rel_path)
-
-    if diagnostics is None or len(diagnostics) > 0:
-        return "Proof not complete!\n" + "\n".join(format_diagnostics(diagnostics))
-
-    return "All proofs are complete!"
-
-
 @mcp.tool("lean_completions")
 def completions(
     ctx: Context, file_path: str, line: int, column: int, max_completions: int = 100
