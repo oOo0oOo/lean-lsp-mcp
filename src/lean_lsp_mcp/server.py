@@ -33,36 +33,26 @@ logging.basicConfig(
 logger = logging.getLogger("lean-lsp-mcp")
 
 
-# Lean project path management
-LEAN_PROJECT_PATH = os.environ.get("LEAN_PROJECT_PATH", "").strip()
-cwd = os.getcwd().strip()  # Strip necessary?
-if not LEAN_PROJECT_PATH:
-    logger.error("Please set the LEAN_PROJECT_PATH environment variable")
-    sys.exit(1)
-
-
 # Server and context
 @dataclass
 class AppContext:
-    client: LeanLSPClient
+    lean_project_path: str | None
+    client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    with StdoutToStderr():
-        try:
-            client = LeanLSPClient(
-                LEAN_PROJECT_PATH, initial_build=True, print_warnings=False
-            )
-            logger.info(f"Connected to Lean project at {LEAN_PROJECT_PATH}")
-        except Exception as e:
-            client = LeanLSPClient(
-                LEAN_PROJECT_PATH, initial_build=False, print_warnings=False
-            )
-            logger.error(f"Could not do initial build, error: {e}")
     try:
-        context = AppContext(client=client, file_content_hashes={})
+        lean_project_path = os.environ.get("LEAN_PROJECT_PATH", "").strip()
+        if not lean_project_path:
+            lean_project_path = None
+        else:
+            lean_project_path = os.path.abspath(lean_project_path)
+
+        context = AppContext(
+            lean_project_path=lean_project_path, client=None, file_content_hashes={}
+        )
         yield context
     finally:
         logger.info("Closing Lean LSP client")
@@ -76,18 +66,19 @@ mcp = FastMCP(
     lifespan=app_lifespan,
     env_vars={
         "LEAN_PROJECT_PATH": {
-            "description": "Path to the Lean project root",
-            "required": True,
+            "description": "Path to the Lean project root. If not set, this is inferred automatically using file paths. Use this only if the automatic system fails to find the project.",
+            "required": False,
         }
     },
 )
 
 
 # File operations
-def get_relative_file_path(file_path: str) -> Optional[str]:
+def get_relative_file_path(lean_project_path: str, file_path: str) -> Optional[str]:
     """Convert path relative to project path.
 
     Args:
+        lean_project_path (str): Path to the Lean project root.
         file_path (str): File path.
 
     Returns:
@@ -95,23 +86,24 @@ def get_relative_file_path(file_path: str) -> Optional[str]:
     """
     # Check if absolute path
     if os.path.exists(file_path):
-        return os.path.relpath(file_path, LEAN_PROJECT_PATH)
+        return os.path.relpath(file_path, lean_project_path)
 
     # Check if relative to project path
-    path = os.path.join(LEAN_PROJECT_PATH, file_path)
+    path = os.path.join(lean_project_path, file_path)
     if os.path.exists(path):
-        return os.path.relpath(path, LEAN_PROJECT_PATH)
+        return os.path.relpath(path, lean_project_path)
 
     # Check if relative to CWD
+    cwd = os.getcwd().strip()  # Strip necessary?
     path = os.path.join(cwd, file_path)
     if os.path.exists(path):
-        return os.path.relpath(path, LEAN_PROJECT_PATH)
+        return os.path.relpath(path, lean_project_path)
 
     return None
 
 
-def get_file_contents(rel_path: str) -> str:
-    with open(os.path.join(LEAN_PROJECT_PATH, rel_path), "r") as f:
+def get_file_contents(abs_path: str) -> str:
+    with open(abs_path, "r") as f:
         data = f.read()
     return data
 
@@ -126,7 +118,10 @@ def update_file(ctx: Context, rel_path: str) -> str:
         str: Updated file contents.
     """
     # Get file contents and hash
-    file_content = get_file_contents(rel_path)
+    abs_path = os.path.join(
+        ctx.request_context.lifespan_context.lean_project_path, rel_path
+    )
+    file_content = get_file_contents(abs_path)
     hashed_file = hash(file_content)
 
     # Check if file_contents have changed
@@ -149,6 +144,91 @@ def update_file(ctx: Context, rel_path: str) -> str:
     return file_content
 
 
+# LSP Client initialization
+def startup_client(ctx: Context):
+    """Initialize the Lean LSP client if not already set up.
+
+    Args:
+        ctx (Context): Context object.
+    """
+    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    if lean_project_path is None:
+        raise ValueError("lean project path is not set.")
+
+    # Check if already correct client
+    client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
+
+    if client is not None:
+        if client.project_path == lean_project_path:
+            return
+        client.close()
+        ctx.request_context.lifespan_context.file_content_hashes.clear()
+
+    with StdoutToStderr():
+        try:
+            client = LeanLSPClient(
+                lean_project_path, initial_build=True, print_warnings=False
+            )
+            logger.info(f"Connected to Lean language server at {lean_project_path}")
+        except Exception as e:
+            client = LeanLSPClient(
+                lean_project_path, initial_build=False, print_warnings=False
+            )
+            logger.error(f"Could not do initial build, error: {e}")
+    ctx.request_context.lifespan_context.client = client
+
+
+def valid_lean_project_path(path: str) -> bool:
+    """Check if the given path is a valid Lean project path (contains a lean-toolchain file).
+
+    Args:
+        path (str): Absolute path to check.
+
+    Returns:
+        bool: True if valid Lean project path, False otherwise.
+    """
+    if not os.path.exists(path):
+        return False
+    return os.path.isfile(os.path.join(path, "lean-toolchain"))
+
+
+def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
+    """Check if the current LSP client is already set up and correct for this file. Otherwise, set it up.
+
+    Args:
+        ctx (Context): Context object.
+        file_path (str): Absolute path to the Lean file.
+
+    Returns:
+        str: Relative file path if the client is set up correctly, otherwise None.
+    """
+    # Check if the file_path works for the current lean_project_path.
+    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    if lean_project_path is not None:
+        rel_path = get_relative_file_path(lean_project_path, file_path)
+        if rel_path is not None:
+            startup_client(ctx)
+            return rel_path
+
+    # Try to find the new correct project path by checking all directories in file_path.
+    file_dir = os.path.dirname(file_path)
+    rel_path = None
+    while file_dir:
+        if valid_lean_project_path(file_dir):
+            lean_project_path = file_dir
+            rel_path = get_relative_file_path(lean_project_path, file_path)
+            if rel_path is not None:
+                ctx.request_context.lifespan_context.lean_project_path = (
+                    lean_project_path
+                )
+                startup_client(ctx)
+                break
+        # Move up one directory
+        file_dir = os.path.dirname(file_dir)
+
+    return rel_path
+
+
 # Project level tools
 @mcp.tool("lean_build")
 def lsp_build(ctx: Context) -> str:
@@ -159,13 +239,14 @@ def lsp_build(ctx: Context) -> str:
     Returns:
         str: Build output or error message.
     """
+    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         client.close()
 
         with OutputCapture() as output:
             ctx.request_context.lifespan_context.client = LeanLSPClient(
-                os.environ["LEAN_PROJECT_PATH"],
+                lean_project_path,
                 initial_build=True,
                 print_warnings=False,
             )
@@ -190,11 +271,12 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
     Returns:
         str: Text contents of the Lean file or None if file does not exist.
     """
-    rel_path = get_relative_file_path(file_path)
-    if not rel_path:
-        return "No valid lean file found."
-
-    data = get_file_contents(rel_path)
+    try:
+        data = get_file_contents(file_path)
+    except FileNotFoundError:
+        return (
+            f"File `{file_path}` does not exist. Please check the path and try again."
+        )
 
     if annotate_lines:
         data = data.split("\n")
@@ -220,9 +302,9 @@ def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
     Returns:
         List[str] | str: Diagnostic messages or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
 
     update_file(ctx, rel_path)
 
@@ -248,9 +330,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     Returns:
         str: Goal at the specified location or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
 
     content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -296,9 +378,9 @@ def term_goal(
     Returns:
         str: Term goal at the specified location or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
 
     content = update_file(ctx, rel_path)
     if column is None:
@@ -328,9 +410,9 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     Returns:
         str: Hover information at the specified location or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
 
     file_content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -361,9 +443,9 @@ def proofs_complete(ctx: Context, file_path: str) -> str:
     Returns:
         str: Message indicating if the proofs are complete or not.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
 
     update_file(ctx, rel_path)
 
@@ -398,9 +480,9 @@ def completions(
     Returns:
         List[str] | str: List of possible completions or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
     update_file(ctx, rel_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -437,9 +519,9 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
     Returns:
         str: Contents of the file where the symbol is declared or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
     orig_file_content = update_file(ctx, rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file,
@@ -493,9 +575,9 @@ def multi_attempt(
     Returns:
         List[str] | str: Diagnostics and goal state for each snippet or error message.
     """
-    rel_path = get_relative_file_path(file_path)
+    rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file found."
+        return "No valid lean file path found. Could not set up client and load file."
     update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 

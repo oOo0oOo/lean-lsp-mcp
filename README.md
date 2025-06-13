@@ -32,7 +32,7 @@ MCP that allows agentic interaction with the [Lean theorem prover](https://lean-
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
-3. Add JSON configuration to your IDE/Setup and configure LEAN_PROJECT_PATH.
+3. Configure your IDE/Setup
 
 ### 1. Install uv
 
@@ -46,7 +46,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ### 2. Run `lake build`
 
-`lean-lsp-mcp` will run `lake build` in the project root upon startup. Some clients (e.g. Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster startup time and avoids timeouts.
+`lean-lsp-mcp` will run `lake build` in the project root to use the language server (for most tools). Some clients (e.g. Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster build time and avoids timeouts.
 
 E.g. on Linux/MacOS:
 ```bash
@@ -62,9 +62,9 @@ VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visu
 
 1. One-click config setup:
 
-[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%2C%22env%22%3A%7B%22LEAN_PROJECT_PATH%22%3A%22path%2520to%2520lean%2520project%2520root%22%7D%7D)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%7D)
 
-[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%2C%22env%22%3A%7B%22LEAN_PROJECT_PATH%22%3A%22path%2520to%2520lean%2520project%2520root%22%7D%7D&quality=insiders)
+[![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%7D&quality=insiders)
 
 OR manually add config to `settings.json` (global):
 
@@ -75,6 +75,8 @@ OR manually add config to `settings.json` (global):
             "lean-lsp": {
                 "command": "uvx",
                 "args": ["lean-lsp-mcp"],
+                // OPTIONAL: Setting this env variable is not required.
+                // It is recommended to try without it first and only set it if you run into issues.
                 "env": {
                     "LEAN_PROJECT_PATH": "/path/to/lean/project"
                 }
@@ -84,9 +86,7 @@ OR manually add config to `settings.json` (global):
 }
 ```
 
-2. Next change the env variable `LEAN_PROJECT_PATH` to point to the root of your Lean project. This is required for the MCP to work. You can also remove this from the config and set this env variable differently.
-
-3. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started:
+2. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started:
 
 ### 3. b) Cursor Setup
 
@@ -94,7 +94,7 @@ OR manually add config to `settings.json` (global):
 
 2. "+ Add a new global MCP Server" > ("Create File")
 
-3. Paste the server config into `mcp.json` file and adjust the `LEAN_PROJECT_PATH` to point to the root of your Lean project:
+3. Paste the server config into `mcp.json` file:
 
 ```json
 {
@@ -102,6 +102,8 @@ OR manually add config to `settings.json` (global):
         "lean-lsp": {
             "command": "uvx",
             "args": ["lean-lsp-mcp"],
+            // OPTIONAL: Setting this env variable is not required.
+            // It is recommended to try without it first and only set it if you run into issues.
             "env": {
                 "LEAN_PROJECT_PATH": "/path/to/lean/project"
             }
@@ -116,10 +118,13 @@ Run one of these commands in the root directory of your Lean project (where `lak
 
 ```bash
 # Local-scoped MCP server
-claude mcp add lean-lsp uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
+claude mcp add lean-lsp uvx lean-lsp-mcp
 
 # OR project-scoped MCP server (creates or updates a .mcp.json file in the current directory)
-claude mcp add lean-lsp -s project uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
+claude mcp add lean-lsp -s project uvx lean-lsp-mcp
+
+# OR If you run into issues with the project path (e.g. the language server directory cannot be found), you can also set it manually e.g.
+claude mcp add lean-lsp uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
 ```
 
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
