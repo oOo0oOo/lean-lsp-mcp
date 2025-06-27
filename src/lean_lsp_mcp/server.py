@@ -1,3 +1,4 @@
+from curses import wrapper
 import os
 import time
 from typing import List, Optional, Dict
@@ -8,13 +9,13 @@ import urllib
 import json
 import functools
 
-from leanclient import LeanLSPClient, DocumentContentChange
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.utilities.logging import get_logger
+from leanclient import LeanLSPClient, DocumentContentChange
 
 from lean_lsp_mcp.client_utils import setup_client_for_file
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
-from lean_lsp_mcp.logging import logger
 from lean_lsp_mcp.utils import (
     OutputCapture,
     extract_range,
@@ -22,6 +23,9 @@ from lean_lsp_mcp.utils import (
     format_diagnostics,
     format_goal,
 )
+
+
+logger = get_logger(__name__)
 
 
 # Server and context
@@ -86,6 +90,7 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
             rate_limit[category].append(current_time)
             return func(*args, **kwargs)
 
+        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. " + wrapper.__doc__
         return wrapper
 
     return decorator
@@ -301,7 +306,7 @@ def completions(
     - Identifier Completion: Suggests matching identifiers after typing part of a name.
     - Import Completion: Lists importable files after typing import at the beginning of a file.
 
-    Use this on incomplete lines/statements to get suggestions for completing the code.
+    Only use this on incomplete lines/statements to get suggestions for completing the code.
 
     Args:
         file_path (str): Absolute path to the Lean file.
@@ -398,6 +403,9 @@ def multi_attempt(
     Note:
         Each snippet has to include the full line including correct initial indentation!
         Only single line snippets are supported!
+        Recommended: Snippets without comments.
+
+    USE RARELY! Keep the user in the loop by editing files instead.
 
     Args:
         file_path (str): Absolute path to the Lean file.
@@ -445,6 +453,8 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 
     The snippet has to be self-contained, i.e. it has to include all imports and definitions.
     Use `import Mathlib` when in doubt instead of specific Mathlib imports.
+
+    Only use this to test snippets separate from open files! Keep the user in the loop by editing files instead.
 
     Args:
         code (str): Complete Lean code snippet to run.
@@ -525,7 +535,6 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
             result.pop("docstring")
             result["module_name"] = ".".join(result["module_name"])
             result["name"] = ".".join(result["name"])
-            logger.info(result)
 
         return results
     except Exception as e:

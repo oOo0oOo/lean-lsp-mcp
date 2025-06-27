@@ -1,11 +1,14 @@
 import os
 
 from mcp.server.fastmcp import Context
+from mcp.server.fastmcp.utilities.logging import get_logger
 from leanclient import LeanLSPClient
 
 from lean_lsp_mcp.file_utils import get_relative_file_path
 from lean_lsp_mcp.utils import StdoutToStderr
-from lean_lsp_mcp.logging import logger
+
+
+logger = get_logger(__name__)
 
 
 def startup_client(ctx: Context):
