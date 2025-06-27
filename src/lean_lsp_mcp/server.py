@@ -509,12 +509,11 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
     Returns:
         List[dict] | str: List of search results or error message
     """
-    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
 
     req = urllib.request.Request(
         f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
-        headers=headers,
-        method="GET"
+        headers={"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"},
+        method="GET",
     )
 
     with urllib.request.urlopen(req, timeout=20) as response:
@@ -523,6 +522,50 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
     results = results["hits"]
     for result in results:
         result.pop("doc")
+    return results
+
+
+@mcp.tool("lean_state_search")
+def state_search(
+    ctx: Context, file_path: str, line: int, column: int, num_results: int = 10
+) -> List[dict] | str:
+    """Search for applicable theorems based on proof state using premise-search.com API.
+
+    This obtains the proof state from the Lean file at the specified line and column.
+
+    Note:
+        Only uses first goal.
+
+    Args:
+        file_path (str): The absolute path to the Lean file
+        line (int): The line number to search (1-indexed)
+        column (int): The column number to search (1-indexed)
+        num_results (int, optional): The maximum number of results to return. Defaults to 10.
+
+    Returns:
+        List[dict] | str: List of applicable theorems or error message
+    """
+    # Get goal state
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "No valid lean file path found. Could not set up client and load file."
+
+    update_file(ctx, rel_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    goal = client.get_goal(rel_path, line - 1, column - 1)
+    goal = urllib.parse.quote(goal["goals"][0])
+
+    req = urllib.request.Request(
+        f"https://premise-search.com/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
+        headers={"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"},
+        method="GET",
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as response:
+        results = json.loads(response.read().decode("utf-8"))
+
+    for result in results:
+        result.pop("rev")
     return results
 
 
