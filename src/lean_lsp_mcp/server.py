@@ -45,7 +45,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         yield context
     finally:
         logger.info("Closing Lean LSP client")
-        context.client.close()
+        if context.client:
+            context.client.close()
 
 
 mcp = FastMCP(
@@ -487,6 +488,42 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
 
     except Exception as e:
         return f"leansearch.net error:\n{str(e)}"
+
+
+@mcp.tool("lean_loogle")
+def loogle(ctx: Context, query: str) -> List[dict] | str:
+    """Search for definitions and theorems using the loogle API.
+
+    Query patterns:
+      - By constant: Real.sin  # finds lemmas mentioning Real.sin
+      - By lemma name: "differ"  # finds lemmas with "differ" in the name
+      - By subexpression: _ * (_ ^ _)  # finds lemmas with a product and power
+      - Non-linear: Real.sqrt ?a * Real.sqrt ?a
+      - By type shape: (?a -> ?b) -> List ?a -> List ?b
+      - By conclusion: |- tsum _ = _ * tsum _
+      - By conclusion w/hyps: |- _ < _ → tsum _ < tsum _
+
+    Args:
+        query (str): Search query
+
+    Returns:
+        List[dict] | str: List of search results or error message
+    """
+    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+
+    req = urllib.request.Request(
+        f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
+        headers=headers,
+        method="GET"
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as response:
+        results = json.loads(response.read().decode("utf-8"))
+
+    results = results["hits"]
+    for result in results:
+        result.pop("doc")
+    return results
 
 
 if __name__ == "__main__":
