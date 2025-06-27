@@ -457,8 +457,15 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net API.
 
+    Query patterns:
+      - Natural language: "If there exist injective maps of sets from A to B and from B to A, then there exists a bijective map between A and B."
+      - Mixed natural/Lean: "natural numbers. from: n < m, to: n + 1 < m + 1", "n + 1 <= m if n < m"
+      - Concept names: "Cauchy Schwarz"
+      - Lean identifiers: "List.sum", "Finset induction"
+      - Lean term: "{f : A → B} {g : B → A} (hf : Injective f) (hg : Injective g) : ∃ h, Bijective h"
+
     Args:
-        query (str): Natural language search query
+        query (str): Search query
         max_results (int, optional): Max results. Defaults to 5.
 
     Returns:
