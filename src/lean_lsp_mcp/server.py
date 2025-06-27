@@ -1,10 +1,12 @@
 import os
+import time
 from typing import List, Optional, Dict
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import urllib
 import json
+import functools
 
 from leanclient import LeanLSPClient, DocumentContentChange
 from mcp.server.fastmcp import Context, FastMCP
@@ -28,6 +30,7 @@ class AppContext:
     lean_project_path: str | None
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
+    rate_limit: Dict[str, List[int]]
 
 
 @asynccontextmanager
@@ -40,7 +43,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path = os.path.abspath(lean_project_path)
 
         context = AppContext(
-            lean_project_path=lean_project_path, client=None, file_content_hashes={}
+            lean_project_path=lean_project_path,
+            client=None,
+            file_content_hashes={},
+            rate_limit={"leansearch": [], "loogle": [], "lean_state_search": []},
         )
         yield context
     finally:
@@ -61,6 +67,28 @@ mcp = FastMCP(
         }
     },
 )
+
+
+# Rate limiting: n requests per m seconds
+def rate_limited(category: str, max_requests: int, per_seconds: int):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            rate_limit = kwargs["ctx"].request_context.lifespan_context.rate_limit
+            current_time = int(time.time())
+            rate_limit[category] = [
+                timestamp
+                for timestamp in rate_limit[category]
+                if timestamp > current_time - per_seconds
+            ]
+            if len(rate_limit[category]) >= max_requests:
+                return f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later."
+            rate_limit[category].append(current_time)
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 # Project level tools
@@ -454,6 +482,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 
 
 @mcp.tool("lean_leansearch")
+@rate_limited("leansearch", max_requests=3, per_seconds=30)
 def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net API.
 
@@ -492,12 +521,12 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
             if results and results[0]
             else "No results found."
         )
-
     except Exception as e:
-        return f"leansearch.net error:\n{str(e)}"
+        return f"leansearch error:\n{str(e)}"
 
 
 @mcp.tool("lean_loogle")
+@rate_limited("loogle", max_requests=3, per_seconds=30)
 def loogle(ctx: Context, query: str) -> List[dict] | str:
     """Search for definitions and theorems using the loogle API.
 
@@ -516,23 +545,32 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
     Returns:
         List[dict] | str: List of search results or error message
     """
+    try:
+        req = urllib.request.Request(
+            f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
+            headers={
+                "User-Agent": "lean-lsp-mcp/0.1",
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
 
-    req = urllib.request.Request(
-        f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
-        headers={"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"},
-        method="GET",
-    )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = json.loads(response.read().decode("utf-8"))
 
-    with urllib.request.urlopen(req, timeout=20) as response:
-        results = json.loads(response.read().decode("utf-8"))
+        if "hits" not in results:
+            return "No results found."
 
-    results = results["hits"]
-    for result in results:
-        result.pop("doc")
-    return results
+        results = results["hits"]
+        for result in results:
+            result.pop("doc")
+        return results
+    except Exception as e:
+        return f"loogle error:\n{str(e)}"
 
 
 @mcp.tool("lean_state_search")
+@rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 def state_search(
     ctx: Context, file_path: str, line: int, column: int, num_results: int = 10
 ) -> List[dict] | str:
@@ -552,28 +590,35 @@ def state_search(
     Returns:
         List[dict] | str: List of applicable theorems or error message
     """
-    # Get goal state
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+    try:
+        rel_path = setup_client_for_file(ctx, file_path)
+        if not rel_path:
+            return (
+                "No valid lean file path found. Could not set up client and load file."
+            )
 
-    update_file(ctx, rel_path)
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    goal = client.get_goal(rel_path, line - 1, column - 1)
-    goal = urllib.parse.quote(goal["goals"][0])
+        update_file(ctx, rel_path)
+        client: LeanLSPClient = ctx.request_context.lifespan_context.client
+        goal = client.get_goal(rel_path, line - 1, column - 1)
+        goal = urllib.parse.quote(goal["goals"][0])
 
-    req = urllib.request.Request(
-        f"https://premise-search.com/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
-        headers={"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"},
-        method="GET",
-    )
+        req = urllib.request.Request(
+            f"https://premise-search.com/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
+            headers={
+                "User-Agent": "lean-lsp-mcp/0.1",
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
-        results = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = json.loads(response.read().decode("utf-8"))
 
-    for result in results:
-        result.pop("rev")
-    return results
+        for result in results:
+            result.pop("rev")
+        return results
+    except Exception as e:
+        return f"lean state search error:\n{str(e)}"
 
 
 if __name__ == "__main__":
