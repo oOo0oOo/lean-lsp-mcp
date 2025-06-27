@@ -16,14 +16,14 @@
   </a>
 </p>
 
-MCP that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient). This server provides a range of tools for LLM agents to understand, analyze and interact with Lean projects.
+MCP server that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient). This server provides a range of tools for LLM agents to understand, analyze and interact with Lean projects.
 
 **Currently beta testing**: Please help us by submitting bug reports and feature requests!
 
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
-* **Agent-Focused Toolset**: Includes tools for theorem search (leansearch.net), code completion, and project builds.
+* **External Search Tools**: Use `leansearch`, `loogle`, and `lean_state_search` to find relevant theorems and definitions.
 * **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
@@ -68,7 +68,7 @@ VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visu
 
 OR manually add config to `settings.json` (global):
 
-```json
+```jsonc
 {
     "mcp": {
         "servers": {
@@ -96,7 +96,7 @@ OR manually add config to `settings.json` (global):
 
 3. Paste the server config into `mcp.json` file:
 
-```json
+```jsonc
 {
     "mcpServers": {
         "lean-lsp": {
@@ -135,9 +135,13 @@ Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstar
 
 ## Tools
 
-Lean LSP MCP currently provides various tools to interact with the Lean theorem prover:
+Tools are currently the only way to interact with the MCP server.
 
-### Core interactions
+### File interactions (LSP)
+
+#### lean_file_contents
+
+Get the contents of a Lean file, optionally with line number annotations.
 
 #### lean_diagnostic_messages
 
@@ -249,27 +253,82 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)<br>
 ...
 </details>
 
+### External Search Tools
+
+Currently all external tools are **rate limited to 3 requests per 30 seconds**. This will change based on provider feedback.
+
 #### lean_leansearch
 
-Search for theorems in Mathlib using leansearch.net (natural language search).
+Search for theorems in Mathlib using [leansearch.net](https://leansearch.net) (natural language search).
+
+[Github Repository](https://github.com/frenzymath/LeanSearch) | [Arxiv Paper](https://arxiv.org/abs/2403.13310)
+
+- Supports natural language, mixed queries, concepts, identifiers, and Lean terms.
+- Example: `bijective map from injective`, `n + 1 <= m if n < m`, `Cauchy Schwarz`, `List.sum`, `{f : A → B} (hf : Injective f) : ∃ h, Bijective h`
 
 <details>
-<summary>Example output (query by LLM: "finite set, subset, complement, cardinality, half, partition")</summary>
-<br>
-{"module_name": ["Mathlib", "Data", "Fintype", "Card"], "kind": "theorem", "name": ["Finset", "card_compl"], "signature": " [DecidableEq \u03b1] [Fintype \u03b1] (s : Finset \u03b1) : #s\u1d9c = Fintype.card \u03b1 - #s", "type": "\u2200 {\u03b1 : Type u_1} [inst : DecidableEq \u03b1] [inst_1 : Fintype \u03b1] (s : Finset \u03b1), s\u1d9c.card = Fintype.card \u03b1 - s.card", "value": ":=\n  Finset.card_univ_diff s", "docstring": null, "informal_name": "Cardinality of Complement Set in Finite Type", "informal_description": "For a finite type $\\alpha$ with decidable equality and a finite subset $s \\subseteq \\alpha$, the cardinality of the complement of $s$ equals the difference between the cardinality of $\\alpha$ and the cardinality of $s$, i.e.,\n$$|s^c| = \\text{card}(\\alpha) - |s|.$$"}
+<summary>Example output (query by LLM: `bijective map from injective`)</summary>
 
-...<br>
-More answers like above<br>
-...
+```json
+  {
+    "module_name": "Mathlib.Logic.Function.Basic",
+    "kind": "theorem",
+    "name": "Function.Bijective.injective",
+    "signature": " {f : α → β} (hf : Bijective f) : Injective f",
+    "type": "∀ {α : Sort u_1} {β : Sort u_2} {f : α → β}, Function.Bijective f → Function.Injective f",
+    "value": ":= hf.1",
+    "informal_name": "Bijectivity Implies Injectivity",
+    "informal_description": "For any function $f \\colon \\alpha \\to \\beta$, if $f$ is bijective, then $f$ is injective."
+  },
+  ...
+```
 </details>
 
-#### lean_proofs_complete
+#### lean_loogle
 
-Check if all proofs in a file are complete. This is currently very simple and will be improved in the future.
+Search for Lean definitions and theorems using [loogle.lean-lang.org](https://loogle.lean-lang.org/).
 
-#### lean_file_contents
+[Github Repository](https://github.com/nomeata/loogle)
 
-Get the contents of a Lean file, optionally with line number annotations.
+- Supports queries by constant, lemma name, subexpression, type, or conclusion.
+- Example: `Real.sin`, `"differ"`, `_ * (_ ^ _)`, `(?a -> ?b) -> List ?a -> List ?b`, `|- tsum _ = _ * tsum _`
+
+<details>
+<summary>Example output (`Real.sin`)</summary>
+
+```json
+[
+  {
+    "type": " (x : ℝ) : ℝ",
+    "name": "Real.sin",
+    "module": "Mathlib.Data.Complex.Trigonometric"
+  },
+  ...
+]
+```
+</details>
+
+#### lean_state_search
+
+Search for applicable theorems for the current proof goal using [premise-search.com](https://premise-search.com/).
+
+[Github Repository](https://github.com/ruc-ai4math/Premise-Retrieval) | [Arxiv Paper](https://arxiv.org/abs/2501.13959)
+
+Uses the first goal at a given line and column.
+Returns a list of relevant theorems.
+<details> <summary>Example output (line 24, column 3)</summary>
+
+```json
+[
+  {
+    "name": "Nat.mul_zero",
+    "formal_type": "∀ (n : Nat), n * 0 = 0",
+    "module": "Init.Data.Nat.Basic"
+  },
+  ...
+]
+```
+</details>
 
 ### Project-level tools
 
@@ -319,12 +378,17 @@ There are many valid security concerns with the Model Context Protocol (MCP) in 
 This MCP server is meant as a research tool and is currently in beta.
 While it does not handle any sensitive data such as passwords or API keys, it still includes various security risks:
 - Access to your local file system.
-- No rate limiting on tool calls.
 - No input or output validation.
 
 Please be aware of these risks. Feel free to audit the code and report security issues!
 
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
+
+## MCP Inspector
+
+```bash
+npx @modelcontextprotocol/inspector uvx --with-editable path/to/lean-lsp-mcp python -m lean_lsp_mcp.server
+```
 
 ## Related Projects
 

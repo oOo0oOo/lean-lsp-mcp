@@ -483,7 +483,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 
 @mcp.tool("lean_leansearch")
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | str:
+def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net API.
 
     Query patterns:
@@ -495,7 +495,7 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
 
     Args:
         query (str): Search query
-        max_results (int, optional): Max results. Defaults to 5.
+        num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
         List[Dict] | str: List of search results or error message
@@ -503,7 +503,7 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
         payload = json.dumps(
-            {"num_results": str(max_results), "query": [query]}
+            {"num_results": str(num_results), "query": [query]}
         ).encode("utf-8")
 
         req = urllib.request.Request(
@@ -516,18 +516,25 @@ def leansearch(ctx: Context, query: str, max_results: int = 5) -> List[Dict] | s
         with urllib.request.urlopen(req, timeout=20) as response:
             results = json.loads(response.read().decode("utf-8"))
 
-        return (
-            [r["result"] for r in results[0]]
-            if results and results[0]
-            else "No results found."
-        )
+        if not results or not results[0]:
+            return "No results found."
+        results = results[0][:num_results]
+        results = [r["result"] for r in results]
+
+        for result in results:
+            result.pop("docstring")
+            result["module_name"] = ".".join(result["module_name"])
+            result["name"] = ".".join(result["name"])
+            logger.info(result)
+
+        return results
     except Exception as e:
         return f"leansearch error:\n{str(e)}"
 
 
 @mcp.tool("lean_loogle")
 @rate_limited("loogle", max_requests=3, per_seconds=30)
-def loogle(ctx: Context, query: str) -> List[dict] | str:
+def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
     """Search for definitions and theorems using the loogle API.
 
     Query patterns:
@@ -541,6 +548,7 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
 
     Args:
         query (str): Search query
+        num_results (int, optional): The maximum number of results to return. Defaults to 8.
 
     Returns:
         List[dict] | str: List of search results or error message
@@ -548,10 +556,7 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
     try:
         req = urllib.request.Request(
             f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
-            headers={
-                "User-Agent": "lean-lsp-mcp/0.1",
-                "Content-Type": "application/json",
-            },
+            headers={"User-Agent": "lean-lsp-mcp/0.1"},
             method="GET",
         )
 
@@ -561,7 +566,7 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
         if "hits" not in results:
             return "No results found."
 
-        results = results["hits"]
+        results = results["hits"][:num_results]
         for result in results:
             result.pop("doc")
         return results
@@ -572,11 +577,9 @@ def loogle(ctx: Context, query: str) -> List[dict] | str:
 @mcp.tool("lean_state_search")
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 def state_search(
-    ctx: Context, file_path: str, line: int, column: int, num_results: int = 10
+    ctx: Context, file_path: str, line: int, column: int, num_results: int = 5
 ) -> List[dict] | str:
     """Search for applicable theorems based on proof state using premise-search.com API.
-
-    This obtains the proof state from the Lean file at the specified line and column.
 
     Note:
         Only uses first goal.
@@ -585,29 +588,28 @@ def state_search(
         file_path (str): The absolute path to the Lean file
         line (int): The line number to search (1-indexed)
         column (int): The column number to search (1-indexed)
-        num_results (int, optional): The maximum number of results to return. Defaults to 10.
+        num_results (int, optional): The maximum number of results to return. Defaults to 5.
 
     Returns:
         List[dict] | str: List of applicable theorems or error message
     """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "No valid lean file path found. Could not set up client and load file."
+
+    update_file(ctx, rel_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    goal = client.get_goal(rel_path, line - 1, column - 1)
+
+    if not goal:
+        return "No valid goal found. Correct line and column?"
+
+    goal = urllib.parse.quote(goal["goals"][0])
+
     try:
-        rel_path = setup_client_for_file(ctx, file_path)
-        if not rel_path:
-            return (
-                "No valid lean file path found. Could not set up client and load file."
-            )
-
-        update_file(ctx, rel_path)
-        client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        goal = client.get_goal(rel_path, line - 1, column - 1)
-        goal = urllib.parse.quote(goal["goals"][0])
-
         req = urllib.request.Request(
             f"https://premise-search.com/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
-            headers={
-                "User-Agent": "lean-lsp-mcp/0.1",
-                "Content-Type": "application/json",
-            },
+            headers={"User-Agent": "lean-lsp-mcp/0.1"},
             method="GET",
         )
 
