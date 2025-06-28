@@ -314,6 +314,8 @@ Search for applicable theorems for the current proof goal using [premise-search.
 
 [Github Repository](https://github.com/ruc-ai4math/Premise-Retrieval) | [Arxiv Paper](https://arxiv.org/abs/2501.13959)
 
+A self-hosted version is [available](https://github.com/ruc-ai4math/LeanStateSearch) and encouraged. You can set an environment variable `LEAN_STATE_SEARCH_URL` (see Setup 3. for an example) to point to your self-hosted instance. It defaults to `https://premise-search.com`.
+
 Uses the first goal at a given line and column.
 Returns a list of relevant theorems.
 <details> <summary>Example output (line 24, column 3)</summary>

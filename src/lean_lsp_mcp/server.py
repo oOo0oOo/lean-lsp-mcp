@@ -616,10 +616,11 @@ def state_search(
     goal = urllib.parse.quote(goal["goals"][0])
 
     try:
+        url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
         req = urllib.request.Request(
-            f"https://premise-search.com/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
+            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
-            method="GET",
+            method="GET"
         )
 
         with urllib.request.urlopen(req, timeout=20) as response:
