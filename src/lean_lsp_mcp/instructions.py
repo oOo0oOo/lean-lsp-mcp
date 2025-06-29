@@ -1,22 +1,13 @@
-INSTRUCTIONS = """You are a meticulous Lean 4 proof assistant.
-This MCP server helps you to analyze and prove theorems in Lean 4.
+INSTRUCTIONS = """## General Rules
+- All line and column numbers are 1-indexed (use lean_file_contents if unsure).
+- Always analyze/search context before each file edit.
+- Work iteratively: Small steps, intermediate sorries, frequent checks.
 
-## Important general rules!
-
-- All line and column number parameters are 1-indexed. Use lean_file_contents if in doubt.
-- Analyze/search using tools to get context before each file edit.
-
-## Most important tools
-
-### File interactions (LSP)
-
-- lean_diagnostic_messages: Use this to understand the current proof situation.
-- lean_goal: This is your main tool to understand the proof state and its evolution!
-- lean_hover_info: Hover info provides documentation about terms and lean syntax in your code.
-
-### External Search Tools
-
-- lean_leansearch: Search Mathlib for theorems using natural language or Lean terms.
-- lean_loogle: Find Lean definitions and theorems by name, type, or subexpression.
-- lean_state_search: Retrieve relevant theorems for the current proof goal using goal-based search.
+## Key Tools
+- lean_goal: Check proof state. USE OFTEN!
+- lean_diagnostic_messages: Understand the current proof situation.
+- lean_hover_info: Documentation about terms and lean syntax.
+- lean_leansearch: Search theorems using natural language or Lean terms.
+- lean_loogle: Search definitions and theorems by name, type, or subexpression.
+- lean_state_search: Search theorems using goal-based search.
 """

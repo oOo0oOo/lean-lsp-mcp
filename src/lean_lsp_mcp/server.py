@@ -100,13 +100,13 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 def lsp_build(ctx: Context, lean_project_path: str = None) -> str:
     """Build the Lean project and restart the LSP Server.
 
-    Use only when necessary (e.g. imports).
+    Use only if needed (e.g. new imports).
 
     Args:
         lean_project_path (str, optional): Path to the Lean project. If not provided, it will be inferred from previous tool calls.
 
     Returns:
-        str: Build output or error message.
+        str: Build output or error msg
     """
     if not lean_project_path:
         lean_project_path = ctx.request_context.lifespan_context.lean_project_path
@@ -137,17 +137,14 @@ def lsp_build(ctx: Context, lean_project_path: str = None) -> str:
 # File level tools
 @mcp.tool("lean_file_contents")
 def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> str:
-    """Get the text contents of a Lean file.
-
-    IMPORTANT! Look up the file_contents for the currently open file including line number annotations.
-    Use this during the proof process to keep updated on the line numbers and the current state of the file.
+    """Get the text contents of a Lean file, optionally with line numbers.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
-        annotate_lines (bool, optional): Annotate lines with line numbers. Defaults to False.
+        file_path (str): Abs path to Lean file
+        annotate_lines (bool, optional): Annotate lines with line numbers. Defaults to True.
 
     Returns:
-        str: Text contents of the Lean file or None if file does not exist.
+        str: File content or error msg
     """
     try:
         data = get_file_contents(file_path)
@@ -169,16 +166,15 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
 
 @mcp.tool("lean_diagnostic_messages")
 def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
-    """Get all diagnostic messages for a Lean file.
+    """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
-    Attention:
-        "no goals to be solved" indicates some code needs to be removed. Keep going!
+    "no goals to be solved" means code may need removal.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
+        file_path (str): Abs path to Lean file
 
     Returns:
-        List[str] | str: Diagnostic messages or error message.
+        List[str] | str: Diagnostic msgs or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -193,20 +189,19 @@ def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
 
 @mcp.tool("lean_goal")
 def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
-    """Get the proof goals at a specific location or line in a Lean file.
+    """Get the proof goals (proof state) at a specific location in a Lean file.
 
-    VERY USEFUL AND CHEAP! This is your main tool to understand the proof state and its evolution!!
-    Use this multiple times after every edit to the file!
+    VERY USEFUL! Main tool to understand the proof state and its evolution!
 
-    Solved proof state returns "no goals".
+    Returns "no goals" if solved.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
+        file_path (str): Abs path to Lean file
         line (int): Line number (1-indexed)
         column (int, optional): Column number (1-indexed). Defaults to None => Both before and after the line.
 
     Returns:
-        str: Goal at the specified location or error message.
+        str: Goal(s) or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -244,17 +239,15 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
 def term_goal(
     ctx: Context, file_path: str, line: int, column: Optional[int] = None
 ) -> str:
-    """Get the term goal at a specific location in a Lean file.
-
-    Use this to get a better understanding of the proof state.
+    """Get the expected type (term goal) at a specific location in a Lean file.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
+        file_path (str): Abs path to Lean file
         line (int): Line number (1-indexed)
         column (int, optional): Column number (1-indexed). Defaults to None => end of line.
 
     Returns:
-        str: Term goal at the specified location or error message.
+        str: Expected type or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -262,6 +255,9 @@ def term_goal(
 
     content = update_file(ctx, rel_path)
     if column is None:
+        lines = content.splitlines()
+        if line < 1 or line > len(lines):
+            return "Line number out of range. Try again?"
         column = len(content.splitlines()[line - 1])
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -276,17 +272,15 @@ def term_goal(
 
 @mcp.tool("lean_hover_info")
 def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
-    """Get the hover information at a specific location in a Lean file.
-
-    Hover information provides documentation about any lean syntax, variables, functions, etc. in your code.
+    """Get hover info (docs for syntax, variables, functions, etc.) at a specific location in a Lean file.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
+        file_path (str): Abs path to Lean file
         line (int): Line number (1-indexed)
         column (int): Column number (1-indexed). Make sure to use the start or within the term, not the end.
 
     Returns:
-        str: Hover information at the specified location or error message.
+        str: Hover info or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -308,25 +302,23 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
 
 @mcp.tool("lean_completions")
 def completions(
-    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 100
+    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 64
 ) -> List[str] | str:
-    """Find possible code completions at a location in a Lean file.
+    """Get code completions at a location in a Lean file.
 
-    Check available identifiers and imports:
-    - Dot Completion: Displays relevant identifiers after typing a dot (e.g., `Nat.`, `x.`, or `.`).
-    - Identifier Completion: Suggests matching identifiers after typing part of a name.
-    - Import Completion: Lists importable files after typing import at the beginning of a file.
-
-    Only use this on incomplete lines/statements to get suggestions for completing the code.
+    Only use this on INCOMPLETE lines/statements to check available identifiers and imports:
+    - Dot Completion: Displays relevant identifiers after a dot (e.g., `Nat.`, `x.`, or `.`).
+    - Identifier Completion: Suggests matching identifiers after part of a name.
+    - Import Completion: Lists importable files after `import` at the beginning of a file.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
+        file_path (str): Abs path to Lean file
         line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed).
-        max_completions (int, optional): Maximum number of completions to return. Defaults to 100.
+        column (int): Column number (1-indexed)
+        max_completions (int, optional): Maximum number of completions to return. Defaults to 64.
 
     Returns:
-        List[str] | str: List of possible completions or error message.
+        List[str] | str: List of possible completions or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -354,18 +346,18 @@ def completions(
 
 @mcp.tool("lean_declaration_file")
 def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
-    """Get the file contents where a symbol/lemma/class/structure/... is declared.
+    """Get the file contents where a symbol/lemma/class/structure is declared.
 
     Note:
-        Symbol has to be in the file already. Add it first if necessary.
+        Symbol must be present in the file! Add if necessary!
         Lean files can be large, use `lean_hover_info` before this tool.
 
     Args:
-        file_path (str): Absolute path to the Lean file.
+        file_path (str): Abs path to Lean file
         symbol (str): Symbol to look up the declaration for. Case sensitive!
 
     Returns:
-        str: Contents of the file where the symbol is declared or error message.
+        str: File contents or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -405,26 +397,21 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
 def multi_attempt(
     ctx: Context, file_path: str, line: int, snippets: List[str]
 ) -> List[str] | str:
-    """Attempt multiple lean code snippets and return goal state and diagnostics for each snippet.
+    """Try multiple Lean code snippets at a line and return goal state and diagnostics for each.
 
-    This tool is useful to screen different tactics/approaches to help pick the most promising one.
-    Use this in your diagnostic process.
-    A new line is inserted at the specified line number and each attempt is tried before resetting the line.
-
-    Note:
-        Each snippet has to include the full line including correct initial indentation!
-        Only single line snippets are supported!
-        Recommended: Snippets without comments.
-
+    Useful to screen different tactics/approaches.
     USE RARELY! Keep the user in the loop by editing files instead.
 
+    Note:
+        Only single-line, fully-indented snippets supported! Recommended: Snippets without comments.
+
     Args:
-        file_path (str): Absolute path to the Lean file.
-        line (int): Line number (1-indexed) to attempt.
-        snippets (list[str]): List of snippets to try on the line. 3+ snippets are recommended.
+        file_path (str): Abs path to Lean file
+        line (int): Line number (1-indexed)
+        snippets (List[str]): List of snippets (3+ are recommended)
 
     Returns:
-        List[str] | str: Diagnostics and goal state for each snippet or error message.
+        List[str] | str: Diagnostics and goal states or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -457,21 +444,16 @@ def multi_attempt(
 
 @mcp.tool("lean_run_code")
 def run_code(ctx: Context, code: str) -> List[str] | str:
-    """Run/compile a complete Lean code snippet and return its diagnostic messages.
+    """Run a complete, self-contained code snippet and return diagnostics.
 
-    This tool is useful to test whether a code snippet compiles and runs correctly.
-    Use cases include testing definitions/statements, tactics, or other Lean code snippets.
-
-    The snippet has to be self-contained, i.e. it has to include all imports and definitions.
-    Use `import Mathlib` when in doubt instead of specific Mathlib imports.
-
-    Only use this to test snippets separate from open files! Keep the user in the loop by editing files instead.
+    Has to include all imports and definitions!
+    Only use for testing outside open files! Keep the user in the loop by editing files instead.
 
     Args:
-        code (str): Complete Lean code snippet to run.
+        code (str): Code snippet
 
     Returns:
-        List[str] | str: Diagnostics messages or error message.
+        List[str] | str: Diagnostics msgs or error msg
     """
     lean_project_path = ctx.request_context.lifespan_context.lean_project_path
     if lean_project_path is None:
@@ -505,7 +487,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 @mcp.tool("lean_leansearch")
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
 def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
-    """Search for Lean theorems, definitions, and tactics using leansearch.net API.
+    """Search for Lean theorems, definitions, and tactics using leansearch.net.
 
     Query patterns:
       - Natural language: "If there exist injective maps of sets from A to B and from B to A, then there exists a bijective map between A and B."
@@ -519,7 +501,7 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[Dict] | str: List of search results or error message
+        List[Dict] | str: Search results or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
@@ -555,7 +537,7 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
 @mcp.tool("lean_loogle")
 @rate_limited("loogle", max_requests=3, per_seconds=30)
 def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
-    """Search for definitions and theorems using the loogle API.
+    """Search for definitions and theorems using loogle.
 
     Query patterns:
       - By constant: Real.sin  # finds lemmas mentioning Real.sin
@@ -568,10 +550,10 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 
     Args:
         query (str): Search query
-        num_results (int, optional): The maximum number of results to return. Defaults to 8.
+        num_results (int, optional): Max results. Defaults to 8.
 
     Returns:
-        List[dict] | str: List of search results or error message
+        List[dict] | str: Search results or error msg
     """
     try:
         req = urllib.request.Request(
@@ -599,19 +581,18 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 def state_search(
     ctx: Context, file_path: str, line: int, column: int, num_results: int = 5
 ) -> List[dict] | str:
-    """Search for applicable theorems based on proof state using premise-search.com API.
+    """Search for theorems based on proof state using premise-search.com.
 
-    Note:
-        Only uses first goal.
+    Only uses first goal if multiple.
 
     Args:
-        file_path (str): The absolute path to the Lean file
-        line (int): The line number to search (1-indexed)
-        column (int): The column number to search (1-indexed)
-        num_results (int, optional): The maximum number of results to return. Defaults to 5.
+        file_path (str): Abs path to Lean file
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed)
+        num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[dict] | str: List of applicable theorems or error message
+        List[dict] | str: Search results or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -621,7 +602,7 @@ def state_search(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
-    if not goal:
+    if not goal or not goal.get("goals"):
         return "No valid goal found. Correct line and column?"
 
     goal = urllib.parse.quote(goal["goals"][0])
