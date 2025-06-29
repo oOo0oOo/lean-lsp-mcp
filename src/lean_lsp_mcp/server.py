@@ -1,4 +1,3 @@
-from curses import wrapper
 import os
 import time
 from typing import List, Optional, Dict
@@ -98,29 +97,41 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 
 # Project level tools
 @mcp.tool("lean_build")
-def lsp_build(ctx: Context) -> str:
+def lsp_build(ctx: Context, lean_project_path: str = None) -> str:
     """Build the Lean project and restart the LSP Server.
 
     Use only when necessary (e.g. imports).
 
+    Args:
+        lean_project_path (str, optional): Path to the Lean project. If not provided, it will be inferred from previous tool calls.
+
     Returns:
         str: Build output or error message.
     """
-    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    if not lean_project_path:
+        lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    else:
+        lean_project_path = os.path.abspath(lean_project_path)
+        ctx.request_context.lifespan_context.lean_project_path = lean_project_path
+
+    build_output = ""
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        client.close()
+        if client:
+            client.close()
+            ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         with OutputCapture() as output:
-            ctx.request_context.lifespan_context.client = LeanLSPClient(
+            client = LeanLSPClient(
                 lean_project_path,
                 initial_build=True,
                 print_warnings=False,
             )
-        build_output = output.get_output()
+            ctx.request_context.lifespan_context.client = client
+            build_output = output.get_output()
+        return build_output
     except Exception as e:
         return f"Error during build:\n{str(e)}\n{build_output}"
-    return build_output
 
 
 # File level tools
@@ -620,7 +631,7 @@ def state_search(
         req = urllib.request.Request(
             f"{url}/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
-            method="GET"
+            method="GET",
         )
 
         with urllib.request.urlopen(req, timeout=20) as response:
