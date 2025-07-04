@@ -22,6 +22,7 @@ from lean_lsp_mcp.utils import (
     find_start_position,
     format_diagnostics,
     format_goal,
+    format_line,
 )
 
 
@@ -35,7 +36,6 @@ class AppContext:
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
-    hammer_premises: list = None
 
 
 @asynccontextmanager
@@ -57,7 +57,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 "lean_state_search": [],
                 "hammer_premise": [],
             },
-            hammer_premises=[],
         )
         yield context
     finally:
@@ -186,7 +185,7 @@ def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
 
     update_file(ctx, rel_path)
 
@@ -213,7 +212,7 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
 
     content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -221,7 +220,7 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     if column is None:
         lines = content.splitlines()
         if line < 1 or line > len(lines):
-            return "Line number out of range. Try again?"
+            return "Line number out of range. Try elsewhere?"
         column_end = len(lines[line - 1])
         column_start = next(
             (i for i, c in enumerate(lines[line - 1]) if not c.isspace()), 0
@@ -230,17 +229,20 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
         goal_end = client.get_goal(rel_path, line - 1, column_end)
 
         if goal_start is None and goal_end is None:
-            return "No goals found on line. Try another position?"
+            return f"No goals on line:\n{lines[line - 1]}\nTry another line?"
 
-        start_text = format_goal(goal_start, "No goal found at the start of the line.")
-        end_text = format_goal(goal_end, "No goal found at the end of the line.")
+        start_text = format_goal(goal_start, "No goals at line start.")
+        end_text = format_goal(goal_end, "No goals at line end.")
         if start_text == end_text:
             return start_text
         return f"Before:\n{start_text}\nAfter:\n{end_text}"
 
     else:
         goal = client.get_goal(rel_path, line - 1, column - 1)
-        return format_goal(goal, "Not a valid goal position. Try again?")
+        f_line = format_line(content, line, column)
+        return format_goal(
+            goal, f"Not a valid goal position:\n{f_line}\nTry elsewhere?"
+        )
 
 
 @mcp.tool("lean_term_goal")
@@ -259,19 +261,20 @@ def term_goal(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
 
     content = update_file(ctx, rel_path)
     if column is None:
         lines = content.splitlines()
         if line < 1 or line > len(lines):
-            return "Line number out of range. Try again?"
+            return "Line number out of range. Try elsewhere?"
         column = len(content.splitlines()[line - 1])
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     term_goal = client.get_term_goal(rel_path, line - 1, column - 1)
     if term_goal is None:
-        return "Not a valid term goal position. Try again?"
+        f_line = format_line(content, line, column)
+        return f"Not a valid term goal position:\n{f_line}\nTry elsewhere?"
     rendered = term_goal.get("goal", None)
     if rendered is not None:
         rendered = rendered.replace("```lean\n", "").replace("\n```", "")
@@ -292,13 +295,14 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
 
     file_content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     if hover_info is None:
-        return "No hover information available. Try another position?"
+        f_line = format_line(file_content, line, column)
+        return f"No hover information at position:\n{f_line}\nTry elsewhere?"
 
     # Get the symbol and the hover information
     h_range = hover_info.get("range")
@@ -310,7 +314,7 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
 
 @mcp.tool("lean_completions")
 def completions(
-    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 64
+    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 32
 ) -> List[str] | str:
     """Get code completions at a location in a Lean file.
 
@@ -323,18 +327,23 @@ def completions(
         file_path (str): Abs path to Lean file
         line (int): Line number (1-indexed)
         column (int): Column number (1-indexed)
-        max_completions (int, optional): Maximum number of completions to return. Defaults to 64
+        max_completions (int, optional): Maximum number of completions to return. Defaults to 32
 
     Returns:
         List[str] | str: List of possible completions or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
     content = update_file(ctx, rel_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     completions = client.get_completions(rel_path, line - 1, column - 1)
+    formatted = [c["label"] for c in completions if "label" in c]
+
+    if not formatted:
+        f_line = format_line(content, line, column)
+        return f"No completions at position:\n{f_line}\nTry elsewhere?"
 
     # Find the sort term: The last word/identifier before the cursor
     lines = content.splitlines()
@@ -343,8 +352,6 @@ def completions(
         text_before_cursor = lines[line - 1][: column - 1] if column > 0 else ""
         if not text_before_cursor.endswith("."):
             prefix = re.split(r"[\s()\[\]{},:;.]+", text_before_cursor)[-1].lower()
-
-    formatted = [c["label"] for c in completions if "label" in c]
 
     # Sort completions: prefix matches first, then contains, then alphabetical
     if prefix:
@@ -389,7 +396,7 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
     orig_file_content = update_file(ctx, rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file,
@@ -443,7 +450,7 @@ def multi_attempt(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
     update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 
@@ -624,14 +631,15 @@ def state_search(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    update_file(ctx, rel_path)
+    file_contents = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
-        return "No valid goal found. Correct line and column?"
+        f_line = format_line(file_contents, line, column)
+        return f"No goals found:\n{f_line}\nTry elsewhere?"
 
     goal = urllib.parse.quote(goal["goals"][0])
 
@@ -671,14 +679,15 @@ def hammer_premise(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "No valid lean file path found. Could not set up client and load file."
+        return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    update_file(ctx, rel_path)
+    file_contents = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
-    if not goal:
-        return "No valid goal found. Correct line and column?"
+    if not goal or not goal.get("goals"):
+        f_line = format_line(file_contents, line, column)
+        return f"No goals found:\n{f_line}\nTry elsewhere?"
 
     data = {
         "state": goal["goals"][0],

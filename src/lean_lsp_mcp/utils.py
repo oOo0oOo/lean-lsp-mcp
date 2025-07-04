@@ -1,7 +1,7 @@
 import os
 import sys
 import tempfile
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 class StdoutToStderr:
@@ -130,3 +130,32 @@ def find_start_position(content: str, query: str) -> dict | None:
         if char_index != -1:
             return {"line": line_number, "column": char_index}
     return None
+
+
+def format_line(
+    file_content: str,
+    line_number: int,
+    column: Optional[int] = None,
+    cursor_tag: Optional[str] = "<cursor>",
+) -> str:
+    """Show a line and cursor position in a file.
+
+    Args:
+        file_content (str): The content of the file.
+        line_number (int): The line number (1-indexed).
+        column (Optional[int]): The column number (1-indexed). If None, no cursor position is shown.
+        cursor_tag (Optional[str]): The tag to use for the cursor position. Defaults to "<cursor>".
+    Returns:
+        str: The formatted position.
+    """
+    lines = file_content.splitlines()
+    line_number -= 1
+    if line_number < 1 or line_number > len(lines):
+        return "Line number out of range"
+    line = lines[line_number]
+    if column is None:
+        return line
+    column -= 1
+    if column < 0 or column >= len(lines):
+        return "Invalid column number"
+    return f"{line[:column]}{cursor_tag}{line[column:]}"
