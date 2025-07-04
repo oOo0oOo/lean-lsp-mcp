@@ -332,6 +332,31 @@ Returns a list of relevant theorems.
 ```
 </details>
 
+
+#### lean_hammer_premise
+
+Search for relevant premises based on the current proof state using the [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server).
+
+[Github Repository](https://github.com/hanwenzhu/lean-premise-server) | [Arxiv Paper](https://arxiv.org/abs/2506.07477)
+
+A self-hosted version is [available](https://github.com/hanwenzhu/lean-premise-server) and encouraged. You can set an environment variable `LEAN_HAMMER_URL` (see Setup 3. for an example) to point to your self-hosted instance. It defaults to `http://leanpremise.net`.
+
+Uses the first goal at a given line and column.
+Returns a list of relevant premises (theorems) that can be used to prove the goal.
+
+Note: We use a simplified version, [LeanHammer](https://github.com/JOSHCLUNE/LeanHammer) might have better premise search results.
+<details><summary>Example output (line 24, column 3)</summary>
+
+```json
+[
+  "MulOpposite.unop_injective",
+  "MulOpposite.op_injective",
+  "WellFoundedLT.induction",
+  ...
+]
+```
+</details>
+
 ### Project-level tools
 
 #### lean_build

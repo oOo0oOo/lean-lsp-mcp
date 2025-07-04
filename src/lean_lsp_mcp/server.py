@@ -34,6 +34,7 @@ class AppContext:
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
+    hammer_premises: list = None
 
 
 @asynccontextmanager
@@ -49,7 +50,13 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path=lean_project_path,
             client=None,
             file_content_hashes={},
-            rate_limit={"leansearch": [], "loogle": [], "lean_state_search": []},
+            rate_limit={
+                "leansearch": [],
+                "loogle": [],
+                "lean_state_search": [],
+                "hammer_premise": [],
+            },
+            hammer_premises=[],
         )
         yield context
     finally:
@@ -624,6 +631,59 @@ def state_search(
         return results
     except Exception as e:
         return f"lean state search error:\n{str(e)}"
+
+
+@mcp.tool("lean_hammer_premise")
+@rate_limited("hammer_premise", max_requests=3, per_seconds=30)
+def hammer_premise(
+    ctx: Context, file_path: str, line: int, column: int, num_results: int = 32
+) -> List[str] | str:
+    """Search for premises based on proof state using the lean hammer premise search.
+
+    Args:
+        file_path (str): Abs path to Lean file
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed)
+        num_results (int, optional): Max results. Defaults to 32.
+
+    Returns:
+        List[dict] | str: List of relevant premises or error message
+    """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "No valid lean file path found. Could not set up client and load file."
+
+    update_file(ctx, rel_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    goal = client.get_goal(rel_path, line - 1, column - 1)
+
+    if not goal:
+        return "No valid goal found. Correct line and column?"
+
+    data = {
+        "state": goal["goals"][0],
+        "new_premises": [],
+        "k": num_results,
+    }
+
+    try:
+        url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
+        req = urllib.request.Request(
+            url + "/retrieve",
+            headers={
+                "User-Agent": "lean-lsp-mcp/0.1",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+            data=json.dumps(data).encode("utf-8"),
+        )
+
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = json.loads(response.read().decode("utf-8"))
+
+        return [result["name"] for result in results]
+    except Exception as e:
+        return f"lean hammer premise error:\n{str(e)}"
 
 
 if __name__ == "__main__":
