@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from typing import List, Optional, Dict
 from contextlib import asynccontextmanager
@@ -314,7 +315,7 @@ def completions(
     """Get code completions at a location in a Lean file.
 
     Only use this on INCOMPLETE lines/statements to check available identifiers and imports:
-    - Dot Completion: Displays relevant identifiers after a dot (e.g., `Nat.`, `x.`, or `.`).
+    - Dot Completion: Displays relevant identifiers after a dot (e.g., `Nat.`, `x.`, or `Nat.ad`).
     - Identifier Completion: Suggests matching identifiers after part of a name.
     - Import Completion: Lists importable files after `import` at the beginning of a file.
 
@@ -322,7 +323,7 @@ def completions(
         file_path (str): Abs path to Lean file
         line (int): Line number (1-indexed)
         column (int): Column number (1-indexed)
-        max_completions (int, optional): Maximum number of completions to return. Defaults to 64.
+        max_completions (int, optional): Maximum number of completions to return. Defaults to 64
 
     Returns:
         List[str] | str: List of possible completions or error msg
@@ -330,25 +331,44 @@ def completions(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         return "No valid lean file path found. Could not set up client and load file."
-    update_file(ctx, rel_path)
+    content = update_file(ctx, rel_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     completions = client.get_completions(rel_path, line - 1, column - 1)
 
-    formatted = []
-    for completion in completions:
-        label = completion.get("label", None)
-        if label is not None:
-            formatted.append(label)
+    # Find the sort term: The last word/identifier before the cursor
+    lines = content.splitlines()
+    prefix = ""
+    if 0 < line <= len(lines):
+        text_before_cursor = lines[line - 1][: column - 1] if column > 0 else ""
+        if not text_before_cursor.endswith("."):
+            prefix = re.split(r"[\s()\[\]{},:;.]+", text_before_cursor)[-1].lower()
 
-    if not formatted:
-        return "No completions available. Try another position?"
+    formatted = [c["label"] for c in completions if "label" in c]
 
-    formatted = sorted(formatted, key=lambda s: s.lower())
+    # Sort completions: prefix matches first, then contains, then alphabetical
+    if prefix:
+
+        def sort_key(item):
+            item_lower = item.lower()
+            if item_lower.startswith(prefix):
+                return (0, item_lower)
+            elif prefix in item_lower:
+                return (1, item_lower)
+            else:
+                return (2, item_lower)
+
+        formatted.sort(key=sort_key)
+    else:
+        formatted.sort(key=str.lower)
+
+    # Truncate if too many results
     if len(formatted) > max_completions:
+        remaining = len(formatted) - max_completions
         formatted = formatted[:max_completions] + [
-            f"{len(formatted) - max_completions} more, start typing and check again..."
+            f"{remaining} more, keep typing to filter further"
         ]
+
     return formatted
 
 
