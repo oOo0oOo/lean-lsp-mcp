@@ -323,10 +323,31 @@ def completions(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         return "No valid lean file path found. Could not set up client and load file."
-    update_file(ctx, rel_path)
+    content = update_file(ctx, rel_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     completions = client.get_completions(rel_path, line - 1, column - 1)
+
+    lines = content.splitlines()
+    if line > 0 and line <= len(lines):
+        current_line = lines[line - 1]
+        text_before_cursor = current_line[:column - 1] if column > 0 else ""
+        prefix_start = len(text_before_cursor)
+        # Check if we're right after a dot
+        if text_before_cursor.endswith('.'):
+            # Empty prefix after dot - all completions should show
+            prefix = ""
+        else:
+            # Look backwards from cursor for word boundary
+            for i in range(len(text_before_cursor) - 1, -1, -1):
+                char = text_before_cursor[i]
+                if char.isspace() or char in '()[]{},:;.':
+                    prefix_start = i + 1
+                    break            
+            # Extract the prefix being typed (part after last dot or boundary)
+            prefix = text_before_cursor[prefix_start:].lower()
+    else:
+        prefix = ""
 
     formatted = []
     for completion in completions:
@@ -334,10 +355,16 @@ def completions(
         if label is not None:
             formatted.append(label)
 
-    if not formatted:
-        return "No completions available. Try another position?"
-
-    formatted = sorted(formatted, key=lambda s: s.lower())
+    def sort_key(item):
+        item_lower = item.lower()
+        if prefix and item_lower.startswith(prefix):
+            return (0, item_lower)
+        elif prefix and prefix in item_lower:
+            return (1, item_lower)
+        else:
+            return (2, item_lower)
+    
+    formatted = sorted(formatted, key=sort_key)
     if len(formatted) > max_completions:
         formatted = formatted[:max_completions] + [
             f"{len(formatted) - max_completions} more, start typing and check again..."
