@@ -375,7 +375,8 @@ def completions(
         formatted = formatted[:max_completions] + [
             f"{remaining} more, keep typing to filter further"
         ]
-    return f"Completions at:\n{f_line}:\n\n".join(formatted)
+    completions_text = "\n".join(formatted)
+    return f"Completions at:\n{f_line}:\n{completions_text}"
 
 
 @mcp.tool("lean_declaration_file")
