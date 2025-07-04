@@ -340,9 +340,9 @@ def completions(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     completions = client.get_completions(rel_path, line - 1, column - 1)
     formatted = [c["label"] for c in completions if "label" in c]
+    f_line = format_line(content, line, column)
 
     if not formatted:
-        f_line = format_line(content, line, column)
         return f"No completions at position:\n{f_line}\nTry elsewhere?"
 
     # Find the sort term: The last word/identifier before the cursor
@@ -375,8 +375,7 @@ def completions(
         formatted = formatted[:max_completions] + [
             f"{remaining} more, keep typing to filter further"
         ]
-
-    return formatted
+    return f"Completions at:\n{f_line}:\n\n".join(formatted)
 
 
 @mcp.tool("lean_declaration_file")
