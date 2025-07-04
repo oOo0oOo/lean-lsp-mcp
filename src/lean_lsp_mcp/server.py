@@ -337,6 +337,7 @@ def completions(
     if not formatted:
         return "No completions available. Try another position?"
 
+    formatted = sorted(formatted, key=lambda s: s.lower())
     if len(formatted) > max_completions:
         formatted = formatted[:max_completions] + [
             f"{len(formatted) - max_completions} more, start typing and check again..."
