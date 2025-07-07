@@ -19,6 +19,7 @@ from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.utils import (
     OutputCapture,
     extract_range,
+    filter_diagnostics_by_position,
     find_start_position,
     format_diagnostics,
     format_goal,
@@ -309,7 +310,15 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     symbol = extract_range(file_content, h_range)
     info = hover_info["contents"].get("value", "No hover information available.")
     info = info.replace("```lean\n", "").replace("\n```", "").strip()
-    return f"Hover info `{symbol}`:\n{info}"
+
+    # Add diagnostics if available
+    diagnostics = client.get_diagnostics(rel_path)
+    filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
+
+    msg = f"Hover info `{symbol}`:\n{info}"
+    if filtered:
+        msg += "\n\nDiagnostics\n" + "\n".join(format_diagnostics(filtered))
+    return msg
 
 
 @mcp.tool("lean_completions")

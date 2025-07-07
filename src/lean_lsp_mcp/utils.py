@@ -67,13 +67,14 @@ def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[s
         List[str]: Formatted diagnostics messages.
     """
     msgs = []
+    if select_line != -1:
+        diagnostics = filter_diagnostics_by_position(diagnostics, select_line, None)
+
     # Format more compact
     for diag in diagnostics:
         r = diag.get("fullRange", diag.get("range", None))
         if r is None:
             r_text = "No range"
-        elif select_line >= 0 and r["start"]["line"] != select_line:
-            continue
         else:
             r_text = f"l{r['start']['line'] + 1}c{r['start']['character'] + 1}-l{r['end']['line'] + 1}c{r['end']['character'] + 1}"
         msgs.append(f"{r_text}, severity: {diag['severity']}\n{diag['message']}")
@@ -159,3 +160,31 @@ def format_line(
     if column < 0 or column >= len(lines):
         return "Invalid column number"
     return f"{line[:column]}{cursor_tag}{line[column:]}"
+
+
+def filter_diagnostics_by_position(
+    diagnostics: List[Dict], line: int, column: Optional[int]
+) -> List[Dict]:
+    """Find diagnostics at a specific position.
+
+    Args:
+        diagnostics (List[Dict]): List of diagnostics.
+        line (int): The line number (0-indexed).
+        column (Optional[int]): The column number (0-indexed).
+
+    Returns:
+        List[Dict]: List of diagnostics at the specified position.
+    """
+    if column is None:
+        return [
+            d
+            for d in diagnostics
+            if d["range"]["start"]["line"] <= line <= d["range"]["end"]["line"]
+        ]
+
+    return [
+        d
+        for d in diagnostics
+        if d["range"]["start"]["line"] <= line <= d["range"]["end"]["line"]
+        and d["range"]["start"]["character"] <= column < d["range"]["end"]["character"]
+    ]
