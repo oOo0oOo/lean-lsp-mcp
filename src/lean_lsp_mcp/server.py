@@ -234,16 +234,13 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
 
         start_text = format_goal(goal_start, "No goals at line start.")
         end_text = format_goal(goal_end, "No goals at line end.")
-        if start_text == end_text:
-            return start_text
-        return f"Before:\n{start_text}\nAfter:\n{end_text}"
+        return f"Goals on line:\n{lines[line - 1]}\nBefore:\n{start_text}\nAfter:\n{end_text}"
 
     else:
         goal = client.get_goal(rel_path, line - 1, column - 1)
+        f_goal = format_goal(goal, f"Not a valid goal position. Try elsewhere?")
         f_line = format_line(content, line, column)
-        return format_goal(
-            goal, f"Not a valid goal position:\n{f_line}\nTry elsewhere?"
-        )
+        return f"Goals at:\n{f_line}\n{f_goal}"
 
 
 @mcp.tool("lean_term_goal")
@@ -273,13 +270,13 @@ def term_goal(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     term_goal = client.get_term_goal(rel_path, line - 1, column - 1)
+    f_line = format_line(content, line, column)
     if term_goal is None:
-        f_line = format_line(content, line, column)
         return f"Not a valid term goal position:\n{f_line}\nTry elsewhere?"
     rendered = term_goal.get("goal", None)
     if rendered is not None:
         rendered = rendered.replace("```lean\n", "").replace("\n```", "")
-    return rendered
+    return f"Term goal at:\n{f_line}\n{rendered or 'No term goal found.'}"
 
 
 @mcp.tool("lean_hover_info")
@@ -324,7 +321,7 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
 @mcp.tool("lean_completions")
 def completions(
     ctx: Context, file_path: str, line: int, column: int, max_completions: int = 32
-) -> List[str] | str:
+) -> str:
     """Get code completions at a location in a Lean file.
 
     Only use this on INCOMPLETE lines/statements to check available identifiers and imports:
@@ -339,7 +336,7 @@ def completions(
         max_completions (int, optional): Maximum number of completions to return. Defaults to 32
 
     Returns:
-        List[str] | str: List of possible completions or error msg
+        str: List of possible completions or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -349,9 +346,9 @@ def completions(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     completions = client.get_completions(rel_path, line - 1, column - 1)
     formatted = [c["label"] for c in completions if "label" in c]
+    f_line = format_line(content, line, column)
 
     if not formatted:
-        f_line = format_line(content, line, column)
         return f"No completions at position:\n{f_line}\nTry elsewhere?"
 
     # Find the sort term: The last word/identifier before the cursor
@@ -384,8 +381,8 @@ def completions(
         formatted = formatted[:max_completions] + [
             f"{remaining} more, keep typing to filter further"
         ]
-
-    return formatted
+    completions_text = "\n".join(formatted)
+    return f"Completions at:\n{f_line}\n{completions_text}"
 
 
 @mcp.tool("lean_declaration_file")
@@ -624,7 +621,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 def state_search(
     ctx: Context, file_path: str, line: int, column: int, num_results: int = 5
-) -> List[dict] | str:
+) -> List | str:
     """Search for theorems based on proof state using premise-search.com.
 
     Only uses first goal if multiple.
@@ -636,7 +633,7 @@ def state_search(
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[dict] | str: Search results or error msg
+        List | str: Search results or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -646,8 +643,8 @@ def state_search(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
+    f_line = format_line(file_contents, line, column)
     if not goal or not goal.get("goals"):
-        f_line = format_line(file_contents, line, column)
         return f"No goals found:\n{f_line}\nTry elsewhere?"
 
     goal = urllib.parse.quote(goal["goals"][0])
@@ -665,6 +662,8 @@ def state_search(
 
         for result in results:
             result.pop("rev")
+        # Very dirty type mix
+        results.insert(0, f"Results for line:\n{f_line}")
         return results
     except Exception as e:
         return f"lean state search error:\n{str(e)}"
@@ -684,7 +683,7 @@ def hammer_premise(
         num_results (int, optional): Max results. Defaults to 32.
 
     Returns:
-        List[dict] | str: List of relevant premises or error message
+        List[str] | str: List of relevant premises or error message
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -694,8 +693,8 @@ def hammer_premise(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
+    f_line = format_line(file_contents, line, column)
     if not goal or not goal.get("goals"):
-        f_line = format_line(file_contents, line, column)
         return f"No goals found:\n{f_line}\nTry elsewhere?"
 
     data = {
@@ -719,7 +718,9 @@ def hammer_premise(
         with urllib.request.urlopen(req, timeout=20) as response:
             results = json.loads(response.read().decode("utf-8"))
 
-        return [result["name"] for result in results]
+        results = [result["name"] for result in results]
+        results.insert(0, f"Results for line:\n{f_line}")
+        return results
     except Exception as e:
         return f"lean hammer premise error:\n{str(e)}"
 
