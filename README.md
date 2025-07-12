@@ -133,6 +133,22 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/), [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) or [Goose](https://block.github.io/goose/docs/getting-started/using-extensions) should work with similar configs.
 
+### Transport Methods
+
+The Lean LSP MCP server supports the following transport methods:
+
+- `stdio`: Standard input/output (default)
+- `streamable-http`: HTTP streaming
+- `sse`: Server-sent events (MCP legacy, use `streamable-http` if possible)
+
+You can specify the transport method using the `--transport` argument when running the server:
+
+```bash
+uvx lean-lsp-mcp --transport stdio # Default transport
+uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
+uvx lean-lsp-mcp --transport sse # Available at http://127.0.0.1:8000/sse
+```
+
 ## Tools
 
 Tools are currently the only way to interact with the MCP server.
