@@ -7,7 +7,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
-    "leanclient>=0.1.13",
+    "leanclient>=0.1.14",
     "mcp[cli]>=1.11.0",
 ]
 

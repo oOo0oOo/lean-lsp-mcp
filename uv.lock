@@ -158,7 +158,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.4.1"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -175,7 +175,7 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "leanclient", specifier = ">=0.1.13" },
+    { name = "leanclient", specifier = ">=0.1.14" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.11.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },
     { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.2.0" },
@@ -184,15 +184,15 @@ provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.1.13"
+version = "0.1.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/99/9d45eb7da29cbee01972a57c7d9ae1ab1bbb1865377058364f54855e4854/leanclient-0.1.13.tar.gz", hash = "sha256:712a30f40e009ca9efdf2d0752478cdbc15846c80205344a569583a421f58ee7", size = 25796, upload-time = "2025-06-20T11:17:55.21Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/b2/f822c8a327192fd414266e869c431c73a2078583ba444ced9c546b2c0801/leanclient-0.1.14.tar.gz", hash = "sha256:f4bfec80e0fa5b6b277d681c75b41dd1161324b217d9ab85726cfcd6a372622b", size = 25826, upload-time = "2025-07-15T08:31:55.594Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/3f/edcf39e2bf816925bdb932486db4e66c8b055690795676b2f442cfe84e91/leanclient-0.1.13-py3-none-any.whl", hash = "sha256:f00bcf9504610f7fca4eec96df16b99750ac07052695abc63ef3117145877448", size = 27989, upload-time = "2025-06-20T11:17:53.911Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/8f/a7d762ef389c01dce89c3cf62b82a9abf4438c61b349354864c67f2551f6/leanclient-0.1.14-py3-none-any.whl", hash = "sha256:b6faf75aeeecd2e810fd79f5af4ba8983195b87f97f4e4765ddb01bed060c65b", size = 27940, upload-time = "2025-07-15T08:31:54.194Z" },
 ]
 
 [[package]]
