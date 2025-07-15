@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import urllib
 import json
 import functools
+import subprocess
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -105,13 +106,14 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 
 # Project level tools
 @mcp.tool("lean_build")
-def lsp_build(ctx: Context, lean_project_path: str = None) -> str:
+def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) -> str:
     """Build the Lean project and restart the LSP Server.
 
     Use only if needed (e.g. new imports).
 
     Args:
         lean_project_path (str, optional): Path to the Lean project. If not provided, it will be inferred from previous tool calls.
+        clean (bool, optional): Run `lake clean` before building. Attention: Only use if it is really necessary! It can take a long time! Defaults to False.
 
     Returns:
         str: Build output or error msg
@@ -129,14 +131,24 @@ def lsp_build(ctx: Context, lean_project_path: str = None) -> str:
             client.close()
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
+        if clean:
+            subprocess.run(
+                ["lake", "clean"],
+                cwd=lean_project_path,
+                check=False
+            )
+            logger.info("Ran `lake clean`")
+
         with OutputCapture() as output:
             client = LeanLSPClient(
                 lean_project_path,
                 initial_build=True,
                 print_warnings=False,
             )
-            ctx.request_context.lifespan_context.client = client
-            build_output = output.get_output()
+        logger.info("Built project and re-started LSP client")
+
+        ctx.request_context.lifespan_context.client = client
+        build_output = output.get_output()
         return build_output
     except Exception as e:
         return f"Error during build:\n{str(e)}\n{build_output}"
