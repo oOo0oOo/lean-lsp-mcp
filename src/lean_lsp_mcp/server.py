@@ -132,11 +132,7 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         if clean:
-            subprocess.run(
-                ["lake", "clean"],
-                cwd=lean_project_path,
-                check=False
-            )
+            subprocess.run(["lake", "clean"], cwd=lean_project_path, check=False)
             logger.info("Ran `lake clean`")
 
         with OutputCapture() as output:
