@@ -66,27 +66,32 @@ VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visu
 
 [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%7D&quality=insiders)
 
-OR manually add config to `settings.json` (global):
+OR using the setup wizard:
+
+Ctrl+Shift+P > "MCP: Add Server..." > "Command (stdio)" > "uvx lean-lsp-mcp" > "lean-lsp" (or any name you like) > Global or Workspace
+
+OR manually add config to `mcp.json`:
 
 ```jsonc
 {
-    "mcp": {
-        "servers": {
-            "lean-lsp": {
-                "command": "uvx",
-                "args": ["lean-lsp-mcp"],
-                // OPTIONAL: Setting this env variable is not required.
-                // It is recommended to try without it first and only set it if you run into issues.
-                "env": {
-                    "LEAN_PROJECT_PATH": "/path/to/lean/project"
-                }
+    "servers": {
+        "lean-lsp": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "lean-lsp-mcp"
+            ],
+            // OPTIONAL: Setting this env variable is not required.
+            // It is recommended to try without it first and only set it if you run into issues
+            "env": {
+                "LEAN_PROJECT_PATH": "/path/to/lean/project"
             }
         }
     }
 }
 ```
 
-2. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started:
+2. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started.
 
 ### 3. b) Cursor Setup
 
