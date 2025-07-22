@@ -446,13 +446,15 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
 def multi_attempt(
     ctx: Context, file_path: str, line: int, snippets: List[str]
 ) -> List[str] | str:
-    """Try multiple Lean code snippets at a line and return goal state and diagnostics for each.
+    """Try multiple Lean code snippets at a line and get the goal state and diagnostics for each.
 
-    Useful to screen different tactics/approaches.
-    USE RARELY! Keep the user in the loop by editing files instead.
-
+    Use to compare tactics or approaches.
+    Use rarely-prefer direct file edits to keep users involved.
+    For a single snippet, edit the file and run `lean_diagnostic_messages` instead.
+    
     Note:
-        Only single-line, fully-indented snippets supported! Recommended: Snippets without comments.
+        Only single-line, fully-indented snippets are supported.
+        Avoid comments for best results.
 
     Args:
         file_path (str): Abs path to Lean file
