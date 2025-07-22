@@ -12,6 +12,7 @@ import subprocess
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import get_logger
+from mcp.server.auth.settings import AuthSettings
 from leanclient import LeanLSPClient, DocumentContentChange
 
 from lean_lsp_mcp.client_utils import setup_client_for_file
@@ -25,6 +26,7 @@ from lean_lsp_mcp.utils import (
     format_diagnostics,
     format_goal,
     format_line,
+    OptionalTokenVerifier,
 )
 
 
@@ -67,7 +69,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             context.client.close()
 
 
-mcp = FastMCP(
+mcp_kwargs = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
     dependencies=["leanclient"],
@@ -76,9 +78,24 @@ mcp = FastMCP(
         "LEAN_PROJECT_PATH": {
             "description": "Path to the Lean project root. If not set, this is inferred automatically using file paths. Use this only if the automatic system fails to find the project.",
             "required": False,
-        }
+        },
+        "LEAN_LSP_MCP_TOKEN": {
+            "description": "If set, require this token as a Bearer token for /sse and /http endpoints.",
+            "required": False,
+        },
     },
 )
+
+auth_token = os.environ.get("LEAN_LSP_MCP_TOKEN")
+if auth_token:
+    mcp_kwargs["auth"] = AuthSettings(
+        type="optional",
+        issuer_url="http://localhost/dummy-issuer",
+        resource_server_url="http://localhost/dummy-resource",
+    )
+    mcp_kwargs["token_verifier"] = OptionalTokenVerifier(auth_token)
+
+mcp = FastMCP(**mcp_kwargs)
 
 
 # Rate limiting: n requests per m seconds
@@ -451,7 +468,7 @@ def multi_attempt(
     Use to compare tactics or approaches.
     Use rarely-prefer direct file edits to keep users involved.
     For a single snippet, edit the file and run `lean_diagnostic_messages` instead.
-    
+
     Note:
         Only single-line, fully-indented snippets are supported.
         Avoid comments for best results.

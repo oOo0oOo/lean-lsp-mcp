@@ -154,6 +154,21 @@ uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:800
 uvx lean-lsp-mcp --transport sse # Available at http://127.0.0.1:8000/sse
 ```
 
+### Bearer Token Authentication
+
+Transport via `streamable-http` and `sse` supports bearer token authentication. This allows publicly accessible MCP servers to restrict access to authorized clients.
+
+Set the `LEAN_LSP_MCP_TOKEN` environment variable (or see section 3 for setting env variables in MCP config) to a secret token before starting the server.
+
+Example Linux/MacOS setup:
+
+```bash
+export LEAN_LSP_MCP_TOKEN="your_secret_token"
+uvx lean-lsp-mcp --transport streamable-http
+```
+
+Clients should then include the token in the `Authorization` header.
+
 ## Tools
 
 Tools are currently the only way to interact with the MCP server.

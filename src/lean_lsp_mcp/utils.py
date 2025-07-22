@@ -3,6 +3,8 @@ import sys
 import tempfile
 from typing import List, Dict, Optional
 
+from mcp.server.auth.provider import AccessToken, TokenVerifier
+
 
 class StdoutToStderr:
     """Redirects stdout to stderr at the file descriptor level bc lake build logging"""
@@ -188,3 +190,13 @@ def filter_diagnostics_by_position(
         if d["range"]["start"]["line"] <= line <= d["range"]["end"]["line"]
         and d["range"]["start"]["character"] <= column < d["range"]["end"]["character"]
     ]
+
+
+class OptionalTokenVerifier(TokenVerifier):
+    def __init__(self, expected_token: str):
+        self.expected_token = expected_token
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if token == self.expected_token:
+            return AccessToken(token=token, client_id="lean-lsp-mcp", scopes=["user"])
+        return None
