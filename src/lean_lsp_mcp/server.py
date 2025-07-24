@@ -225,8 +225,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     """Get the proof goals (proof state) at a specific location in a Lean file.
 
     VERY USEFUL! Main tool to understand the proof state and its evolution!
-
     Returns "no goals" if solved.
+    To see the goal at sorry, use the cursor before the "s".
+    Avoid giving a column if unsure-default behavior works well.
 
     Args:
         file_path (str): Abs path to Lean file
