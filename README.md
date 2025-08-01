@@ -168,6 +168,25 @@ Some (optional) features and integrations of `lean-lsp-mcp` are configured using
 - `LEAN_STATE_SEARCH_URL`: (optional) URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: (optional) URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 
+You can also often set these environment variables in your MCP client configuration:
+
+```jsonc
+{
+    "servers": {
+        "lean-lsp": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "lean-lsp-mcp"
+            ],
+            "env": {
+                "LEAN_PROJECT_PATH": "/path/to/your/lean/project",
+            }
+        }
+    }
+}
+```
+
 ## Tools
 
 Tools are currently the only way to interact with the MCP server.
