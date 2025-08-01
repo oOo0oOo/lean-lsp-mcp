@@ -23,7 +23,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
-* **External Search Tools**: Use `leansearch`, `loogle`, and `lean_state_search` to find relevant theorems and definitions.
+* **External Search Tools**: Use `leansearch`, `loogle`, `lean_hammer` and `lean_state_search` to find relevant theorems and definitions.
 * **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
@@ -80,12 +80,7 @@ OR manually add config to `mcp.json`:
             "command": "uvx",
             "args": [
                 "lean-lsp-mcp"
-            ],
-            // OPTIONAL: Setting this env variable is not required.
-            // It is recommended to try without it first and only set it if you run into issues
-            "env": {
-                "LEAN_PROJECT_PATH": "/path/to/lean/project"
-            }
+            ]
         }
     }
 }
@@ -106,12 +101,7 @@ OR manually add config to `mcp.json`:
     "mcpServers": {
         "lean-lsp": {
             "command": "uvx",
-            "args": ["lean-lsp-mcp"],
-            // OPTIONAL: Setting this env variable is not required.
-            // It is recommended to try without it first and only set it if you run into issues.
-            "env": {
-                "LEAN_PROJECT_PATH": "/path/to/lean/project"
-            }
+            "args": ["lean-lsp-mcp"]
         }
     }
 }
@@ -168,6 +158,15 @@ uvx lean-lsp-mcp --transport streamable-http
 ```
 
 Clients should then include the token in the `Authorization` header.
+
+### Environment Variables
+
+Some (optional) features and integrations of `lean-lsp-mcp` are configured using environment variables. These must be set in your shell or process environment before running the server.
+
+- `LEAN_PROJECT_PATH`: (optional) Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_LSP_MCP_TOKEN`: (optional) Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_STATE_SEARCH_URL`: (optional) URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
+- `LEAN_HAMMER_URL`: (optional) URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 
 ## Tools
 
@@ -350,7 +349,7 @@ Search for applicable theorems for the current proof goal using [premise-search.
 
 [Github Repository](https://github.com/ruc-ai4math/Premise-Retrieval) | [Arxiv Paper](https://arxiv.org/abs/2501.13959)
 
-A self-hosted version is [available](https://github.com/ruc-ai4math/LeanStateSearch) and encouraged. You can set an environment variable `LEAN_STATE_SEARCH_URL` (see Setup 3. for an example) to point to your self-hosted instance. It defaults to `https://premise-search.com`.
+A self-hosted version is [available](https://github.com/ruc-ai4math/LeanStateSearch) and encouraged. You can set an environment variable `LEAN_STATE_SEARCH_URL` to point to your self-hosted instance. It defaults to `https://premise-search.com`.
 
 Uses the first goal at a given line and column.
 Returns a list of relevant theorems.
@@ -375,7 +374,7 @@ Search for relevant premises based on the current proof state using the [Lean Ha
 
 [Github Repository](https://github.com/hanwenzhu/lean-premise-server) | [Arxiv Paper](https://arxiv.org/abs/2506.07477)
 
-A self-hosted version is [available](https://github.com/hanwenzhu/lean-premise-server) and encouraged. You can set an environment variable `LEAN_HAMMER_URL` (see Setup 3. for an example) to point to your self-hosted instance. It defaults to `http://leanpremise.net`.
+A self-hosted version is [available](https://github.com/hanwenzhu/lean-premise-server) and encouraged. You can set an environment variable `LEAN_HAMMER_URL` to point to your self-hosted instance. It defaults to `http://leanpremise.net`.
 
 Uses the first goal at a given line and column.
 Returns a list of relevant premises (theorems) that can be used to prove the goal.

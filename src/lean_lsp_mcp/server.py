@@ -73,17 +73,7 @@ mcp_kwargs = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
     dependencies=["leanclient"],
-    lifespan=app_lifespan,
-    env_vars={
-        "LEAN_PROJECT_PATH": {
-            "description": "Path to the Lean project root. If not set, this is inferred automatically using file paths. Use this only if the automatic system fails to find the project.",
-            "required": False,
-        },
-        "LEAN_LSP_MCP_TOKEN": {
-            "description": "If set, require this token as a Bearer token for /sse and /http endpoints.",
-            "required": False,
-        },
-    },
+    lifespan=app_lifespan
 )
 
 auth_token = os.environ.get("LEAN_LSP_MCP_TOKEN")
