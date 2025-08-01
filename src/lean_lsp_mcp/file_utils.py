@@ -34,9 +34,14 @@ def get_relative_file_path(lean_project_path: str, file_path: str) -> Optional[s
 
 
 def get_file_contents(abs_path: str) -> str:
-    with open(abs_path, "r") as f:
-        data = f.read()
-    return data
+    for enc in ("utf-8", "latin-1"):
+        try:
+            with open(abs_path, "r", encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    with open(abs_path, "r", encoding=None) as f:
+        return f.read()
 
 
 def update_file(ctx: Context, rel_path: str) -> str:

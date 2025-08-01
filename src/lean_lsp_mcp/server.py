@@ -444,8 +444,7 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
     if not os.path.exists(abs_path):
         return f"Could not open declaration file `{abs_path}` for `{symbol}`."
 
-    with open(abs_path, "r") as f:
-        file_content = f.read()
+    file_content = get_file_contents(abs_path)
 
     return f"Declaration of `{symbol}`:\n{file_content}"
 
