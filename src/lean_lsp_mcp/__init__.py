@@ -20,12 +20,14 @@ def main():
     )
     parser.add_argument(
         "--port",
-        type=str,
-        default="8000",
+        type=int,
+        default=8000,
         help="Host port for transport",
     )
     args = parser.parse_args()
     if args.transport == "stdio":
         mcp.run(transport=args.transport)
     else:
-        mcp.run(transport=args.transport, host=args.host, port=args.port)
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport=args.transport)
