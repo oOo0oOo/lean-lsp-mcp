@@ -25,9 +25,6 @@ def main():
         help="Host port for transport",
     )
     args = parser.parse_args()
-    if args.transport == "stdio":
-        mcp.run(transport=args.transport)
-    else:
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
-        mcp.run(transport=args.transport)
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    mcp.run(transport=args.transport)
