@@ -136,12 +136,12 @@ The Lean LSP MCP server supports the following transport methods:
 - `streamable-http`: HTTP streaming
 - `sse`: Server-sent events (MCP legacy, use `streamable-http` if possible)
 
-You can specify the transport method using the `--transport` argument when running the server:
+You can specify the transport method using the `--transport` argument when running the server. For `sse` and `streamable-http` you can also optionally specify the host and port:
 
 ```bash
 uvx lean-lsp-mcp --transport stdio # Default transport
 uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
-uvx lean-lsp-mcp --transport sse # Available at http://127.0.0.1:8000/sse
+uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at http://localhost:12345/sse
 ```
 
 ### Bearer Token Authentication
