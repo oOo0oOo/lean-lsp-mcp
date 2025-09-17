@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Lock
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -9,6 +10,7 @@ from lean_lsp_mcp.utils import OutputCapture
 
 
 logger = get_logger(__name__)
+CLIENT_LOCK = Lock()
 
 
 def startup_client(ctx: Context):
@@ -17,34 +19,35 @@ def startup_client(ctx: Context):
     Args:
         ctx (Context): Context object.
     """
-    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
-    if lean_project_path is None:
-        raise ValueError("lean project path is not set.")
+    with CLIENT_LOCK:
+        lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+        if lean_project_path is None:
+            raise ValueError("lean project path is not set.")
 
-    # Check if already correct client
-    client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
+        # Check if already correct client
+        client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
 
-    if client is not None:
-        # Both are Path objects now, direct comparison works
-        if client.project_path == lean_project_path:
-            return  # Client already set up correctly - reuse it!
-        # Different project path - close old client
-        client.close()
-        ctx.request_context.lifespan_context.file_content_hashes.clear()
+        if client is not None:
+            # Both are Path objects now, direct comparison works
+            if client.project_path == lean_project_path:
+                return  # Client already set up correctly - reuse it!
+            # Different project path - close old client
+            client.close()
+            ctx.request_context.lifespan_context.file_content_hashes.clear()
 
-    # Need to create a new client
-    with OutputCapture() as output:
-        try:
-            client = LeanLSPClient(lean_project_path)
-            logger.info(f"Connected to Lean language server at {lean_project_path}")
-        except Exception as e:
-            logger.warning(f"Initial connection failed, trying with build: {e}")
-            client = LeanLSPClient(lean_project_path, initial_build=True)
-            logger.info(f"Connected with initial build to {lean_project_path}")
-    build_output = output.get_output()
-    if build_output:
-        logger.debug(f"Build output: {build_output}")
-    ctx.request_context.lifespan_context.client = client
+        # Need to create a new client
+        with OutputCapture() as output:
+            try:
+                client = LeanLSPClient(lean_project_path)
+                logger.info(f"Connected to Lean language server at {lean_project_path}")
+            except Exception as e:
+                logger.warning(f"Initial connection failed, trying with build: {e}")
+                client = LeanLSPClient(lean_project_path, initial_build=True)
+                logger.info(f"Connected with initial build to {lean_project_path}")
+        build_output = output.get_output()
+        if build_output:
+            logger.debug(f"Build output: {build_output}")
+        ctx.request_context.lifespan_context.client = client
 
 
 def valid_lean_project_path(path: Path | str) -> bool:
