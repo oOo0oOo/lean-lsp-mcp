@@ -558,11 +558,11 @@ def multi_attempt(
     client.open_file(rel_path)
 
     results = []
-    snippets[0] += "\n"  # Extra newline for the first snippet
     for snippet in snippets:
+        payload = snippet if snippet.endswith("\n") else f"{snippet}\n"
         # Create a DocumentContentChange for the snippet
         change = DocumentContentChange(
-            snippet + "\n",
+            payload,
             [line - 1, 0],
             [line, 0],
         )
