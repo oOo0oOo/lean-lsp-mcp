@@ -21,25 +21,24 @@ def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[
     """
     file_path_obj = Path(file_path)
 
-    # Check if absolute path
+    # Absolute path under project
     if file_path_obj.is_absolute() and file_path_obj.exists():
         try:
             return str(file_path_obj.relative_to(lean_project_path))
         except ValueError:
-            # File is not in this project
             return None
 
-    # Check if relative to project path
+    # Relative to project path
     path = lean_project_path / file_path
     if path.exists():
         return str(path.relative_to(lean_project_path))
 
-    # Check if relative to CWD
+    # Relative to CWD, but only if inside project root
     cwd = Path.cwd()
     path = cwd / file_path
     if path.exists():
         try:
-            return str(path.relative_to(lean_project_path))
+            return str(path.resolve().relative_to(lean_project_path))
         except ValueError:
             return None
 
