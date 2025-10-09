@@ -81,11 +81,7 @@ def update_file(ctx: Context, rel_path: str) -> str:
     # Reload file in LSP
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     try:
-        logger.debug(
-            f"File content changed for {rel_path}, attempting to close in LSP client"
-        )
         client.close_files([rel_path])
-        logger.debug(f"Successfully closed file {rel_path} in LSP client")
     except FileNotFoundError as e:
         logger.warning(
             f"Attempted to close file {rel_path} that wasn't open in LSP client: {e}"
