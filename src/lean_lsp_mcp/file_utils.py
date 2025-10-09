@@ -2,7 +2,11 @@ import os
 from typing import Optional, Dict
 
 from mcp.server.fastmcp import Context
+from mcp.server.fastmcp.utilities.logging import get_logger
 from leanclient import LeanLSPClient
+
+
+logger = get_logger(__name__)
 
 
 def get_relative_file_path(lean_project_path: str, file_path: str) -> Optional[str]:
@@ -78,6 +82,14 @@ def update_file(ctx: Context, rel_path: str) -> str:
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     try:
         client.close_files([rel_path])
+    except FileNotFoundError as e:
+        logger.warning(
+            f"Attempted to close file {rel_path} that wasn't open in LSP client: {e}"
+        )
+        pass
     except Exception as e:
+        logger.error(
+            f"Unexpected error closing file {rel_path}: {type(e).__name__}: {e}"
+        )
         pass
     return file_content
