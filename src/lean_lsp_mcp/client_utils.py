@@ -30,17 +30,21 @@ def startup_client(ctx: Context):
         client.close()
         ctx.request_context.lifespan_context.file_content_hashes.clear()
 
+    log_level = ctx.request_context.lifespan_context.log_level
+    
     with StdoutToStderr():
         try:
             client = LeanLSPClient(
                 lean_project_path, initial_build=True, print_warnings=False
             )
-            logger.info(f"Connected to Lean language server at {lean_project_path}")
+            if log_level == "INFO":
+                logger.info(f"Connected to Lean language server at {lean_project_path}")
         except Exception as e:
             client = LeanLSPClient(
                 lean_project_path, initial_build=False, print_warnings=False
             )
-            logger.error(f"Could not do initial build, error: {e}")
+            if log_level in {"INFO", "WARNING", "ERROR"}:
+                logger.error(f"Could not do initial build, error: {e}")
     ctx.request_context.lifespan_context.client = client
 
 

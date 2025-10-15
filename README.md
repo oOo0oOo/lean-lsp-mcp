@@ -164,6 +164,7 @@ Clients should then include the token in the `Authorization` header.
 Some (optional) features and integrations of `lean-lsp-mcp` are configured using environment variables. These must be set in your shell or process environment before running the server.
 
 - `LEAN_PROJECT_PATH`: (optional) Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_LOG_LEVEL`: (optional) Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LSP_MCP_TOKEN`: (optional) Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: (optional) URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: (optional) URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
@@ -181,6 +182,7 @@ You can also often set these environment variables in your MCP client configurat
             ],
             "env": {
                 "LEAN_PROJECT_PATH": "/path/to/your/lean/project",
+                "LEAN_LOG_LEVEL": "NONE"
             }
         }
     }

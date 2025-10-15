@@ -37,6 +37,7 @@ logger = get_logger(__name__)
 @dataclass
 class AppContext:
     lean_project_path: str | None
+    log_level: str
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
@@ -44,6 +45,10 @@ class AppContext:
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    log_level = os.environ.get("LEAN_LOG_LEVEL", "INFO").upper()
+    if log_level not in {"INFO", "WARNING", "ERROR", "NONE"}:
+        log_level = "INFO"
+    
     try:
         lean_project_path = os.environ.get("LEAN_PROJECT_PATH", "").strip()
         if not lean_project_path:
@@ -53,6 +58,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         context = AppContext(
             lean_project_path=lean_project_path,
+            log_level=log_level,
             client=None,
             file_content_hashes={},
             rate_limit={
@@ -64,7 +70,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
         yield context
     finally:
-        logger.info("Closing Lean LSP client")
+        if log_level == "INFO":
+            logger.info("Closing Lean LSP client")
+
         if context.client:
             context.client.close()
 
@@ -131,6 +139,8 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
         lean_project_path = os.path.abspath(lean_project_path)
         ctx.request_context.lifespan_context.lean_project_path = lean_project_path
 
+    log_level = ctx.request_context.lifespan_context.log_level
+
     build_output = ""
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -140,7 +150,9 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
 
         if clean:
             subprocess.run(["lake", "clean"], cwd=lean_project_path, check=False)
-            logger.info("Ran `lake clean`")
+
+            if log_level == "INFO":
+                logger.info("Ran `lake clean`")
 
         with OutputCapture() as output:
             client = LeanLSPClient(
@@ -148,7 +160,9 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
                 initial_build=True,
                 print_warnings=False,
             )
-        logger.info("Built project and re-started LSP client")
+
+        if log_level == "INFO":
+            logger.info("Built project and re-started LSP client")
 
         ctx.request_context.lifespan_context.client = client
         build_output = output.get_output()
