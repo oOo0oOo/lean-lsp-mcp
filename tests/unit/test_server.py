@@ -19,7 +19,6 @@ class DummyClient:
 def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
-        log_level="INFO",
         client=None,
         file_content_hashes={},
         rate_limit=rate_limit or {"test": []},
@@ -34,7 +33,6 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
 
     async with server.app_lifespan(object()) as context:
-        assert context.log_level == "INFO"
         assert context.lean_project_path is None
         assert context.client is None
         assert context.rate_limit == {
@@ -46,26 +44,15 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_invalid_log_level(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LEAN_LOG_LEVEL", "debug")
-    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
-
-    async with server.app_lifespan(object()) as context:
-        assert context.log_level == "INFO"
-
-
-@pytest.mark.asyncio
 async def test_app_lifespan_sets_project_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
-    monkeypatch.setenv("LEAN_LOG_LEVEL", "ERROR")
     monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
 
     async with server.app_lifespan(object()) as context:
         assert context.lean_project_path == str(project_dir.resolve())
-        assert context.log_level == "ERROR"
 
 
 @pytest.mark.asyncio

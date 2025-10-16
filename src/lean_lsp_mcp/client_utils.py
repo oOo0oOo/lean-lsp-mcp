@@ -5,7 +5,7 @@ from mcp.server.fastmcp.utilities.logging import get_logger
 from leanclient import LeanLSPClient
 
 from lean_lsp_mcp.file_utils import get_relative_file_path
-from lean_lsp_mcp.utils import StdoutToStderr
+from lean_lsp_mcp.utils import OutputCapture
 
 
 logger = get_logger(__name__)
@@ -30,21 +30,18 @@ def startup_client(ctx: Context):
         client.close()
         ctx.request_context.lifespan_context.file_content_hashes.clear()
 
-    log_level = ctx.request_context.lifespan_context.log_level
-    
-    with StdoutToStderr():
+    with OutputCapture() as output:
         try:
             client = LeanLSPClient(
                 lean_project_path, initial_build=True, print_warnings=False
             )
-            if log_level == "INFO":
-                logger.info(f"Connected to Lean language server at {lean_project_path}")
+            logger.info(f"Connected to Lean language server at {lean_project_path}")
         except Exception as e:
             client = LeanLSPClient(
                 lean_project_path, initial_build=False, print_warnings=False
             )
-            if log_level in {"INFO", "WARNING", "ERROR"}:
-                logger.error(f"Could not do initial build, error: {e}")
+            logger.error(f"Could not do initial build, error: {e}")
+    logger.info("Build output: " + output.get_output())
     ctx.request_context.lifespan_context.client = client
 
 

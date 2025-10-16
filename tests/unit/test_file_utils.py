@@ -19,7 +19,6 @@ class _FakeClient:
 class _LifespanContext:
     def __init__(self, project_path: Path, client: _FakeClient) -> None:
         self.lean_project_path = str(project_path)
-        self.log_level = "INFO"
         self.client = client
         self.file_content_hashes: dict[str, int] = {}
 
