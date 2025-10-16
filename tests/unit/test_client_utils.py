@@ -23,7 +23,6 @@ class _LifespanContext:
         self.lean_project_path = lean_project_path
         self.client = client
         self.file_content_hashes: dict[str, int] = {}
-        self.log_level = "INFO"
 
 
 class _RequestContext:

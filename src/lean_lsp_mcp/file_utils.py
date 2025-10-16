@@ -79,18 +79,15 @@ def update_file(ctx: Context, rel_path: str) -> str:
     file_content_hashes[rel_path] = hashed_file
 
     # Reload file in LSP
-    log_level = ctx.request_context.lifespan_context.log_level
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     try:
         client.close_files([rel_path])
     except FileNotFoundError as e:
-        if log_level in {"INFO", "WARNING"}:
-            logger.warning(
-                f"Attempted to close file {rel_path} that wasn't open in LSP client: {e}"
-            )
+        logger.warning(
+            f"Attempted to close file {rel_path} that wasn't open in LSP client: {e}"
+        )
     except Exception as e:
-        if log_level in {"INFO", "WARNING", "ERROR"}:
-            logger.error(
-                f"Unexpected error closing file {rel_path}: {type(e).__name__}: {e}"
-            )
+        logger.error(
+            f"Unexpected error closing file {rel_path}: {type(e).__name__}: {e}"
+        )
     return file_content
