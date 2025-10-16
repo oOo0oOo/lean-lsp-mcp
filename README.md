@@ -473,6 +473,12 @@ For more information, you can use [Awesome MCP Security](https://github.com/Puli
 npx @modelcontextprotocol/inspector uvx --with-editable path/to/lean-lsp-mcp python -m lean_lsp_mcp.server
 ```
 
+## Run Tests
+
+```bash
+uv run pytest tests
+```
+
 ## Related Projects
 
 - [LeanTool](https://github.com/GasStationManager/LeanTool)

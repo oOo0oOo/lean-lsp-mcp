@@ -683,7 +683,7 @@ def state_search(
     try:
         url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
         req = urllib.request.Request(
-            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
+            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.22.0",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
             method="GET",
         )

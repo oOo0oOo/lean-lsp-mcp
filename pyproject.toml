@@ -20,7 +20,12 @@ lint = [
 ]
 dev = [
     "ruff>=0.2.0",
+    "pytest>=8.3",
+    "anyio>=4.4",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [tool.setuptools]
 packages = ["lean_lsp_mcp"]
