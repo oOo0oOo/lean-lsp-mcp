@@ -18,6 +18,7 @@ from leanclient import LeanLSPClient, DocumentContentChange
 from lean_lsp_mcp.client_utils import setup_client_for_file
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
+from lean_lsp_mcp.search_utils import check_ripgrep_status
 from lean_lsp_mcp.utils import (
     OutputCapture,
     extract_range,
@@ -35,6 +36,9 @@ configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
 
 
+_RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+
+
 # Server and context
 @dataclass
 class AppContext:
@@ -42,6 +46,7 @@ class AppContext:
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
+    lean_search_available: bool
 
 
 @asynccontextmanager
@@ -63,6 +68,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 "lean_state_search": [],
                 "hammer_premise": [],
             },
+            lean_search_available=_RG_AVAILABLE
         )
         yield context
     finally:
