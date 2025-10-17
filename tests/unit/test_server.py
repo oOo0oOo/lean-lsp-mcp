@@ -22,6 +22,7 @@ def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNam
         client=None,
         file_content_hashes={},
         rate_limit=rate_limit or {"test": []},
+        lean_search_available=True,
     )
     request_context = types.SimpleNamespace(lifespan_context=context)
     return types.SimpleNamespace(request_context=request_context)

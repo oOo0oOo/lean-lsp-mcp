@@ -10,7 +10,7 @@ import pytest
 from tests.helpers.mcp_client import MCPClient, result_text
 
 
-def _first_json_block(result) -> dict[str, str]:
+def _first_json_block(result) -> dict[str, str] | None:
     for block in result.content:
         text = getattr(block, "text", "").strip()
         if not text:
@@ -19,7 +19,7 @@ def _first_json_block(result) -> dict[str, str]:
             return json.loads(text)
         except json.JSONDecodeError:
             continue
-    pytest.skip("Tool did not return JSON content")
+    return None
 
 
 @pytest.fixture()
@@ -47,6 +47,8 @@ async def test_search_tools(
             {"query": "Nat.succ"},
         )
         entry = _first_json_block(leansearch)
+        if entry is None:
+            pytest.skip("lean_leansearch did not return JSON content")
         assert {"module_name", "name", "type"} <= set(entry.keys())
 
         loogle = await client.call_tool(
@@ -54,6 +56,8 @@ async def test_search_tools(
             {"query": "Nat"},
         )
         loogle_entry = _first_json_block(loogle)
+        if loogle_entry is None:
+            pytest.skip("lean_loogle did not return JSON content")
         assert {"module", "name", "type"} <= set(loogle_entry.keys())
 
         goal_result = await client.call_tool(

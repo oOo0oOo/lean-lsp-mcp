@@ -476,6 +476,7 @@ npx @modelcontextprotocol/inspector uvx --with-editable path/to/lean-lsp-mcp pyt
 ## Run Tests
 
 ```bash
+uv sync --all-extras
 uv run pytest tests
 ```
 
