@@ -69,7 +69,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 "lean_state_search": [],
                 "hammer_premise": [],
             },
-            lean_search_available=_RG_AVAILABLE
+            lean_search_available=_RG_AVAILABLE,
         )
         yield context
     finally:
@@ -83,7 +83,7 @@ mcp_kwargs = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
     dependencies=["leanclient"],
-    lifespan=app_lifespan
+    lifespan=app_lifespan,
 )
 
 auth_token = os.environ.get("LEAN_LSP_MCP_TOKEN")
@@ -554,7 +554,9 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 
 
 @mcp.tool("lean_local_search")
-def local_search(ctx: Context, query: str, limit: int = 10) -> List[Dict[str, str]] | str:
+def local_search(
+    ctx: Context, query: str, limit: int = 10
+) -> List[Dict[str, str]] | str:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
     VERY USEFUL AND FAST!
@@ -573,7 +575,9 @@ def local_search(ctx: Context, query: str, limit: int = 10) -> List[Dict[str, st
 
     stored_root = ctx.request_context.lifespan_context.lean_project_path
     project_root = Path(stored_root) if stored_root else None
-    results = lean_local_search(query=query.strip(), limit=limit, project_root=project_root)
+    results = lean_local_search(
+        query=query.strip(), limit=limit, project_root=project_root
+    )
     return results
 
 

@@ -11,9 +11,20 @@ from tests.helpers.mcp_client import MCPClient, result_text
 
 
 def _mathlib_file(test_project_path: Path) -> Path:
-    candidate = test_project_path / ".lake" / "packages" / "mathlib" / "Mathlib" / "Data" / "Nat" / "Basic.lean"
+    candidate = (
+        test_project_path
+        / ".lake"
+        / "packages"
+        / "mathlib"
+        / "Mathlib"
+        / "Data"
+        / "Nat"
+        / "Basic.lean"
+    )
     if not candidate.exists():
-        pytest.skip("mathlib sources were not downloaded; run `lake update` inside tests/test_project.")
+        pytest.skip(
+            "mathlib sources were not downloaded; run `lake update` inside tests/test_project."
+        )
     return candidate
 
 
@@ -22,7 +33,11 @@ def _first_occurrence_location(source: str, needle: str) -> tuple[int, int]:
         if needle not in line:
             continue
         stripped = line.lstrip()
-        if stripped.startswith("--") or stripped.startswith("/-") or stripped.startswith("*"):
+        if (
+            stripped.startswith("--")
+            or stripped.startswith("/-")
+            or stripped.startswith("*")
+        ):
             continue
         column = line.index(needle) + 1
         return line_number, column

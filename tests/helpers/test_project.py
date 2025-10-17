@@ -68,6 +68,9 @@ def _run_lake_steps(project_root: Path) -> None:
     for args in LAKE_COMMANDS:
         try:
             subprocess.run(args, cwd=project_root, check=True)
-        except FileNotFoundError as exc:  # pragma: no cover - relies on user environment
-            raise RuntimeError("`lake` executable is required for end-to-end tests") from exc
-
+        except (
+            FileNotFoundError
+        ) as exc:  # pragma: no cover - relies on user environment
+            raise RuntimeError(
+                "`lake` executable is required for end-to-end tests"
+            ) from exc

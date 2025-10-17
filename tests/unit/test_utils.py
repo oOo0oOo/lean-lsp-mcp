@@ -79,6 +79,8 @@ def test_optional_token_verifier() -> None:
     assert granted is not None
     assert granted.token == "secret"
     assert rejected is None
+
+
 def test_format_diagnostics_line_filter() -> None:
     diagnostics = [
         {

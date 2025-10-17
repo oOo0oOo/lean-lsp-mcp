@@ -26,6 +26,7 @@ _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
     ),
 }
 
+
 def check_ripgrep_status() -> tuple[bool, str]:
     """Check whether ``rg`` is available on PATH and return status + message."""
 
@@ -33,7 +34,9 @@ def check_ripgrep_status() -> tuple[bool, str]:
         return True, ""
 
     system = platform.system()
-    platform_instructions = _PLATFORM_INSTRUCTIONS.get(system, ("Check alternative installation methods.",))
+    platform_instructions = _PLATFORM_INSTRUCTIONS.get(
+        system, ("Check alternative installation methods.",)
+    )
 
     lines = [
         "ripgrep (rg) was not found on your PATH. The lean_local_search tool uses ripgrep for fast declaration search.",
@@ -110,7 +113,9 @@ def lean_local_search(
 
         path_text = data["path"]["text"]
         file_path = Path(path_text)
-        absolute_path = file_path if file_path.is_absolute() else (root / file_path).resolve()
+        absolute_path = (
+            file_path if file_path.is_absolute() else (root / file_path).resolve()
+        )
         try:
             display_path = str(absolute_path.relative_to(root))
         except ValueError:
@@ -134,9 +139,7 @@ def _get_lean_src_search_path() -> str | None:
     """Return the Lean stdlib directory, if available (cache once)."""
     try:
         completed = subprocess.run(
-            ["lean", "--print-prefix"],
-            capture_output=True,
-            text=True
+            ["lean", "--print-prefix"], capture_output=True, text=True
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None

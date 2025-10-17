@@ -12,18 +12,21 @@ from tests.helpers.mcp_client import MCPClient, result_text
 @pytest.fixture()
 def editor_file(test_project_path: Path) -> Path:
     path = test_project_path / "EditorTools.lean"
-    content = "\n".join(
-        [
-            "import Mathlib",
-            "",
-            "def sampleValue : Nat := 42",
-            "",
-            "theorem sampleTheorem : True := by",
-            "  trivial",
-            "",
-            "def completionTest : Nat := Nat.su",
-        ]
-    ) + "\n"
+    content = (
+        "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "def sampleValue : Nat := 42",
+                "",
+                "theorem sampleTheorem : True := by",
+                "  trivial",
+                "",
+                "def completionTest : Nat := Nat.su",
+            ]
+        )
+        + "\n"
+    )
     path.write_text(content, encoding="utf-8")
     return path
 

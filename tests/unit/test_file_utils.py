@@ -5,7 +5,11 @@ from typing import Any
 
 import pytest
 
-from lean_lsp_mcp.file_utils import get_file_contents, get_relative_file_path, update_file
+from lean_lsp_mcp.file_utils import (
+    get_file_contents,
+    get_relative_file_path,
+    update_file,
+)
 
 
 class _FakeClient:
@@ -33,7 +37,9 @@ class _Context:
         self.request_context = _RequestContext(lifespan_context)
 
 
-def test_get_relative_file_path_handles_absolute_and_relative(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_relative_file_path_handles_absolute_and_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project = tmp_path
     target = project / "src" / "Example.lean"
     target.parent.mkdir(parents=True)
@@ -43,11 +49,15 @@ def test_get_relative_file_path_handles_absolute_and_relative(tmp_path: Path, mo
     assert get_relative_file_path(str(project), str(target)) == "src/Example.lean"
 
     # relative to project
-    assert get_relative_file_path(str(project), "src/Example.lean") == "src/Example.lean"
+    assert (
+        get_relative_file_path(str(project), "src/Example.lean") == "src/Example.lean"
+    )
 
     # relative to CWD
     monkeypatch.chdir(project)
-    assert get_relative_file_path(str(project), "src/Example.lean") == "src/Example.lean"
+    assert (
+        get_relative_file_path(str(project), "src/Example.lean") == "src/Example.lean"
+    )
 
 
 def test_get_file_contents_fallback_encoding(tmp_path: Path) -> None:

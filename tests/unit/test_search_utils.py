@@ -93,7 +93,9 @@ class _DummyCompletedProcess:
         self.args = []
 
 
-def _configure_env(monkeypatch, search_utils, stdout_events, returncode=0, expected_cwd=None):
+def _configure_env(
+    monkeypatch, search_utils, stdout_events, returncode=0, expected_cwd=None
+):
     completed = _DummyCompletedProcess(stdout_events, returncode=returncode)
     lean_completed = _DummyCompletedProcess(["/nonexistent/lean"], returncode=0)
 
@@ -216,7 +218,9 @@ def test_lean_search_returns_relative_paths(monkeypatch, reload_search_utils):
         expected_cwd=str(project_root.resolve()),
     )
 
-    results = search_utils.lean_local_search("sampleGroupTheorem", project_root=project_root)
+    results = search_utils.lean_local_search(
+        "sampleGroupTheorem", project_root=project_root
+    )
 
     assert results == [
         {
@@ -265,7 +269,9 @@ def test_lean_search_integration_project_root(reload_search_utils):
     if not available:
         pytest.skip(message)
 
-    results = search_utils.lean_local_search("sampleTheorem", project_root=TEST_PROJECT_ROOT)
+    results = search_utils.lean_local_search(
+        "sampleTheorem", project_root=TEST_PROJECT_ROOT
+    )
 
     assert results == [
         {
@@ -290,7 +296,8 @@ def test_lean_search_integration_mathlib(reload_search_utils):
 
     assert results
     assert any(
-        item == {
+        item
+        == {
             "name": "map_mul_right",
             "kind": "theorem",
             "file": ".lake/packages/mathlib/Mathlib/GroupTheory/MonoidLocalization/Basic.lean",
@@ -313,7 +320,8 @@ def test_lean_search_integration_mathlib_prefix_results(reload_search_utils):
 
     assert len(results) >= 2
     assert any(
-        item == {
+        item
+        == {
             "name": "add_comm_zero",
             "kind": "theorem",
             "file": ".lake/packages/mathlib/MathlibTest/Find.lean",
