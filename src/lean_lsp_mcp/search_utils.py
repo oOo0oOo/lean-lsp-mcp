@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from functools import lru_cache
 import platform
 import re
 import shutil
@@ -25,7 +26,6 @@ _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
     ),
 }
 
-
 def check_ripgrep_status() -> tuple[bool, str]:
     """Check whether ``rg`` is available on PATH and return status + message."""
 
@@ -46,12 +46,12 @@ def check_ripgrep_status() -> tuple[bool, str]:
     return False, "\n".join(lines)
 
 
-def lean_search(
+def lean_local_search(
     query: str,
-    limit: int = 100,
+    limit: int = 32,
     project_root: Path | None = None,
 ) -> list[dict[str, str]]:
-    """Search Lean declarations matching ``query`` using ripgrep."""
+    """Search Lean declarations matching ``query`` using ripgrep; results include theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls."""
     root = (project_root or Path.cwd()).resolve()
     escaped_query = re.escape(query)
     ripgrep_pattern = (
@@ -74,14 +74,18 @@ def lean_search(
         "-g",
         "!.lake/build/**",
         ripgrep_pattern,
-        "."
+        ".",
     ]
+
+    lean_src_path = _get_lean_src_search_path()
+    if lean_src_path is not None:
+        command.append(lean_src_path)
 
     completed = subprocess.run(
         command,
         capture_output=True,
         text=True,
-        cwd=str(root)
+        cwd=str(root),
     )
 
     results: list[dict[str, str]] = []
@@ -123,3 +127,26 @@ def lean_search(
         )
 
     return results
+
+
+@lru_cache(maxsize=1)
+def _get_lean_src_search_path() -> str | None:
+    """Return the Lean stdlib directory, if available (cache once)."""
+    try:
+        completed = subprocess.run(
+            ["lean", "--print-prefix"],
+            capture_output=True,
+            text=True
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    prefix = completed.stdout.strip()
+    if not prefix:
+        return None
+
+    candidate = Path(prefix).expanduser().resolve() / "src"
+    if candidate.exists():
+        return str(candidate)
+
+    return None

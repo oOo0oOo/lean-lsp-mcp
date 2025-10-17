@@ -5,6 +5,7 @@ INSTRUCTIONS = """## General Rules
 - Work iteratively: Small steps, intermediate sorries, frequent checks.
 
 ## Key Tools
+- lean_local_search: Confirm declarations (theorems/lemmas/defs/etc.) exist. VERY USEFUL AND FAST!
 - lean_goal: Check proof state. USE OFTEN!
 - lean_diagnostic_messages: Understand the current proof situation.
 - lean_hover_info: Documentation about terms and lean syntax.

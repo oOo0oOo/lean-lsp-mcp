@@ -95,6 +95,7 @@ class _DummyCompletedProcess:
 
 def _configure_env(monkeypatch, search_utils, stdout_events, returncode=0, expected_cwd=None):
     completed = _DummyCompletedProcess(stdout_events, returncode=returncode)
+    lean_completed = _DummyCompletedProcess(["/nonexistent/lean"], returncode=0)
 
     def fake_check():
         return True, ""
@@ -103,8 +104,10 @@ def _configure_env(monkeypatch, search_utils, stdout_events, returncode=0, expec
 
     def fake_run(cmd, *, capture_output=False, text=False, cwd=None):
         run_calls.append((cmd, cwd))
-        if expected_cwd is not None:
+        if expected_cwd is not None and cmd and cmd[0] == "rg":
             assert cwd == expected_cwd
+        if cmd[:2] == ["lean", "--print-prefix"]:
+            return lean_completed
         return completed
 
     monkeypatch.setattr(search_utils, "check_ripgrep_status", fake_check)
@@ -128,7 +131,7 @@ def test_lean_search_returns_matching_results(monkeypatch, reload_search_utils):
         expected_cwd=str(project_root.resolve()),
     )
 
-    results = search_utils.lean_search("target", project_root=project_root)
+    results = search_utils.lean_local_search("target", project_root=project_root)
 
     assert results == [
         {
@@ -159,7 +162,7 @@ def test_lean_search_exact_match(monkeypatch, reload_search_utils):
         expected_cwd=str(project_root.resolve()),
     )
 
-    results = search_utils.lean_search("sampleValue", project_root=project_root)
+    results = search_utils.lean_local_search("sampleValue", project_root=project_root)
 
     assert results == [
         {
@@ -191,7 +194,7 @@ def test_lean_search_respects_limit(monkeypatch, reload_search_utils):
         expected_cwd=str(project_root.resolve()),
     )
 
-    results = search_utils.lean_search("dup", limit=2, project_root=project_root)
+    results = search_utils.lean_local_search("dup", limit=2, project_root=project_root)
 
     assert len(results) == 2
 
@@ -213,7 +216,7 @@ def test_lean_search_returns_relative_paths(monkeypatch, reload_search_utils):
         expected_cwd=str(project_root.resolve()),
     )
 
-    results = search_utils.lean_search("sampleGroupTheorem", project_root=project_root)
+    results = search_utils.lean_local_search("sampleGroupTheorem", project_root=project_root)
 
     assert results == [
         {
@@ -236,7 +239,7 @@ def test_lean_search_handles_ripgrep_errors(monkeypatch, reload_search_utils):
     )
 
     with pytest.raises(RuntimeError):
-        search_utils.lean_search("sample", project_root=project_root)
+        search_utils.lean_local_search("sample", project_root=project_root)
 
 
 def test_lean_search_returns_empty_for_no_matches(monkeypatch, reload_search_utils):
@@ -250,7 +253,7 @@ def test_lean_search_returns_empty_for_no_matches(monkeypatch, reload_search_uti
         expected_cwd=str(project_root.resolve()),
     )
 
-    assert search_utils.lean_search("nothing", project_root=project_root) == []
+    assert search_utils.lean_local_search("nothing", project_root=project_root) == []
 
 
 TEST_PROJECT_ROOT = Path(__file__).resolve().parents[1] / "test_project"
@@ -262,7 +265,7 @@ def test_lean_search_integration_project_root(reload_search_utils):
     if not available:
         pytest.skip(message)
 
-    results = search_utils.lean_search("sampleTheorem", project_root=TEST_PROJECT_ROOT)
+    results = search_utils.lean_local_search("sampleTheorem", project_root=TEST_PROJECT_ROOT)
 
     assert results == [
         {
@@ -279,9 +282,9 @@ def test_lean_search_integration_mathlib(reload_search_utils):
     if not available:
         pytest.skip(message)
 
-    results = search_utils.lean_search(
+    results = search_utils.lean_local_search(
         "map_mul_right",
-        limit=5,
+        limit=50,
         project_root=TEST_PROJECT_ROOT,
     )
 
@@ -302,9 +305,9 @@ def test_lean_search_integration_mathlib_prefix_results(reload_search_utils):
     if not available:
         pytest.skip(message)
 
-    results = search_utils.lean_search(
+    results = search_utils.lean_local_search(
         "add_comm",
-        limit=5,
+        limit=50,
         project_root=TEST_PROJECT_ROOT,
     )
 
@@ -325,7 +328,7 @@ def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
     if not available:
         pytest.skip(message)
 
-    results = search_utils.lean_search(
+    results = search_utils.lean_local_search(
         "add_comm",
         limit=1,
         project_root=TEST_PROJECT_ROOT,
@@ -333,3 +336,19 @@ def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
 
     assert len(results) == 1
     assert results[0]["name"].startswith("add_comm")
+
+
+def test_lean_search_integration_stdlib_definitions(reload_search_utils):
+    search_utils = reload_search_utils
+    available, message = search_utils.check_ripgrep_status()
+    if not available:
+        pytest.skip(message)
+
+    results = search_utils.lean_local_search(
+        "Nat.succ",
+        limit=20,
+        project_root=TEST_PROJECT_ROOT,
+    )
+
+    assert results
+    assert any(item["name"].startswith("Nat.succ") for item in results)

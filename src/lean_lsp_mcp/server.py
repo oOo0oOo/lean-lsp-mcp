@@ -9,6 +9,7 @@ import urllib
 import json
 import functools
 import subprocess
+from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
@@ -18,7 +19,7 @@ from leanclient import LeanLSPClient, DocumentContentChange
 from lean_lsp_mcp.client_utils import setup_client_for_file
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
-from lean_lsp_mcp.search_utils import check_ripgrep_status
+from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     OutputCapture,
     extract_range,
@@ -550,6 +551,30 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         if diagnostics
         else "No diagnostics found for the code snippet (compiled successfully)."
     )
+
+
+@mcp.tool("lean_local_search")
+def local_search(ctx: Context, query: str, limit: int = 10) -> List[Dict[str, str]] | str:
+    """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
+
+    VERY USEFUL AND FAST!
+    Pass a short prefix (e.g. ``map_mul``); the metadata shows the declaration kind and file.
+    The index spans theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls.
+
+    Args:
+        query (str): Declaration name or prefix.
+        limit (int): Max matches to return (default 10).
+
+    Returns:
+        List[Dict[str, str]] | str: Matches as ``{"name", "kind", "file"}`` or error message.
+    """
+    if not _RG_AVAILABLE:
+        return _RG_MESSAGE
+
+    stored_root = ctx.request_context.lifespan_context.lean_project_path
+    project_root = Path(stored_root) if stored_root else None
+    results = lean_local_search(query=query.strip(), limit=limit, project_root=project_root)
+    return results
 
 
 @mcp.tool("lean_leansearch")

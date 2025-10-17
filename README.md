@@ -33,6 +33,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
 3. Configure your IDE/Setup
+4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to reduce hallucinations using local search.
 
 ### 1. Install uv
 
@@ -127,6 +128,10 @@ You can find more details about MCP server configuration for Claude Code [here](
 ### Other Setups
 
 Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/), [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) or [Goose](https://block.github.io/goose/docs/getting-started/using-extensions) should work with similar configs.
+
+### 4. Install ripgrep (optional but recommended)
+
+For the local search tool `lean_local_search`, please install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
 
 ### Transport Methods
 
@@ -308,6 +313,15 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)<br>
 <br>
 ...
 </details>
+
+### Local Search Tools
+
+#### lean_local_search
+
+Search for Lean definitions and theorems in the local Lean project and stdlib.
+This is useful to confirm declarations actually exist and prevent hallucinating APIs.
+
+This tool requires [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to be installed and available in your PATH.
 
 ### External Search Tools
 
