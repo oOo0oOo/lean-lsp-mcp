@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from lean_lsp_mcp.client_utils import setup_client_for_file, startup_client, valid_lean_project_path
+from lean_lsp_mcp.client_utils import (
+    setup_client_for_file,
+    startup_client,
+    valid_lean_project_path,
+)
 
 
 class _MockLeanClient:
@@ -19,7 +23,9 @@ class _MockLeanClient:
 
 
 class _LifespanContext:
-    def __init__(self, lean_project_path: str | None, client: _MockLeanClient | None) -> None:
+    def __init__(
+        self, lean_project_path: str | None, client: _MockLeanClient | None
+    ) -> None:
         self.lean_project_path = lean_project_path
         self.client = client
         self.file_content_hashes: dict[str, int] = {}
@@ -39,7 +45,9 @@ class _Context:
 def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     created: list[_MockLeanClient] = []
 
-    def _constructor(project_path: str, initial_build: bool, print_warnings: bool) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
+    def _constructor(
+        project_path: str, initial_build: bool, print_warnings: bool
+    ) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
         client = _MockLeanClient(project_path)
         created.append(client)
         return client
@@ -48,7 +56,9 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     return created
 
 
-def test_startup_client_reuses_existing(tmp_path: Path, patched_clients: list[_MockLeanClient]) -> None:
+def test_startup_client_reuses_existing(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
@@ -85,7 +95,9 @@ def test_valid_lean_project_path(tmp_path: Path) -> None:
     assert not valid_lean_project_path(str(project / "missing"))
 
 
-def test_setup_client_for_file_discovers_project(tmp_path: Path, patched_clients: list[_MockLeanClient]) -> None:
+def test_setup_client_for_file_discovers_project(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")

@@ -10,7 +10,7 @@ import pytest
 from tests.helpers.mcp_client import MCPClient, result_text
 
 
-def _first_json_block(result) -> dict[str, str]:
+def _first_json_block(result) -> dict[str, str] | None:
     for block in result.content:
         text = getattr(block, "text", "").strip()
         if not text:
@@ -19,7 +19,7 @@ def _first_json_block(result) -> dict[str, str]:
             return json.loads(text)
         except json.JSONDecodeError:
             continue
-    pytest.skip("Tool did not return JSON content")
+    return None
 
 
 @pytest.fixture()
@@ -42,18 +42,13 @@ async def test_search_tools(
     goal_file: Path,
 ) -> None:
     async with mcp_client_factory() as client:
-        leansearch = await client.call_tool(
-            "lean_leansearch",
-            {"query": "Nat.succ"},
-        )
-        entry = _first_json_block(leansearch)
-        assert {"module_name", "name", "type"} <= set(entry.keys())
-
         loogle = await client.call_tool(
             "lean_loogle",
             {"query": "Nat"},
         )
         loogle_entry = _first_json_block(loogle)
+        if loogle_entry is None:
+            pytest.skip("lean_loogle did not return JSON content")
         assert {"module", "name", "type"} <= set(loogle_entry.keys())
 
         goal_result = await client.call_tool(
@@ -86,3 +81,31 @@ async def test_search_tools(
             },
         )
         assert "Results for line" in result_text(hammer)
+
+        local_search = await client.call_tool(
+            "lean_local_search",
+            {
+                "query": "sampleTheorem",
+                "project_root": str(goal_file.parent),
+            },
+        )
+        local_entry = _first_json_block(local_search)
+        if local_entry is None:
+            message = result_text(local_search).strip()
+            if "ripgrep" in message.lower():
+                pytest.skip(message)
+            pytest.fail(f"lean_local_search returned unexpected content: {message}")
+        assert local_entry == {
+            "name": "sampleTheorem",
+            "kind": "theorem",
+            "file": "EditorTools.lean",
+        }
+
+        leansearch = await client.call_tool(
+            "lean_leansearch",
+            {"query": "Nat.succ"},
+        )
+        entry = _first_json_block(leansearch)
+        if entry is None:
+            pytest.skip("lean_leansearch did not return JSON content")
+        assert {"module_name", "name", "type"} <= set(entry.keys())

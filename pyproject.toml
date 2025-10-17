@@ -9,6 +9,7 @@ license = "MIT"
 dependencies = [
     "leanclient==0.2.0",
     "mcp[cli]==1.17.0",
+    "orjson==3.10.16",
 ]
 
 [project.urls]
@@ -22,6 +23,7 @@ dev = [
     "ruff>=0.2.0",
     "pytest>=8.3",
     "anyio>=4.4",
+    "pytest-asyncio>=0.23",
 ]
 
 [tool.pytest.ini_options]
