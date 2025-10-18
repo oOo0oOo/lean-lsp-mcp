@@ -9,6 +9,7 @@ license = "MIT"
 dependencies = [
     "leanclient==0.1.14",
     "mcp[cli]==1.17.0",
+    "orjson>=3.11.1",
 ]
 
 [project.urls]
