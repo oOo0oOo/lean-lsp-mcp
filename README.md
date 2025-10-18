@@ -33,6 +33,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
 3. Configure your IDE/Setup
+4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to reduce hallucinations using local search.
 
 ### 1. Install uv
 
@@ -128,6 +129,10 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/), [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) or [Goose](https://block.github.io/goose/docs/getting-started/using-extensions) should work with similar configs.
 
+### 4. Install ripgrep (optional but recommended)
+
+For the local search tool `lean_local_search`, please install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
+
 ### Transport Methods
 
 The Lean LSP MCP server supports the following transport methods:
@@ -164,6 +169,7 @@ Clients should then include the token in the `Authorization` header.
 Some (optional) features and integrations of `lean-lsp-mcp` are configured using environment variables. These must be set in your shell or process environment before running the server.
 
 - `LEAN_PROJECT_PATH`: (optional) Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_LOG_LEVEL`: (optional) Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LSP_MCP_TOKEN`: (optional) Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: (optional) URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: (optional) URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
@@ -181,6 +187,7 @@ You can also often set these environment variables in your MCP client configurat
             ],
             "env": {
                 "LEAN_PROJECT_PATH": "/path/to/your/lean/project",
+                "LEAN_LOG_LEVEL": "NONE"
             }
         }
     }
@@ -306,6 +313,15 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)<br>
 <br>
 ...
 </details>
+
+### Local Search Tools
+
+#### lean_local_search
+
+Search for Lean definitions and theorems in the local Lean project and stdlib.
+This is useful to confirm declarations actually exist and prevent hallucinating APIs.
+
+This tool requires [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to be installed and available in your PATH.
 
 ### External Search Tools
 
@@ -469,6 +485,13 @@ For more information, you can use [Awesome MCP Security](https://github.com/Puli
 
 ```bash
 npx @modelcontextprotocol/inspector uvx --with-editable path/to/lean-lsp-mcp python -m lean_lsp_mcp.server
+```
+
+## Run Tests
+
+```bash
+uv sync --all-extras
+uv run pytest tests
 ```
 
 ## Related Projects

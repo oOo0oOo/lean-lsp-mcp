@@ -9,15 +9,17 @@ import urllib
 import json
 import functools
 import subprocess
+from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.logging import get_logger
+from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings
 from leanclient import LeanLSPClient, DocumentContentChange
 
 from lean_lsp_mcp.client_utils import setup_client_for_file
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
+from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     OutputCapture,
     extract_range,
@@ -30,7 +32,12 @@ from lean_lsp_mcp.utils import (
 )
 
 
+_LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
+configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
+
+
+_RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 
 
 # Server and context
@@ -40,6 +47,7 @@ class AppContext:
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
+    lean_search_available: bool
 
 
 @asynccontextmanager
@@ -61,10 +69,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 "lean_state_search": [],
                 "hammer_premise": [],
             },
+            lean_search_available=_RG_AVAILABLE,
         )
         yield context
     finally:
         logger.info("Closing Lean LSP client")
+
         if context.client:
             context.client.close()
 
@@ -73,7 +83,7 @@ mcp_kwargs = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
     dependencies=["leanclient"],
-    lifespan=app_lifespan
+    lifespan=app_lifespan,
 )
 
 auth_token = os.environ.get("LEAN_LSP_MCP_TOKEN")
@@ -148,6 +158,7 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
                 initial_build=True,
                 print_warnings=False,
             )
+
         logger.info("Built project and re-started LSP client")
 
         ctx.request_context.lifespan_context.client = client
@@ -542,6 +553,34 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     )
 
 
+@mcp.tool("lean_local_search")
+def local_search(
+    ctx: Context, query: str, limit: int = 10
+) -> List[Dict[str, str]] | str:
+    """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
+
+    VERY USEFUL AND FAST!
+    Pass a short prefix (e.g. ``map_mul``); the metadata shows the declaration kind and file.
+    The index spans theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls.
+
+    Args:
+        query (str): Declaration name or prefix.
+        limit (int): Max matches to return (default 10).
+
+    Returns:
+        List[Dict[str, str]] | str: Matches as ``{"name", "kind", "file"}`` or error message.
+    """
+    if not _RG_AVAILABLE:
+        return _RG_MESSAGE
+
+    stored_root = ctx.request_context.lifespan_context.lean_project_path
+    project_root = Path(stored_root) if stored_root else None
+    results = lean_local_search(
+        query=query.strip(), limit=limit, project_root=project_root
+    )
+    return results
+
+
 @mcp.tool("lean_leansearch")
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
 def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
@@ -669,7 +708,7 @@ def state_search(
     try:
         url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
         req = urllib.request.Request(
-            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.17.0-rc1",
+            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.22.0",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
             method="GET",
         )

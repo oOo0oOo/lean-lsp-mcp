@@ -3,5 +3,6 @@ __pycache__/
 .ruff_cache/
 dist/
 *.egg-info/
+build/
 
-test_env/
+tests/test_project/
