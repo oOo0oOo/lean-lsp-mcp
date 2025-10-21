@@ -22,7 +22,7 @@ class _FakeClient:
 
 class _LifespanContext:
     def __init__(self, project_path: Path, client: _FakeClient) -> None:
-        self.lean_project_path = str(project_path)
+        self.lean_project_path = project_path
         self.client = client
         self.file_content_hashes: dict[str, int] = {}
 
@@ -46,17 +46,17 @@ def test_get_relative_file_path_handles_absolute_and_relative(
     target.write_text("example")
 
     # absolute
-    assert get_relative_file_path(str(project), str(target)) == "src/Example.lean"
+    assert get_relative_file_path(project, str(target)) == "src/Example.lean"
 
     # relative to project
     assert (
-        get_relative_file_path(str(project), "src/Example.lean") == "src/Example.lean"
+        get_relative_file_path(project, "src/Example.lean") == "src/Example.lean"
     )
 
     # relative to CWD
     monkeypatch.chdir(project)
     assert (
-        get_relative_file_path(str(project), "src/Example.lean") == "src/Example.lean"
+        get_relative_file_path(project, "src/Example.lean") == "src/Example.lean"
     )
 
 

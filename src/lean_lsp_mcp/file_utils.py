@@ -1,5 +1,6 @@
 import os
 from typing import Optional, Dict
+from pathlib import Path
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -9,30 +10,35 @@ from leanclient import LeanLSPClient
 logger = get_logger(__name__)
 
 
-def get_relative_file_path(lean_project_path: str, file_path: str) -> Optional[str]:
+def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[str]:
     """Convert path relative to project path.
 
     Args:
-        lean_project_path (str): Path to the Lean project root.
+        lean_project_path (Path): Path to the Lean project root.
         file_path (str): File path.
 
     Returns:
         str: Relative file path.
     """
+    file_path_obj = Path(file_path)
+    
     # Check if absolute path
-    if os.path.exists(file_path):
-        return os.path.relpath(file_path, lean_project_path)
+    if file_path_obj.is_absolute() and file_path_obj.exists():
+        return str(file_path_obj.relative_to(lean_project_path))
 
     # Check if relative to project path
-    path = os.path.join(lean_project_path, file_path)
-    if os.path.exists(path):
-        return os.path.relpath(path, lean_project_path)
+    path = lean_project_path / file_path
+    if path.exists():
+        return str(path.relative_to(lean_project_path))
 
     # Check if relative to CWD
-    cwd = os.getcwd().strip()  # Strip necessary?
-    path = os.path.join(cwd, file_path)
-    if os.path.exists(path):
-        return os.path.relpath(path, lean_project_path)
+    cwd = Path.cwd()
+    path = cwd / file_path
+    if path.exists():
+        try:
+            return str(path.relative_to(lean_project_path))
+        except ValueError:
+            return None
 
     return None
 
@@ -58,10 +64,8 @@ def update_file(ctx: Context, rel_path: str) -> str:
         str: Updated file contents.
     """
     # Get file contents and hash
-    abs_path = os.path.join(
-        ctx.request_context.lifespan_context.lean_project_path, rel_path
-    )
-    file_content = get_file_contents(abs_path)
+    abs_path = ctx.request_context.lifespan_context.lean_project_path / rel_path
+    file_content = get_file_contents(str(abs_path))
     hashed_file = hash(file_content)
 
     # Check if file_contents have changed

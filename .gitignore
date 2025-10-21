@@ -6,3 +6,4 @@ dist/
 build/
 
 tests/test_project/
+.pytest_cache/

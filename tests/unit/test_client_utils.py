@@ -14,7 +14,7 @@ from lean_lsp_mcp.client_utils import (
 
 
 class _MockLeanClient:
-    def __init__(self, project_path: str) -> None:
+    def __init__(self, project_path: Path) -> None:
         self.project_path = project_path
         self.closed = False
 
@@ -24,7 +24,7 @@ class _MockLeanClient:
 
 class _LifespanContext:
     def __init__(
-        self, lean_project_path: str | None, client: _MockLeanClient | None
+        self, lean_project_path: Path | None, client: _MockLeanClient | None
     ) -> None:
         self.lean_project_path = lean_project_path
         self.client = client
@@ -46,7 +46,7 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     created: list[_MockLeanClient] = []
 
     def _constructor(
-        project_path: str, initial_build: bool
+        project_path: Path, initial_build: bool
     ) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
         client = _MockLeanClient(project_path)
         created.append(client)
@@ -63,7 +63,7 @@ def test_startup_client_reuses_existing(
     project.mkdir()
     (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
 
-    ctx = _Context(_LifespanContext(str(project), None))
+    ctx = _Context(_LifespanContext(project, None))
 
     startup_client(ctx)
     first = ctx.request_context.lifespan_context.client
@@ -78,11 +78,11 @@ def test_startup_client_reuses_existing(
     new_project = tmp_path / "proj2"
     new_project.mkdir()
     (new_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-    ctx.request_context.lifespan_context.lean_project_path = str(new_project)
+    ctx.request_context.lifespan_context.lean_project_path = new_project
 
     startup_client(ctx)
     assert first.closed
-    assert ctx.request_context.lifespan_context.client.project_path == str(new_project)
+    assert ctx.request_context.lifespan_context.client.project_path == new_project
     assert len(patched_clients) == 2
 
 
@@ -91,8 +91,8 @@ def test_valid_lean_project_path(tmp_path: Path) -> None:
     project.mkdir()
     (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0")
 
-    assert valid_lean_project_path(str(project))
-    assert not valid_lean_project_path(str(project / "missing"))
+    assert valid_lean_project_path(project)
+    assert not valid_lean_project_path(project / "missing")
 
 
 def test_setup_client_for_file_discovers_project(
@@ -110,5 +110,5 @@ def test_setup_client_for_file_discovers_project(
 
     rel_path = setup_client_for_file(ctx, str(lean_file))
     assert rel_path == "src/Example.lean"
-    assert ctx.request_context.lifespan_context.client.project_path == str(project)
+    assert ctx.request_context.lifespan_context.client.project_path == project
     assert len(patched_clients) == 1

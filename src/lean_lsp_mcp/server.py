@@ -43,7 +43,7 @@ _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 # Server and context
 @dataclass
 class AppContext:
-    lean_project_path: str | None
+    lean_project_path: Path | None
     client: LeanLSPClient | None
     file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
@@ -53,11 +53,11 @@ class AppContext:
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     try:
-        lean_project_path = os.environ.get("LEAN_PROJECT_PATH", "").strip()
-        if not lean_project_path:
+        lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
+        if not lean_project_path_str:
             lean_project_path = None
         else:
-            lean_project_path = os.path.abspath(lean_project_path)
+            lean_project_path = Path(lean_project_path_str).resolve()
 
         context = AppContext(
             lean_project_path=lean_project_path,
@@ -136,10 +136,10 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
         str: Build output or error msg
     """
     if not lean_project_path:
-        lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+        lean_project_path_obj = ctx.request_context.lifespan_context.lean_project_path
     else:
-        lean_project_path = os.path.abspath(lean_project_path)
-        ctx.request_context.lifespan_context.lean_project_path = lean_project_path
+        lean_project_path_obj = Path(lean_project_path).resolve()
+        ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
 
     build_output = ""
     try:
@@ -149,11 +149,11 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         if clean:
-            subprocess.run(["lake", "clean"], cwd=lean_project_path, check=False)
+            subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
             logger.info("Ran `lake clean`")
 
         with OutputCapture() as output:
-            client = LeanLSPClient(lean_project_path, initial_build=True)
+            client = LeanLSPClient(lean_project_path_obj, initial_build=True)
 
         logger.info("Built project and re-started LSP client")
 
@@ -261,7 +261,7 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
 
     else:
         goal = client.get_goal(rel_path, line - 1, column - 1)
-        f_goal = format_goal(goal, f"Not a valid goal position. Try elsewhere?")
+        f_goal = format_goal(goal, "Not a valid goal position. Try elsewhere?")
         f_line = format_line(content, line, column)
         return f"Goals at:\n{f_line}\n{f_goal}"
 
@@ -526,7 +526,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
 
     rel_path = "temp_snippet.lean"
-    abs_path = os.path.join(lean_project_path, rel_path)
+    abs_path = lean_project_path / rel_path
 
     try:
         with open(abs_path, "w") as f:

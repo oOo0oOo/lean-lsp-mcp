@@ -53,7 +53,7 @@ async def test_app_lifespan_sets_project_path(
     monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
 
     async with server.app_lifespan(object()) as context:
-        assert context.lean_project_path == str(project_dir.resolve())
+        assert context.lean_project_path == project_dir.resolve()
 
 
 @pytest.mark.asyncio

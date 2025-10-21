@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
@@ -25,34 +25,42 @@ def startup_client(ctx: Context):
     client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
 
     if client is not None:
+        # Both are Path objects now, direct comparison works
         if client.project_path == lean_project_path:
-            return
+            logger.info(f"Reusing existing LSP client for {lean_project_path}")
+            return  # Client already set up correctly - reuse it!
+        # Different project path - close old client
+        logger.info(f"Switching project from {client.project_path} to {lean_project_path}")
         client.close()
         ctx.request_context.lifespan_context.file_content_hashes.clear()
 
+    # Need to create a new client
+    logger.info(f"Creating new LSP client for {lean_project_path}")
     with OutputCapture() as output:
         try:
             client = LeanLSPClient(lean_project_path)
             logger.info(f"Connected to Lean language server at {lean_project_path}")
         except Exception as e:
+            logger.warning(f"Initial connection failed, trying with build: {e}")
             client = LeanLSPClient(lean_project_path, initial_build=True)
-            logger.error(f"Attempting with initial build, error: {e}")
-    logger.info("Build output: " + output.get_output())
+            logger.info(f"Connected with initial build to {lean_project_path}")
+    build_output = output.get_output()
+    if build_output:
+        logger.debug(f"Build output: {build_output}")
     ctx.request_context.lifespan_context.client = client
 
 
-def valid_lean_project_path(path: str) -> bool:
+def valid_lean_project_path(path: Path | str) -> bool:
     """Check if the given path is a valid Lean project path (contains a lean-toolchain file).
 
     Args:
-        path (str): Absolute path to check.
+        path (Path | str): Absolute path to check.
 
     Returns:
         bool: True if valid Lean project path, False otherwise.
     """
-    if not os.path.exists(path):
-        return False
-    return os.path.isfile(os.path.join(path, "lean-toolchain"))
+    path_obj = Path(path) if isinstance(path, str) else path
+    return (path_obj / "lean-toolchain").is_file()
 
 
 def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
@@ -74,11 +82,11 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
             return rel_path
 
     # Try to find the new correct project path by checking all directories in file_path.
-    file_dir = os.path.dirname(file_path)
+    file_path_obj = Path(file_path)
     rel_path = None
-    while file_dir:
-        if valid_lean_project_path(file_dir):
-            lean_project_path = file_dir
+    for parent in file_path_obj.parents:
+        if valid_lean_project_path(parent):
+            lean_project_path = parent
             rel_path = get_relative_file_path(lean_project_path, file_path)
             if rel_path is not None:
                 ctx.request_context.lifespan_context.lean_project_path = (
@@ -86,7 +94,5 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
                 )
                 startup_client(ctx)
                 break
-        # Move up one directory
-        file_dir = os.path.dirname(file_dir)
 
     return rel_path
