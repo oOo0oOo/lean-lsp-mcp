@@ -32,15 +32,11 @@ def startup_client(ctx: Context):
 
     with OutputCapture() as output:
         try:
-            client = LeanLSPClient(
-                lean_project_path, initial_build=True, print_warnings=False
-            )
+            client = LeanLSPClient(lean_project_path)
             logger.info(f"Connected to Lean language server at {lean_project_path}")
         except Exception as e:
-            client = LeanLSPClient(
-                lean_project_path, initial_build=False, print_warnings=False
-            )
-            logger.error(f"Could not do initial build, error: {e}")
+            client = LeanLSPClient(lean_project_path, initial_build=True)
+            logger.error(f"Attempting with initial build, error: {e}")
     logger.info("Build output: " + output.get_output())
     ctx.request_context.lifespan_context.client = client
 

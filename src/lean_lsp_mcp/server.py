@@ -153,11 +153,7 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
             logger.info("Ran `lake clean`")
 
         with OutputCapture() as output:
-            client = LeanLSPClient(
-                lean_project_path,
-                initial_build=True,
-                print_warnings=False,
-            )
+            client = LeanLSPClient(lean_project_path, initial_build=True)
 
         logger.info("Built project and re-started LSP client")
 
@@ -500,7 +496,8 @@ def multi_attempt(
             [line, 0],
         )
         # Apply the change to the file, capture diagnostics and goal state
-        diag = client.update_file(rel_path, [change])
+        client.update_file(rel_path, [change])
+        diag = client.get_diagnostics(rel_path)
         formatted_diag = "\n".join(format_diagnostics(diag, select_line=line - 1))
         goal = client.get_goal(rel_path, line - 1, len(snippet))
         formatted_goal = format_goal(goal, "Missing goal")
