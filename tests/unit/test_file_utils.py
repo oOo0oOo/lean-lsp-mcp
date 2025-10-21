@@ -49,15 +49,11 @@ def test_get_relative_file_path_handles_absolute_and_relative(
     assert get_relative_file_path(project, str(target)) == "src/Example.lean"
 
     # relative to project
-    assert (
-        get_relative_file_path(project, "src/Example.lean") == "src/Example.lean"
-    )
+    assert get_relative_file_path(project, "src/Example.lean") == "src/Example.lean"
 
     # relative to CWD
     monkeypatch.chdir(project)
-    assert (
-        get_relative_file_path(project, "src/Example.lean") == "src/Example.lean"
-    )
+    assert get_relative_file_path(project, "src/Example.lean") == "src/Example.lean"
 
 
 def test_get_file_contents_fallback_encoding(tmp_path: Path) -> None:

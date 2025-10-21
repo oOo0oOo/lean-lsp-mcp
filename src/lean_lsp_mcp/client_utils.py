@@ -27,15 +27,12 @@ def startup_client(ctx: Context):
     if client is not None:
         # Both are Path objects now, direct comparison works
         if client.project_path == lean_project_path:
-            logger.info(f"Reusing existing LSP client for {lean_project_path}")
             return  # Client already set up correctly - reuse it!
         # Different project path - close old client
-        logger.info(f"Switching project from {client.project_path} to {lean_project_path}")
         client.close()
         ctx.request_context.lifespan_context.file_content_hashes.clear()
 
     # Need to create a new client
-    logger.info(f"Creating new LSP client for {lean_project_path}")
     with OutputCapture() as output:
         try:
             client = LeanLSPClient(lean_project_path)
@@ -81,7 +78,7 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
             startup_client(ctx)
             return rel_path
 
-    # Try to find the new correct project path by checking all directories in file_path.
+    # Try to find the correct project path by checking all directories in file_path.
     file_path_obj = Path(file_path)
     rel_path = None
     for parent in file_path_obj.parents:

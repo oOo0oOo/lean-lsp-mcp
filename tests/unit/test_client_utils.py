@@ -112,3 +112,70 @@ def test_setup_client_for_file_discovers_project(
     assert rel_path == "src/Example.lean"
     assert ctx.request_context.lifespan_context.client.project_path == project
     assert len(patched_clients) == 1
+
+
+def test_setup_client_for_file_reuses_client_for_same_project(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    """Verify that multiple files in the same project reuse the same client."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+
+    file1 = project / "File1.lean"
+    file1.write_text("theorem a : True := by trivial")
+
+    file2 = project / "src" / "File2.lean"
+    file2.parent.mkdir(parents=True)
+    file2.write_text("theorem b : True := by trivial")
+
+    ctx = _Context(_LifespanContext(None, None))
+
+    # Setup for first file
+    rel_path1 = setup_client_for_file(ctx, str(file1))
+    assert rel_path1 == "File1.lean"
+    first_client = ctx.request_context.lifespan_context.client
+    assert len(patched_clients) == 1
+
+    # Setup for second file in same project should reuse client
+    rel_path2 = setup_client_for_file(ctx, str(file2))
+    assert rel_path2 == "src/File2.lean"
+    assert ctx.request_context.lifespan_context.client is first_client
+    assert not first_client.closed
+    assert len(patched_clients) == 1  # No new client created
+
+
+def test_setup_client_for_file_switches_projects(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    """Verify that switching to a different project closes old client and creates new one."""
+    project1 = tmp_path / "proj1"
+    project1.mkdir()
+    (project1 / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    file1 = project1 / "File1.lean"
+    file1.write_text("theorem a : True := by trivial")
+
+    project2 = tmp_path / "proj2"
+    project2.mkdir()
+    (project2 / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    file2 = project2 / "File2.lean"
+    file2.write_text("theorem b : True := by trivial")
+
+    ctx = _Context(_LifespanContext(None, None))
+
+    # Setup for first project
+    rel_path1 = setup_client_for_file(ctx, str(file1))
+    assert rel_path1 == "File1.lean"
+    first_client = ctx.request_context.lifespan_context.client
+    assert len(patched_clients) == 1
+
+    # Switch to second project
+    rel_path2 = setup_client_for_file(ctx, str(file2))
+    assert rel_path2 == "File2.lean"
+    second_client = ctx.request_context.lifespan_context.client
+
+    # Old client should be closed, new one created
+    assert first_client.closed
+    assert second_client is not first_client
+    assert len(patched_clients) == 2
+    assert ctx.request_context.lifespan_context.lean_project_path == project2
