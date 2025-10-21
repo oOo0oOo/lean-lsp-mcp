@@ -18,8 +18,6 @@
 
 MCP server that allows agentic interaction with the [Lean theorem prover](https://lean-lang.org/) via the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) using [leanclient](https://github.com/oOo0oOo/leanclient). This server provides a range of tools for LLM agents to understand, analyze and interact with Lean projects.
 
-**Currently beta testing**: Please help us by submitting bug reports and feature requests!
-
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
@@ -37,31 +35,17 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 
 ### 1. Install uv
 
-[Install uv](https://docs.astral.sh/uv/getting-started/installation/) for your system.
-
-E.g. on Linux/MacOS:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+[Install uv](https://docs.astral.sh/uv/getting-started/installation/) for your system. On Linux/MacOS: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 ### 2. Run `lake build`
 
-`lean-lsp-mcp` will run `lake build` in the project root to use the language server (for most tools). Some clients (e.g. Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster build time and avoids timeouts.
+`lean-lsp-mcp` will run `lake serve` in the project root to use the language server (for most tools). Some clients (e.g. Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster build time and avoids timeouts.
 
-E.g. on Linux/MacOS:
-```bash
-cd /path/to/lean/project
-lake build
-```
+### 3. Configure your IDE/Setup
 
-Note: Your build does not necessarily need to be successful, some errors or warnings (e.g. `declaration uses 'sorry'`) are OK.
-
-### 3. a) VSCode Setup
-
-VSCode and VSCode Insiders are supporting MCPs in [agent mode](https://code.visualstudio.com/blogs/2025/04/07/agentMode). For VSCode you might have to enable `Chat > Agent: Enable` in the settings.
-
-1. One-click config setup:
+<details>
+<summary><b>VSCode</b></summary>
+One-click config setup:
 
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%7D)
 
@@ -86,11 +70,10 @@ OR manually add config to `mcp.json`:
     }
 }
 ```
+</details>
 
-2. Click "Start" above server config, open a Lean file, change to agent mode in the chat and run e.g. "auto proof" to get started.
-
-### 3. b) Cursor Setup
-
+<details>
+<summary><b>Cursor</b></summary>
 1. Open MCP Settings (File > Preferences > Cursor Settings > MCP)
 
 2. "+ Add a new global MCP Server" > ("Create File")
@@ -107,9 +90,10 @@ OR manually add config to `mcp.json`:
     }
 }
 ```
+</details>
 
-### 3. c) Claude Code
-
+<details>
+<summary><b>Claude Code</b></summary>
 Run one of these commands in the root directory of your Lean project (where `lakefile.toml` is located):
 
 ```bash
@@ -124,83 +108,18 @@ claude mcp add lean-lsp uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
 ```
 
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
+</details>
 
-#### Lean4 Theorem Proving - Claude Skill
+#### Claude Skill: Lean4 Theorem Proving
 
-If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-theorem-proving-skill). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
-
-### Other Setups
-
-Other setups, such as [Claude Desktop](https://modelcontextprotocol.io/quickstart/user), [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/mcp/), [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) or [Goose](https://block.github.io/goose/docs/getting-started/using-extensions) should work with similar configs.
+If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
 
 ### 4. Install ripgrep (optional but recommended)
 
-For the local search tool `lean_local_search`, please install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
+For the local search tool `lean_local_search`, install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
 
-### Transport Methods
+## MCP Tools
 
-The Lean LSP MCP server supports the following transport methods:
-
-- `stdio`: Standard input/output (default)
-- `streamable-http`: HTTP streaming
-- `sse`: Server-sent events (MCP legacy, use `streamable-http` if possible)
-
-You can specify the transport method using the `--transport` argument when running the server. For `sse` and `streamable-http` you can also optionally specify the host and port:
-
-```bash
-uvx lean-lsp-mcp --transport stdio # Default transport
-uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
-uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at http://localhost:12345/sse
-```
-
-### Bearer Token Authentication
-
-Transport via `streamable-http` and `sse` supports bearer token authentication. This allows publicly accessible MCP servers to restrict access to authorized clients.
-
-Set the `LEAN_LSP_MCP_TOKEN` environment variable (or see section 3 for setting env variables in MCP config) to a secret token before starting the server.
-
-Example Linux/MacOS setup:
-
-```bash
-export LEAN_LSP_MCP_TOKEN="your_secret_token"
-uvx lean-lsp-mcp --transport streamable-http
-```
-
-Clients should then include the token in the `Authorization` header.
-
-### Environment Variables
-
-Some (optional) features and integrations of `lean-lsp-mcp` are configured using environment variables. These must be set in your shell or process environment before running the server.
-
-- `LEAN_PROJECT_PATH`: (optional) Path to your Lean project root. Set this if the server cannot automatically detect your project.
-- `LEAN_LOG_LEVEL`: (optional) Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
-- `LEAN_LSP_MCP_TOKEN`: (optional) Secret token for bearer authentication when using `streamable-http` or `sse` transport.
-- `LEAN_STATE_SEARCH_URL`: (optional) URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
-- `LEAN_HAMMER_URL`: (optional) URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
-
-You can also often set these environment variables in your MCP client configuration:
-
-```jsonc
-{
-    "servers": {
-        "lean-lsp": {
-            "type": "stdio",
-            "command": "uvx",
-            "args": [
-                "lean-lsp-mcp"
-            ],
-            "env": {
-                "LEAN_PROJECT_PATH": "/path/to/your/lean/project",
-                "LEAN_LOG_LEVEL": "NONE"
-            }
-        }
-    }
-}
-```
-
-## Tools
-
-Tools are currently the only way to interact with the MCP server.
 
 ### File interactions (LSP)
 
@@ -215,16 +134,18 @@ Get all diagnostic messages for a Lean file. This includes infos, warnings and e
 <details>
 <summary>Example output</summary>
 
-l20c42-l20c46, severity: 1<br>
+```
+l20c42-l20c46, severity: 1
 simp made no progress
 
-l21c11-l21c45, severity: 1<br>
+l21c11-l21c45, severity: 1
 function expected at
   h_empty
 term has type
   T ∩ compl T = ∅
 
 ...
+```
 </details>
 
 #### lean_goal
@@ -233,21 +154,24 @@ Get the proof goal at a specific location (line or line & column) in a Lean file
 
 <details>
 <summary>Example output (line)</summary>
-Before:<br>
-S : Type u_1<br>
-inst✝¹ : Fintype S<br>
-inst✝ : Nonempty S<br>
-P : Finset (Set S)<br>
-hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
-hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
-compl : Set S → Set S := fun T ↦ univ \ T<br>
-hcompl : ∀ T ∈ P, compl T ∉ P<br>
-all_subsets : Finset (Set S) := Finset.univ<br>
-h_comp_in_P : ∀ T ∉ P, compl T ∈ P<br>
-h_partition : ∀ (T : Set S), T ∈ P ∨ compl T ∈ P<br>
-⊢ P.card = 2 ^ (Fintype.card S - 1)<br>
-After:<br>
+
+```
+Before:
+S : Type u_1
+inst✝¹ : Fintype S
+inst✝ : Nonempty S
+P : Finset (Set S)
+hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅
+hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅
+compl : Set S → Set S := fun T ↦ univ \ T
+hcompl : ∀ T ∈ P, compl T ∉ P
+all_subsets : Finset (Set S) := Finset.univ
+h_comp_in_P : ∀ T ∉ P, compl T ∈ P
+h_partition : ∀ (T : Set S), T ∈ P ∨ compl T ∈ P
+⊢ P.card = 2 ^ (Fintype.card S - 1)
+After:
 no goals
+```
 </details>
 
 #### lean_term_goal
@@ -260,13 +184,16 @@ Retrieve hover information (documentation) for symbols, terms, and expressions i
 
 <details>
 <summary>Example output (hover info on a `sorry`)</summary>
-The `sorry` tactic is a temporary placeholder for an incomplete tactic proof,<br>
-closing the main goal using `exact sorry`.<br><br>
 
-This is intended for stubbing-out incomplete parts of a proof while still having a syntactically correct proof skeleton.<br>
-Lean will give a warning whenever a proof uses `sorry`, so you aren't likely to miss it,<br>
-but you can double check if a theorem depends on `sorry` by looking for `sorryAx` in the output<br>
-of the `#print axioms my_thm` command, the axiom used by the implementation of `sorry`.<br>
+```
+The `sorry` tactic is a temporary placeholder for an incomplete tactic proof,
+closing the main goal using `exact sorry`.
+
+This is intended for stubbing-out incomplete parts of a proof while still having a syntactically correct proof skeleton.
+Lean will give a warning whenever a proof uses `sorry`, so you aren't likely to miss it,
+but you can double check if a theorem depends on `sorry` by looking for `sorryAx` in the output
+of the `#print axioms my_thm` command, the axiom used by the implementation of `sorry`.
+```
 </details>
 
 #### lean_declaration_file
@@ -282,8 +209,11 @@ Code auto-completion: Find available identifiers or import suggestions at a spec
 Run/compile an independent Lean code snippet/file and return the result or error message.
 <details>
 <summary>Example output (code snippet: `#eval 5 * 7 + 3`)</summary>
-l1c1-l1c6, severity: 3<br>
+
+```
+l1c1-l1c6, severity: 3
 38
+```
 </details>
 
 #### lean_multi_attempt
@@ -293,29 +223,32 @@ This tool is useful to screen different proof attempts before using the most pro
 
 <details>
 <summary>Example output (attempting `rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]` and `by_contra h_neq`)</summary>
-  rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]:<br>
-S : Type u_1<br>
-inst✝¹ : Fintype S<br>
-inst✝ : Nonempty S<br>
-P : Finset (Set S)<br>
-hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
-hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
-⊢ P.card = 2 ^ (Fintype.card S - 1)<br>
-<br>
-l14c7-l14c51, severity: 1<br>
-unknown constant 'Nat.pow_sub'<br>
-<br>
-  by_contra h_neq:<br>
- S : Type u_1<br>
-inst✝¹ : Fintype S<br>
-inst✝ : Nonempty S<br>
-P : Finset (Set S)<br>
-hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
-hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅<br>
-h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)<br>
-⊢ False<br>
-<br>
+
+```
+  rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]:
+S : Type u_1
+inst✝¹ : Fintype S
+inst✝ : Nonempty S
+P : Finset (Set S)
+hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅
+hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅
+⊢ P.card = 2 ^ (Fintype.card S - 1)
+
+l14c7-l14c51, severity: 1
+unknown constant 'Nat.pow_sub'
+
+  by_contra h_neq:
+ S : Type u_1
+inst✝¹ : Fintype S
+inst✝ : Nonempty S
+P : Finset (Set S)
+hPP : ∀ T ∈ P, ∀ U ∈ P, T ∩ U ≠ ∅
+hPS : ¬∃ T ∉ P, ∀ U ∈ P, T ∩ U ≠ ∅
+h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
+⊢ False
+
 ...
+```
 </details>
 
 ### Local Search Tools
@@ -329,7 +262,7 @@ This tool requires [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov
 
 ### External Search Tools
 
-Currently all external tools are **rate limited to 3 requests per 30 seconds**. This will change based on provider feedback.
+Currently all external tools are separately **rate limited to 3 requests per 30 seconds**.
 
 #### lean_leansearch
 
@@ -437,7 +370,7 @@ Note: We use a simplified version, [LeanHammer](https://github.com/JOSHCLUNE/Lea
 
 Rebuild the Lean project and restart the Lean LSP server.
 
-## Disabling Tools
+### Disabling Tools
 
 Many clients allow the user to disable specific tools manually (e.g. lean_build).
 
@@ -445,32 +378,71 @@ Many clients allow the user to disable specific tools manually (e.g. lean_build)
 
 **Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
-## Example Uses
+## MCP Configuration
 
-Here are a few example prompts and interactions to try. All examples use VSCode (Agent Mode) and Gemini 2.5 Pro (Preview).
+This MCP server works out-of-the-box without any configuration. However, a few optional settings are available.
 
-### Use tools to assist with a proof
+### Environment Variables
 
-After installing the MCP, tools are **automatically available** to the agent.
-E.g. Open a Lean file with a sorry and run the following prompt: "Solve this sorry"
-The agent should use various tools such as `lean_goal` to understand and create a proof.
-You can also ask the agent to use tools explicitly, e.g. "Help me write this proof using tools." or "Use tools to analyze the goal and hover information, then write a proof."
+- `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
+- `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
+- `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 
-### Analyze a theorem
+You can also often set these environment variables in your MCP client configuration:
+<details>
+<summary><b>VSCode mcp.json Example</b></summary>
 
-Open `Algebra/Lie/Abelian.lean`. Example prompt:
+```jsonc
+{
+    "servers": {
+        "lean-lsp": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "lean-lsp-mcp"
+            ],
+            "env": {
+                "LEAN_PROJECT_PATH": "/path/to/your/lean/project",
+                "LEAN_LOG_LEVEL": "NONE"
+            }
+        }
+    }
+}
+```
+</details>
 
-"Analyze commutative_ring_iff_abelian_lie_ring thoroughly using various tools such as goal, term goal, hover info. Explain the key proof steps in english.".
+### Transport Methods
 
-![Analyzing a theorem in chat](media/analyze_theorem.png)
+The Lean LSP MCP server supports the following transport methods:
 
-### Design proof approaches
+- `stdio`: Standard input/output (default)
+- `streamable-http`: HTTP streaming
+- `sse`: Server-sent events (MCP legacy, use `streamable-http` if possible)
 
-Open an incomplete proof such as [putnam 1964 b2](https://github.com/trishullab/PutnamBench/blob/main/lean4/src/putnam_1964_b2.lean). Example prompt:
+You can specify the transport method using the `--transport` argument when running the server. For `sse` and `streamable-http` you can also optionally specify the host and port:
 
-"First analyze the problem statement by checking the goal, hover info and looking up key declarations. Next use up to three queries to leansearch to design three different approaches to solve this problem. Very concisely present each approach and its key challenge."
+```bash
+uvx lean-lsp-mcp --transport stdio # Default transport
+uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
+uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at http://localhost:12345/sse
+```
 
-![Designing proof approaches](media/proof_approaches.png)
+### Bearer Token Authentication
+
+Transport via `streamable-http` and `sse` supports bearer token authentication. This allows publicly accessible MCP servers to restrict access to authorized clients.
+
+Set the `LEAN_LSP_MCP_TOKEN` environment variable (or see section 3 for setting env variables in MCP config) to a secret token before starting the server.
+
+Example Linux/MacOS setup:
+
+```bash
+export LEAN_LSP_MCP_TOKEN="your_secret_token"
+uvx lean-lsp-mcp --transport streamable-http
+```
+
+Clients should then include the token in the `Authorization` header.
 
 ## Notes on MCP Security
 
@@ -485,13 +457,15 @@ Please be aware of these risks. Feel free to audit the code and report security 
 
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
 
-## MCP Inspector
+## Development
+
+### MCP Inspector
 
 ```bash
 npx @modelcontextprotocol/inspector uvx --with-editable path/to/lean-lsp-mcp python -m lean_lsp_mcp.server
 ```
 
-## Run Tests
+### Run Tests
 
 ```bash
 uv sync --all-extras
