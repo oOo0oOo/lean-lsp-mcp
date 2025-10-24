@@ -529,7 +529,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     abs_path = lean_project_path / rel_path
 
     try:
-        with open(abs_path, "w") as f:
+        with open(abs_path, "w", encoding="utf-8") as f:
             f.write(code)
     except Exception as e:
         return f"Error writing code snippet to file `{abs_path}`:\n{str(e)}"

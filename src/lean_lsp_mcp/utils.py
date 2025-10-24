@@ -16,7 +16,9 @@ class OutputCapture:
         self.captured_output = ""
 
     def __enter__(self):
-        self.temp_file = tempfile.NamedTemporaryFile(mode="w+", delete=False)
+        self.temp_file = tempfile.NamedTemporaryFile(
+            mode="w+", delete=False, encoding="utf-8"
+        )
         self.original_stdout_fd = os.dup(sys.stdout.fileno())
         self.original_stderr_fd = os.dup(sys.stderr.fileno())
         os.dup2(self.temp_file.fileno(), sys.stdout.fileno())

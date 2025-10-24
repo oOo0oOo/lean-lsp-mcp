@@ -19,7 +19,7 @@ async def _collect_logs(
     env = _server_environment(repo_root)
     env.update(env_overrides)
 
-    with tempfile.TemporaryFile(mode="w+") as errlog:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as errlog:
         server = StdioServerParameters(
             command=sys.executable,
             args=["-m", "lean_lsp_mcp", "--transport", "stdio"],
