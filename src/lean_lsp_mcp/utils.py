@@ -192,36 +192,6 @@ def format_line(
 def filter_diagnostics_by_position(
     diagnostics: List[Dict], line: int, column: Optional[int]
 ) -> List[Dict]:
-    """Find diagnostics at a specific position.
+    """Filter diagnostics to only include those at a specific position."""
 
-    Args:
-        diagnostics (List[Dict]): List of diagnostics.
-        line (int): The line number (0-indexed).
-        column (Optional[int]): The column number (0-indexed).
-
-    Returns:
-        List[Dict]: List of diagnostics at the specified position.
-    """
-    if column is None:
-        return [
-            d
-            for d in diagnostics
-            if d["range"]["start"]["line"] <= line <= d["range"]["end"]["line"]
-        ]
-
-    return [
-        d
-        for d in diagnostics
-        if d["range"]["start"]["line"] <= line <= d["range"]["end"]["line"]
-        and d["range"]["start"]["character"] <= column < d["range"]["end"]["character"]
-    ]
-
-
-class OptionalTokenVerifier(TokenVerifier):
-    def __init__(self, expected_token: str):
-        self.expected_token = expected_token
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        if token == self.expected_token:
-            return AccessToken(token=token, client_id="lean-lsp-mcp", scopes=["user"])
-        return None
+    return _filter_diagnostics(diagnostics, line, column)

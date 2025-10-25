@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from threading import Lock
 
@@ -64,22 +65,62 @@ def valid_lean_project_path(path: Path | str) -> bool:
 
 
 def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
-    """Check if the current LSP client is already set up and correct for this file. Otherwise, set it up.
+    """Ensure the LSP client matches the file's Lean project and return its relative path."""
 
-    Args:
-        ctx (Context): Context object.
-        file_path (str): Absolute path to the Lean file.
+    lifespan = ctx.request_context.lifespan_context
+    project_cache = getattr(lifespan, "project_cache", {})
+    if not hasattr(lifespan, "project_cache"):
+        lifespan.project_cache = project_cache
 
-    Returns:
-        str: Relative file path if the client is set up correctly, otherwise None.
-    """
-    # Check if the file_path works for the current lean_project_path.
-    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
-    if lean_project_path is not None:
-        rel_path = get_relative_file_path(lean_project_path, file_path)
+    abs_file_path = os.path.abspath(file_path)
+    file_dir = os.path.dirname(abs_file_path)
+
+    def activate_project(project_path: Path | str, cache_dirs: list[str]) -> str | None:
+        rel = get_relative_file_path(project_path, file_path)
+        if rel is None:
+            return None
+
+        project_path_obj = (
+            project_path if isinstance(project_path, Path) else Path(project_path)
+        ).resolve()
+        lifespan.lean_project_path = project_path_obj
+
+        cache_targets: list[str] = []
+        for directory in cache_dirs + [str(project_path_obj)]:
+            if directory and directory not in cache_targets:
+                cache_targets.append(directory)
+
+        for directory in cache_targets:
+            project_cache[directory] = project_path_obj
+
+        startup_client(ctx)
+        return rel
+
+    # Fast path: current Lean project already valid for this file
+    if lifespan.lean_project_path is not None:
+        rel_path = activate_project(lifespan.lean_project_path, [file_dir])
         if rel_path is not None:
-            startup_client(ctx)
             return rel_path
+
+    # Walk up from file directory to root, using cache hits or lean-toolchain
+    prev_dir = None
+    current_dir = file_dir
+    while current_dir and current_dir != prev_dir:
+        cached_root = project_cache.get(current_dir)
+        if cached_root:
+            rel_path = activate_project(cached_root, [current_dir])
+            if rel_path is not None:
+                return rel_path
+        elif valid_lean_project_path(current_dir):
+            rel_path = activate_project(current_dir, [current_dir])
+            if rel_path is not None:
+                return rel_path
+        else:
+            project_cache[current_dir] = ""
+        prev_dir = current_dir
+        current_dir = os.path.dirname(current_dir)
+
+    return None
 
     # Try to find the correct project path by checking all directories in file_path.
     file_path_obj = Path(file_path)
