@@ -150,20 +150,11 @@ async def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = F
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         if clean:
-            # Run clean in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
-            )
+            subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
             logger.info("Ran `lake clean`")
 
         # Fetch cache
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: subprocess.run(["lake", "exe", "cache", "get"], cwd=lean_project_path_obj, check=False)
-        )
+        subprocess.run(["lake", "exe", "cache", "get"], cwd=lean_project_path_obj, check=False)
 
         # Run build with progress reporting
         process = await asyncio.create_subprocess_exec(
