@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -123,7 +124,7 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 
 # Project level tools
 @mcp.tool("lean_build")
-def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) -> str:
+async def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) -> str:
     """Build the Lean project and restart the LSP Server.
 
     Use only if needed (e.g. new imports).
@@ -149,16 +150,71 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         if clean:
-            subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
+            # Run clean in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
+            )
             logger.info("Ran `lake clean`")
 
-        with OutputCapture() as output:
-            client = LeanLSPClient(lean_project_path_obj, initial_build=True)
+        # Fetch cache
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(["lake", "exe", "cache", "get"], cwd=lean_project_path_obj, check=False)
+        )
+
+        # Run build with progress reporting
+        process = await asyncio.create_subprocess_exec(
+            "lake", "build", "--verbose",
+            cwd=lean_project_path_obj,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+
+        output_lines = []
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+
+            line_str = line.decode('utf-8', errors='replace').rstrip()
+            output_lines.append(line_str)
+
+            # Parse progress: look for pattern like "[2/8]" or "[10/100]"
+            match = re.search(r'\[(\d+)/(\d+)\]', line_str)
+            if match:
+                current_job = int(match.group(1))
+                total_jobs = int(match.group(2))
+
+                # Extract what's being built
+                # Line format: "ℹ [2/8] Built TestLeanBuild.Basic (1.6s)"
+                desc_match = re.search(r'\[\d+/\d+\]\s+(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$', line_str)
+                description = desc_match.group(1) if desc_match else "Building"
+
+                # Report progress using dynamic totals from Lake
+                await ctx.report_progress(
+                    progress=current_job,
+                    total=total_jobs,
+                    message=description
+                )
+
+        await process.wait()
+
+        if process.returncode != 0:
+            build_output = "\n".join(output_lines)
+            raise Exception(f"Build failed with return code {process.returncode}")
+
+        # Start LSP client (without initial build since we just did it)
+        with OutputCapture() as lsp_output:
+            client = LeanLSPClient(lean_project_path_obj, initial_build=False)
 
         logger.info("Built project and re-started LSP client")
 
         ctx.request_context.lifespan_context.client = client
-        build_output = output.get_output()
+        build_output = "\n".join(output_lines)
         return build_output
     except Exception as e:
         return f"Error during build:\n{str(e)}\n{build_output}"
