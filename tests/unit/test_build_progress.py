@@ -63,13 +63,9 @@ Build completed successfully (8 jobs).
     mock_client = MagicMock()
 
     with patch('lean_lsp_mcp.server.asyncio.create_subprocess_exec', mock_subprocess), \
-         patch('lean_lsp_mcp.server.asyncio.get_event_loop') as mock_loop, \
          patch('lean_lsp_mcp.server.LeanLSPClient', return_value=mock_client), \
          patch('lean_lsp_mcp.server.OutputCapture'), \
          patch('lean_lsp_mcp.server.subprocess.run'):
-
-        # Mock executor for cache get
-        mock_loop.return_value.run_in_executor = AsyncMock(return_value=None)
 
         result = await lsp_build(mock_ctx, lean_project_path="/fake/path")
 
@@ -135,12 +131,9 @@ Done.
     mock_client = MagicMock()
 
     with patch('lean_lsp_mcp.server.asyncio.create_subprocess_exec', mock_subprocess), \
-         patch('lean_lsp_mcp.server.asyncio.get_event_loop') as mock_loop, \
          patch('lean_lsp_mcp.server.LeanLSPClient', return_value=mock_client), \
          patch('lean_lsp_mcp.server.OutputCapture'), \
          patch('lean_lsp_mcp.server.subprocess.run'):
-
-        mock_loop.return_value.run_in_executor = AsyncMock(return_value=None)
 
         result = await lsp_build(mock_ctx, lean_project_path="/fake/path")
 
