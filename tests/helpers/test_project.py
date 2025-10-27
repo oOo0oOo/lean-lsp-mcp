@@ -17,6 +17,7 @@ defaultTargets = [\"McpTestProject\"]
 [[require]]
 name = \"mathlib\"
 scope = \"leanprover-community\"
+rev = \"v4.24.0\"
 
 [[lean_lib]]
 name = \"McpTestProject\"
@@ -28,7 +29,7 @@ abbrev sampleValue : ℕ := 42
 """
 
 LAKE_COMMANDS: Final[tuple[Sequence[str], ...]] = (
-    ("lake", "update"),
+    ("lake", "update", "--keep-toolchain"),
     ("lake", "exe", "cache", "get"),
     ("lake", "build"),
 )
