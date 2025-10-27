@@ -66,6 +66,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             rate_limit={
                 "leansearch": [],
                 "loogle": [],
+                "leanfinder": [],
                 "lean_state_search": [],
                 "hammer_premise": [],
             },
@@ -668,6 +669,77 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
         return results
     except Exception as e:
         return f"loogle error:\n{str(e)}"
+
+
+@mcp.tool("lean_leanfinder")
+@rate_limited("leanfinder", max_requests=3, per_seconds=30)
+def leanfinder(
+    ctx: Context, query: str, num_results: int = 5
+) -> List[tuple] | str:
+    """Semantic search using Lean Finder.
+
+    Query patterns:
+      - Informalized: "algebraic elements x,y over K with same minimal polynomial"
+      - User question: "Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?"
+      - Proof state: "⊢ |re z| ≤ ‖z‖" + "transform to squared norm inequality"
+      - Statement fragment: "theorem restrict Ioi: restrict Ioi e = restrict Ici e"
+
+    Args:
+        query (str): Natural language, proof state, or Lean code fragment
+        num_results (int, optional): Max results. Defaults to 5.
+
+    Returns:
+        List[tuple] | str: List of (formal_statement, informal_description) tuples or error
+    """
+    try:
+        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+        payload = json.dumps({"data": [query, num_results, "Normal"]}).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://delta-lab-ai-lean-finder.hf.space/gradio_api/call/retrieve",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            event_data = json.loads(response.read().decode("utf-8"))
+            event_id = event_data.get("event_id")
+
+        if not event_id:
+            return "leanfinder error: No event ID returned"
+
+        result_url = f"https://delta-lab-ai-lean-finder.hf.space/gradio_api/call/retrieve/{event_id}"
+        req = urllib.request.Request(result_url, headers=headers, method="GET")
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            for line in response:
+                line = line.decode("utf-8").strip()
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    if isinstance(data, list) and len(data) > 0:
+                        html = data[0] if isinstance(data[0], str) else str(data)
+
+                        # Parse HTML table rows
+                        rows = re.findall(
+                            r"<tr><td>\d+</td><td>(.*?)</td><td>(.*?)</td></tr>",
+                            html, re.DOTALL
+                        )
+                        results = []
+                        for formal_cell, informal_cell in rows:
+                            formal = re.search(r"<code[^>]*>(.*?)</code>", formal_cell, re.DOTALL)
+                            informal = re.search(r"<span[^>]*>(.*?)</span>", informal_cell, re.DOTALL)
+                            if formal:
+                                results.append((
+                                    formal.group(1).strip(),
+                                    informal.group(1).strip() if informal else ""
+                                ))
+
+                        return results if results else "No results parsed"
+
+        return "leanfinder error: No results received"
+    except Exception as e:
+        return f"leanfinder error:\n{str(e)}"
 
 
 @mcp.tool("lean_state_search")
