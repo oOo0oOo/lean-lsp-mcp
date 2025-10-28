@@ -199,8 +199,8 @@ async def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = F
             raise Exception(f"Build failed with return code {process.returncode}")
 
         # Start LSP client (without initial build since we just did it)
-        with OutputCapture() as lsp_output:
-            client = LeanLSPClient(lean_project_path_obj, initial_build=False)
+        with OutputCapture():
+            client = LeanLSPClient(lean_project_path_obj, initial_build=False, prevent_cache_get=True)
 
         logger.info("Built project and re-started LSP client")
 
