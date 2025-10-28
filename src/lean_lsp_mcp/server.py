@@ -672,7 +672,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 
 
 @mcp.tool("lean_leanfinder")
-@rate_limited("leanfinder", max_requests=3, per_seconds=30)
+@rate_limited("leanfinder", max_requests=30, per_seconds=30)
 def leanfinder(
     ctx: Context, query: str, num_results: int = 5
 ) -> List[tuple] | str:
