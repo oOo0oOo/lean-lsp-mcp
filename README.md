@@ -70,6 +70,27 @@ OR manually add config to `mcp.json`:
     }
 }
 ```
+
+If you installed VSCode on Windows and are using WSL2 as your development environment, you may need to use this config instead:
+
+```jsonc
+{
+	"servers": {
+		"lean-lsp": {
+			"type": "stdio",
+			"command": "C:\\Windows\\System32\\wsl.exe",
+			"args": [
+				"-d", "Ubuntu",
+				"uvx",
+				"lean-lsp-mcp"
+			]
+		}
+	},
+	"inputs": []
+}
+```
+If that doesn't work, you can try cloning this repository and replace `"lean-lsp-mcp"` with `"/path/to/cloned/lean-lsp-mcp"`, or replacing `"Ubuntu"` with your exact distro version, which can be found by running `C:\Windows\System32\wsl.exe -l -q` in PowerShell.
+
 </details>
 
 <details>
