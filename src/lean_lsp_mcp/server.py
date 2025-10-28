@@ -672,24 +672,26 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 
 
 @mcp.tool("lean_leanfinder")
-@rate_limited("leanfinder", max_requests=30, per_seconds=30)
+@rate_limited("leanfinder", max_requests=10, per_seconds=30)
 def leanfinder(
     ctx: Context, query: str, num_results: int = 5
 ) -> List[tuple] | str:
-    """Semantic search using Lean Finder.
+    """Search Mathlib theorems/definitions semantically by mathematical concept using Lean Finder.
 
-    Query patterns:
-      - Informalized: "algebraic elements x,y over K with same minimal polynomial"
-      - User question: "Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?"
-      - Proof state: "⊢ |re z| ≤ ‖z‖" + "transform to squared norm inequality"
-      - Statement fragment: "theorem restrict Ioi: restrict Ioi e = restrict Ici e"
+    Effective query types:
+    - Math + API: "setAverage Icc interval", "integral_pow symmetric bounds"
+    - Conceptual: "algebraic elements same minimal polynomial", "quadrature nodes"
+    - Structure: "Finset expect sum commute", "polynomial degree bounded eval"
+    - Natural: "average equals point values", "root implies equal polynomials"
+
+    Tips: Mix informal math terms with Lean identifiers. Multiple targeted queries beat one complex query.
 
     Args:
-        query (str): Natural language, proof state, or Lean code fragment
+        query (str): Mathematical concepts combined with Lean terms
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[tuple] | str: List of (formal_statement, informal_description) tuples or error
+        List[tuple] | str: (lean_statement, english_description) pairs or error
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
