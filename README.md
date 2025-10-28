@@ -112,7 +112,7 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 #### Claude Skill: Lean4 Theorem Proving
 
-If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
+If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/plugins/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
 
 ### 4. Install ripgrep (optional but recommended)
 
