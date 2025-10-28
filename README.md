@@ -55,7 +55,11 @@ OR using the setup wizard:
 
 Ctrl+Shift+P > "MCP: Add Server..." > "Command (stdio)" > "uvx lean-lsp-mcp" > "lean-lsp" (or any name you like) > Global or Workspace
 
-OR manually add config to `mcp.json`:
+OR manually adding config by opening `mcp.json` with: 
+
+Ctrl+Shift+P > "MCP: Open User Configuration"
+
+and adding the following
 
 ```jsonc
 {
