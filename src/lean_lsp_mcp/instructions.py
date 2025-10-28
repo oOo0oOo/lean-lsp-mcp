@@ -11,5 +11,6 @@ INSTRUCTIONS = """## General Rules
 - lean_hover_info: Documentation about terms and lean syntax.
 - lean_leansearch: Search theorems using natural language or Lean terms.
 - lean_loogle: Search definitions and theorems by name, type, or subexpression.
+- lean_leanfinder: Semantic search for theorems using Lean Finder.
 - lean_state_search: Search theorems using goal-based search.
 """
