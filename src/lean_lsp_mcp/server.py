@@ -707,7 +707,7 @@ def leanfinder(
             event_id = event_data.get("event_id")
 
         if not event_id:
-            return "leanfinder error: No event ID returned"
+            return "Lean Finder has timed out or errored. It might be warming up, try a second time in 2 minutes."
 
         result_url = f"https://delta-lab-ai-lean-finder.hf.space/gradio_api/call/retrieve/{event_id}"
         req = urllib.request.Request(result_url, headers=headers, method="GET")
@@ -735,11 +735,11 @@ def leanfinder(
                                     informal.group(1).strip() if informal else ""
                                 ))
 
-                        return results if results else "No results parsed"
+                        return results if results else "Lean Finder: No results parsed"
 
-        return "leanfinder error: No results received"
+        return "Lean Finder: No results received"
     except Exception as e:
-        return f"leanfinder error:\n{str(e)}"
+        return f"Lean Finder Error:\n{str(e)}"
 
 
 @mcp.tool("lean_state_search")
