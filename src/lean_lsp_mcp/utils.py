@@ -80,10 +80,15 @@ def _utf16_index_to_py_index(text: str, utf16_index: int) -> int | None:
 
     units = 0
     for idx, ch in enumerate(text):
-        if units >= utf16_index:
-            return idx
         code_point = ord(ch)
-        units += 2 if code_point > 0xFFFF else 1
+        next_units = units + (2 if code_point > 0xFFFF else 1)
+
+        if utf16_index < next_units:
+            return idx
+        if utf16_index == next_units:
+            return idx + 1
+
+        units = next_units
     if units >= utf16_index:
         return len(text)
     return None
