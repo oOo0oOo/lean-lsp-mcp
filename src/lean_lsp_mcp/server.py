@@ -18,7 +18,7 @@ from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings
 from leanclient import LeanLSPClient, DocumentContentChange
 
-from lean_lsp_mcp.client_utils import setup_client_for_file
+from lean_lsp_mcp.client_utils import setup_client_for_file, startup_client
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
@@ -569,7 +569,8 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     Returns:
         List[str] | str: Diagnostics msgs or error msg
     """
-    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    lifespan_context = ctx.request_context.lifespan_context
+    lean_project_path = lifespan_context.lean_project_path
     if lean_project_path is None:
         return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
 
@@ -582,20 +583,30 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     except Exception as e:
         return f"Error writing code snippet to file `{abs_path}`:\n{str(e)}"
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    diagnostics: List[str] | str
+    client: LeanLSPClient | None = lifespan_context.client
+    diagnostics: List[str] | str = []
     close_error: str | None = None
     remove_error: str | None = None
+    opened_file = False
 
     try:
+        if client is None:
+            startup_client(ctx)
+            client = lifespan_context.client
+            if client is None:
+                return "Failed to initialize Lean client for run_code."
+
+        assert client is not None  # startup_client guarantees an initialized client
         client.open_file(rel_path)
+        opened_file = True
         diagnostics = format_diagnostics(client.get_diagnostics(rel_path))
     finally:
-        try:
-            client.close_files([rel_path])
-        except Exception as exc:  # pragma: no cover - close failures only logged
-            close_error = str(exc)
-            logger.warning("Failed to close `%s` after run_code: %s", rel_path, exc)
+        if opened_file:
+            try:
+                client.close_files([rel_path])
+            except Exception as exc:  # pragma: no cover - close failures only logged
+                close_error = str(exc)
+                logger.warning("Failed to close `%s` after run_code: %s", rel_path, exc)
         try:
             os.remove(abs_path)
         except FileNotFoundError:
