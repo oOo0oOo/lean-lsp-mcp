@@ -95,8 +95,8 @@ theorem test : ℕ → ℕ := by
                 content = f.read()
 
             assert content == lean_code, (
-                f"Unicode content was corrupted. "
-                f"Expected Unicode symbols to be preserved"
+                "Unicode content was corrupted. "
+                "Expected Unicode symbols to be preserved"
             )
 
         except UnicodeEncodeError as e:
