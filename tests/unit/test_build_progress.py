@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,7 +37,9 @@ Build completed successfully (8 jobs).
     mock_ctx.request_context.lifespan_context.file_content_hashes = {}
 
     async def track_progress(progress, total, message):
-        progress_calls.append({"progress": progress, "total": total, "message": message})
+        progress_calls.append(
+            {"progress": progress, "total": total, "message": message}
+        )
 
     mock_ctx.report_progress = AsyncMock(side_effect=track_progress)
 
@@ -48,11 +49,12 @@ Build completed successfully (8 jobs).
     mock_process.wait = AsyncMock()
 
     # Simulate streaming output line by line
-    lines = mock_build_output.split(b'\n')
+    lines = mock_build_output.split(b"\n")
+
     async def mock_readline():
         if lines:
-            return lines.pop(0) + b'\n'
-        return b''
+            return lines.pop(0) + b"\n"
+        return b""
 
     mock_process.stdout.readline = mock_readline
 
@@ -62,12 +64,13 @@ Build completed successfully (8 jobs).
     # Mock LeanLSPClient
     mock_client = MagicMock()
 
-    with patch('lean_lsp_mcp.server.asyncio.create_subprocess_exec', mock_subprocess), \
-         patch('lean_lsp_mcp.server.LeanLSPClient', return_value=mock_client), \
-         patch('lean_lsp_mcp.server.OutputCapture'), \
-         patch('lean_lsp_mcp.server.subprocess.run'):
-
-        result = await lsp_build(mock_ctx, lean_project_path="/fake/path")
+    with (
+        patch("lean_lsp_mcp.server.asyncio.create_subprocess_exec", mock_subprocess),
+        patch("lean_lsp_mcp.server.LeanLSPClient", return_value=mock_client),
+        patch("lean_lsp_mcp.server.OutputCapture"),
+        patch("lean_lsp_mcp.server.subprocess.run"),
+    ):
+        await lsp_build(mock_ctx, lean_project_path="/fake/path")
 
         # Verify progress was reported
         assert len(progress_calls) > 0, "No progress updates were reported"
@@ -75,12 +78,21 @@ Build completed successfully (8 jobs).
         # Verify we captured the progress markers
         # We expect to see [0/8], [1/8], [2/8], [3/8], [4/8], [5/8], [6/10], [7/10], [8/10]
         expected_progress = [
-            (0, 8), (1, 8), (2, 8), (3, 8), (4, 8), (5, 8), (6, 10), (7, 10), (8, 10)
+            (0, 8),
+            (1, 8),
+            (2, 8),
+            (3, 8),
+            (4, 8),
+            (5, 8),
+            (6, 10),
+            (7, 10),
+            (8, 10),
         ]
 
         actual_progress = [(call["progress"], call["total"]) for call in progress_calls]
-        assert actual_progress == expected_progress, \
+        assert actual_progress == expected_progress, (
             f"Expected progress {expected_progress} but got {actual_progress}"
+        )
 
         # Verify dynamic total (changes from 8 to 10)
         totals = [call["total"] for call in progress_calls]
@@ -89,8 +101,9 @@ Build completed successfully (8 jobs).
 
         # Verify messages contain build descriptions
         messages = [call["message"] for call in progress_calls]
-        assert any("Built" in msg for msg in messages), \
+        assert any("Built" in msg for msg in messages), (
             "Progress messages should contain 'Built'"
+        )
 
 
 @pytest.mark.asyncio
@@ -111,7 +124,9 @@ Done.
     mock_ctx.request_context.lifespan_context.file_content_hashes = {}
 
     async def track_progress(progress, total, message):
-        progress_calls.append({"progress": progress, "total": total, "message": message})
+        progress_calls.append(
+            {"progress": progress, "total": total, "message": message}
+        )
 
     mock_ctx.report_progress = AsyncMock(side_effect=track_progress)
 
@@ -119,27 +134,30 @@ Done.
     mock_process.returncode = 0
     mock_process.wait = AsyncMock()
 
-    lines = mock_build_output.split(b'\n')
+    lines = mock_build_output.split(b"\n")
+
     async def mock_readline():
         if lines:
-            return lines.pop(0) + b'\n'
-        return b''
+            return lines.pop(0) + b"\n"
+        return b""
 
     mock_process.stdout.readline = mock_readline
 
     mock_subprocess = AsyncMock(return_value=mock_process)
     mock_client = MagicMock()
 
-    with patch('lean_lsp_mcp.server.asyncio.create_subprocess_exec', mock_subprocess), \
-         patch('lean_lsp_mcp.server.LeanLSPClient', return_value=mock_client), \
-         patch('lean_lsp_mcp.server.OutputCapture'), \
-         patch('lean_lsp_mcp.server.subprocess.run'):
-
+    with (
+        patch("lean_lsp_mcp.server.asyncio.create_subprocess_exec", mock_subprocess),
+        patch("lean_lsp_mcp.server.LeanLSPClient", return_value=mock_client),
+        patch("lean_lsp_mcp.server.OutputCapture"),
+        patch("lean_lsp_mcp.server.subprocess.run"),
+    ):
         result = await lsp_build(mock_ctx, lean_project_path="/fake/path")
 
         # Should complete without error even with no progress markers
         assert "Error during build" not in result
 
         # No progress should be reported if there are no markers
-        assert len(progress_calls) == 0, \
+        assert len(progress_calls) == 0, (
             "Should not report progress when no markers are present"
+        )
