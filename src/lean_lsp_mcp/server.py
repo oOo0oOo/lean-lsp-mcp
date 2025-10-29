@@ -105,7 +105,14 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            rate_limit = kwargs["ctx"].request_context.lifespan_context.rate_limit
+            ctx = kwargs.get("ctx")
+            if ctx is None:
+                if not args:
+                    raise KeyError(
+                        "rate_limited wrapper requires ctx as a keyword argument or the first positional argument"
+                    )
+                ctx = args[0]
+            rate_limit = ctx.request_context.lifespan_context.rate_limit
             current_time = int(time.time())
             rate_limit[category] = [
                 timestamp
@@ -144,6 +151,12 @@ async def lsp_build(
     else:
         lean_project_path_obj = Path(lean_project_path).resolve()
         ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
+
+    if lean_project_path_obj is None:
+        return (
+            "Lean project path not known yet. Provide `lean_project_path` explicitly or call a "
+            "tool that infers it (e.g. `lean_file_contents`) before running `lean_build`."
+        )
 
     build_output = ""
     try:

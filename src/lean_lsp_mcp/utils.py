@@ -142,7 +142,8 @@ def format_line(
     if column is None:
         return line
     column -= 1
-    if column < 0 or column >= len(line):
+    # Allow placing the cursor at end-of-line (column == len(line))
+    if column < 0 or column > len(line):
         return "Invalid column number"
     return f"{line[:column]}{cursor_tag}{line[column:]}"
 
