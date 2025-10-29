@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -9,6 +10,7 @@ import urllib
 import json
 import functools
 import subprocess
+import uuid
 from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -16,7 +18,7 @@ from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings
 from leanclient import LeanLSPClient, DocumentContentChange
 
-from lean_lsp_mcp.client_utils import setup_client_for_file
+from lean_lsp_mcp.client_utils import setup_client_for_file, startup_client
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
@@ -124,7 +126,9 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 
 # Project level tools
 @mcp.tool("lean_build")
-def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) -> str:
+async def lsp_build(
+    ctx: Context, lean_project_path: str = None, clean: bool = False
+) -> str:
     """Build the Lean project and restart the LSP Server.
 
     Use only if needed (e.g. new imports).
@@ -153,13 +157,65 @@ def lsp_build(ctx: Context, lean_project_path: str = None, clean: bool = False) 
             subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
             logger.info("Ran `lake clean`")
 
-        with OutputCapture() as output:
-            client = LeanLSPClient(lean_project_path_obj, initial_build=True)
+        # Fetch cache
+        subprocess.run(
+            ["lake", "exe", "cache", "get"], cwd=lean_project_path_obj, check=False
+        )
+
+        # Run build with progress reporting
+        process = await asyncio.create_subprocess_exec(
+            "lake",
+            "build",
+            "--verbose",
+            cwd=lean_project_path_obj,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        output_lines = []
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+
+            line_str = line.decode("utf-8", errors="replace").rstrip()
+            output_lines.append(line_str)
+
+            # Parse progress: look for pattern like "[2/8]" or "[10/100]"
+            match = re.search(r"\[(\d+)/(\d+)\]", line_str)
+            if match:
+                current_job = int(match.group(1))
+                total_jobs = int(match.group(2))
+
+                # Extract what's being built
+                # Line format: "ℹ [2/8] Built TestLeanBuild.Basic (1.6s)"
+                desc_match = re.search(
+                    r"\[\d+/\d+\]\s+(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
+                )
+                description = desc_match.group(1) if desc_match else "Building"
+
+                # Report progress using dynamic totals from Lake
+                await ctx.report_progress(
+                    progress=current_job, total=total_jobs, message=description
+                )
+
+        await process.wait()
+
+        if process.returncode != 0:
+            build_output = "\n".join(output_lines)
+            raise Exception(f"Build failed with return code {process.returncode}")
+
+        # Start LSP client (without initial build since we just did it)
+        with OutputCapture():
+            client = LeanLSPClient(
+                lean_project_path_obj, initial_build=False, prevent_cache_get=True
+            )
 
         logger.info("Built project and re-started LSP client")
 
         ctx.request_context.lifespan_context.client = client
-        build_output = output.get_output()
+        build_output = "\n".join(output_lines)
         return build_output
     except Exception as e:
         return f"Error during build:\n{str(e)}\n{build_output}"
@@ -522,11 +578,12 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     Returns:
         List[str] | str: Diagnostics msgs or error msg
     """
-    lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+    lifespan_context = ctx.request_context.lifespan_context
+    lean_project_path = lifespan_context.lean_project_path
     if lean_project_path is None:
         return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
 
-    rel_path = "temp_snippet.lean"
+    rel_path = f"_mcp_snippet_{uuid.uuid4().hex}.lean"
     abs_path = lean_project_path / rel_path
 
     try:
@@ -535,14 +592,44 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     except Exception as e:
         return f"Error writing code snippet to file `{abs_path}`:\n{str(e)}"
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    diagnostics = format_diagnostics(client.get_diagnostics(rel_path))
-    client.close_files([rel_path])
+    client: LeanLSPClient | None = lifespan_context.client
+    diagnostics: List[str] | str = []
+    close_error: str | None = None
+    remove_error: str | None = None
+    opened_file = False
 
     try:
-        os.remove(abs_path)
-    except Exception as e:
-        return f"Error removing temporary file `{abs_path}`:\n{str(e)}"
+        if client is None:
+            startup_client(ctx)
+            client = lifespan_context.client
+            if client is None:
+                return "Failed to initialize Lean client for run_code."
+
+        assert client is not None  # startup_client guarantees an initialized client
+        client.open_file(rel_path)
+        opened_file = True
+        diagnostics = format_diagnostics(client.get_diagnostics(rel_path))
+    finally:
+        if opened_file:
+            try:
+                client.close_files([rel_path])
+            except Exception as exc:  # pragma: no cover - close failures only logged
+                close_error = str(exc)
+                logger.warning("Failed to close `%s` after run_code: %s", rel_path, exc)
+        try:
+            os.remove(abs_path)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            remove_error = str(e)
+            logger.warning(
+                "Failed to remove temporary Lean snippet `%s`: %s", abs_path, e
+            )
+
+    if remove_error:
+        return f"Error removing temporary file `{abs_path}`:\n{remove_error}"
+    if close_error:
+        return f"Error closing temporary Lean document `{rel_path}`:\n{close_error}"
 
     return (
         diagnostics

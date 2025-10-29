@@ -100,11 +100,9 @@ Run one of these commands in the root directory of your Lean project (where `lak
 # Local-scoped MCP server
 claude mcp add lean-lsp uvx lean-lsp-mcp
 
-# OR project-scoped MCP server (creates or updates a .mcp.json file in the current directory)
+# OR project-scoped MCP server
+# (creates or updates a .mcp.json file in the current directory)
 claude mcp add lean-lsp -s project uvx lean-lsp-mcp
-
-# OR If you run into issues with the project path (e.g. the language server directory cannot be found), you can also set it manually e.g.
-claude mcp add lean-lsp uvx lean-lsp-mcp -e LEAN_PROJECT_PATH=$PWD
 ```
 
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
@@ -112,7 +110,7 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 #### Claude Skill: Lean4 Theorem Proving
 
-If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
+If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/plugins/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
 
 ### 4. Install ripgrep (optional but recommended)
 
