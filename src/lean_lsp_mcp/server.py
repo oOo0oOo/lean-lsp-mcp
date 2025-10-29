@@ -162,6 +162,7 @@ async def lsp_build(
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
+            ctx.request_context.lifespan_context.client = None
             client.close()
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
