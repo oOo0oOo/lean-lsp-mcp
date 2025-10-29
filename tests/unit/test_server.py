@@ -39,6 +39,7 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         assert context.rate_limit == {
             "leansearch": [],
             "loogle": [],
+            "leanfinder": [],
             "lean_state_search": [],
             "hammer_premise": [],
         }
