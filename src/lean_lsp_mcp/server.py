@@ -595,6 +595,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     if lean_project_path is None:
         return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
 
+    # Use a unique snippet filename to avoid collisions under concurrency
     rel_path = f"_mcp_snippet_{uuid.uuid4().hex}.lean"
     abs_path = lean_project_path / rel_path
 

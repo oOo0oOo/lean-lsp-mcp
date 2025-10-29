@@ -73,6 +73,22 @@ def format_goal(goal, default_msg):
     return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
 
 
+def _utf16_index_to_py_index(text: str, utf16_index: int) -> int | None:
+    """Convert an LSP UTF-16 column index into a Python string index."""
+    if utf16_index < 0:
+        return None
+
+    units = 0
+    for idx, ch in enumerate(text):
+        if units >= utf16_index:
+            return idx
+        code_point = ord(ch)
+        units += 2 if code_point > 0xFFFF else 1
+    if units >= utf16_index:
+        return len(text)
+    return None
+
+
 def extract_range(content: str, range: dict) -> str:
     """Extract the text from the content based on the range.
 
@@ -88,16 +104,36 @@ def extract_range(content: str, range: dict) -> str:
     end_line = range["end"]["line"]
     end_char = range["end"]["character"]
 
-    lines = content.splitlines()
-    if start_line < 0 or end_line >= len(lines):
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        lines = [""]
+
+    line_offsets: List[int] = []
+    offset = 0
+    for line in lines:
+        line_offsets.append(offset)
+        offset += len(line)
+    total_length = len(content)
+
+    def position_to_offset(line: int, character: int) -> int | None:
+        if line == len(lines) and character == 0:
+            return total_length
+        if line < 0 or line >= len(lines):
+            return None
+        py_index = _utf16_index_to_py_index(lines[line], character)
+        if py_index is None:
+            return None
+        if py_index > len(lines[line]):
+            return None
+        return line_offsets[line] + py_index
+
+    start_offset = position_to_offset(start_line, start_char)
+    end_offset = position_to_offset(end_line, end_char)
+
+    if start_offset is None or end_offset is None or start_offset > end_offset:
         return "Range out of bounds"
-    if start_line == end_line:
-        return lines[start_line][start_char:end_char]
-    else:
-        selected_lines = lines[start_line : end_line + 1]
-        selected_lines[0] = selected_lines[0][start_char:]
-        selected_lines[-1] = selected_lines[-1][:end_char]
-        return "\n".join(selected_lines)
+
+    return content[start_offset:end_offset]
 
 
 def find_start_position(content: str, query: str) -> dict | None:
