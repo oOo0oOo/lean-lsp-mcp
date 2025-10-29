@@ -46,6 +46,16 @@ def test_extract_range_multiline() -> None:
     assert extract_range(content, selection) == "pha\nbe"
 
 
+def test_extract_range_handles_utf16_and_eof() -> None:
+    content = "A😀B\n"
+    selection = {
+        "start": {"line": 0, "character": 1},
+        "end": {"line": 1, "character": 0},
+    }
+
+    assert extract_range(content, selection) == "😀B\n"
+
+
 def test_find_start_position() -> None:
     content = "foo\nbar baz"
     assert find_start_position(content, "bar") == {"line": 1, "column": 0}

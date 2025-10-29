@@ -155,7 +155,7 @@ async def lsp_build(
     if lean_project_path_obj is None:
         return (
             "Lean project path not known yet. Provide `lean_project_path` explicitly or call a "
-            "tool that infers it (e.g. `lean_file_contents`) before running `lean_build`."
+            "tool that infers it (e.g. `lean_goal`) before running `lean_build`."
         )
 
     build_output = ""
