@@ -21,7 +21,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
-* **External Search Tools**: Use `leansearch`, `loogle`, `lean_hammer` and `lean_state_search` to find relevant theorems and definitions.
+* **External Search Tools**: Use `LeanSearch`, `Loogle`, `Lean Finder`, `Lean Hammer` and `Lean State Search` to find relevant theorems and definitions.
 * **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
@@ -260,7 +260,9 @@ This tool requires [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov
 
 ### External Search Tools
 
-Currently all external tools are separately **rate limited to 3 requests per 30 seconds**.
+Currently most external tools are separately **rate limited to 3 requests per 30 seconds**. Please don't ruin the fun for everyone by overusing these amazing free services!
+
+Please cite the original authors of these tools if you use them!
 
 #### lean_leansearch
 
@@ -310,6 +312,32 @@ Search for Lean definitions and theorems using [loogle.lean-lang.org](https://lo
   },
   ...
 ]
+```
+</details>
+
+#### lean_leanfinder
+
+Semantic search for Mathlib theorems using [Lean Finder](https://huggingface.co/spaces/delta-lab-ai/Lean-Finder).
+
+[Arxiv Paper](https://arxiv.org/abs/2510.15940)
+
+- Supports informal descriptions, user questions, proof states, and statement fragments.
+- Examples: `algebraic elements x,y over K with same minimal polynomial`, `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`, `⊢ |re z| ≤ ‖z‖` + `transform to squared norm inequality`, `theorem restrict Ioi: restrict Ioi e = restrict Ici e`
+
+<details>
+<summary>Example output</summary>
+
+Query: `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`
+
+```json
+  [
+    [
+      "/-- If `y : L` is a root of `minpoly K x`, then `minpoly K y = minpoly K x`. -/\ntheorem eq_of_root {x y : L} (hx : IsAlgebraic K x)\n    (h_ev : Polynomial.aeval y (minpoly K x) = 0) : minpoly K y = minpoly K x :=\n  ((eq_iff_aeval_minpoly_eq_zero hx.isIntegral).mpr h_ev).symm",
+      
+      "Let $L/K$ be a field extension, and let $x, y \\in L$ be elements such that $y$ is a root of the minimal polynomial of $x$ over $K$. If $x$ is algebraic over $K$, then the minimal polynomial of $y$ over $K$ is equal to the minimal polynomial of $x$ over $K$, i.e., $\\text{minpoly}_K(y) = \\text{minpoly}_K(x)$. This means that if $y$ satisfies the polynomial equation defined by $x$, then $y$ shares the same minimal polynomial as $x$."
+    ],
+    ...
+  ]
 ```
 </details>
 

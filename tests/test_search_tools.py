@@ -109,3 +109,23 @@ async def test_search_tools(
         if entry is None:
             pytest.skip("lean_leansearch did not return JSON content")
         assert {"module_name", "name", "type"} <= set(entry.keys())
+
+        # Test lean_finder with different query types
+        finder_informal = await client.call_tool(
+            "lean_leanfinder",
+            {
+                "query": "If two algebraic elements have the same minimal polynomial, are they related by a field isomorphism?",
+                "num_results": 3,
+            },
+        )
+        finder_results = _first_json_block(finder_informal)
+        if finder_results:
+            assert isinstance(finder_results, list) and len(finder_results) > 0
+            assert isinstance(finder_results[0], list) and len(finder_results[0]) == 2
+            formal, informal = finder_results[0]
+            assert isinstance(formal, str) and len(formal) > 0
+            assert isinstance(informal, str)
+        else:
+            finder_text = result_text(finder_informal)
+            assert finder_text and len(finder_text) > 0
+
