@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -179,3 +180,24 @@ def test_setup_client_for_file_switches_projects(
     assert second_client is not first_client
     assert len(patched_clients) == 2
     assert ctx.request_context.lifespan_context.lean_project_path == project2
+
+
+def test_startup_client_serializes_concurrent_calls(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+
+    ctx = _Context(_LifespanContext(project, None))
+
+    def _invoke_startup() -> None:
+        startup_client(ctx)
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_invoke_startup) for _ in range(10)]
+        for future in futures:
+            assert future.result() is None
+
+    assert len(patched_clients) == 1
+    assert ctx.request_context.lifespan_context.client is patched_clients[0]

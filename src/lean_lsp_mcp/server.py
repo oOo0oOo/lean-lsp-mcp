@@ -106,7 +106,14 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            rate_limit = kwargs["ctx"].request_context.lifespan_context.rate_limit
+            ctx = kwargs.get("ctx")
+            if ctx is None:
+                if not args:
+                    raise KeyError(
+                        "rate_limited wrapper requires ctx as a keyword argument or the first positional argument"
+                    )
+                ctx = args[0]
+            rate_limit = ctx.request_context.lifespan_context.rate_limit
             current_time = int(time.time())
             rate_limit[category] = [
                 timestamp
@@ -146,10 +153,17 @@ async def lsp_build(
         lean_project_path_obj = Path(lean_project_path).resolve()
         ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
 
+    if lean_project_path_obj is None:
+        return (
+            "Lean project path not known yet. Provide `lean_project_path` explicitly or call a "
+            "tool that infers it (e.g. `lean_goal`) before running `lean_build`."
+        )
+
     build_output = ""
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
+            ctx.request_context.lifespan_context.client = None
             client.close()
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
@@ -583,6 +597,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     if lean_project_path is None:
         return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
 
+    # Use a unique snippet filename to avoid collisions under concurrency
     rel_path = f"_mcp_snippet_{uuid.uuid4().hex}.lean"
     abs_path = lean_project_path / rel_path
 
