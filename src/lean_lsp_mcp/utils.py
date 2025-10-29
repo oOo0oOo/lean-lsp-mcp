@@ -203,10 +203,8 @@ def format_line(
     return f"{line[:column]}{cursor_tag}{line[column:]}"
 
 
-def _filter_diagnostics(
-    diagnostics: List[Dict],
-    line: Optional[int],
-    column: Optional[int],
+def filter_diagnostics_by_position(
+    diagnostics: List[Dict], line: Optional[int], column: Optional[int]
 ) -> List[Dict]:
     """Return diagnostics that intersect the requested (0-indexed) position."""
 
@@ -261,11 +259,3 @@ def _filter_diagnostics(
         matches.append(diagnostic)
 
     return matches
-
-
-def filter_diagnostics_by_position(
-    diagnostics: List[Dict], line: int, column: Optional[int]
-) -> List[Dict]:
-    """Filter diagnostics to only include those at a specific position."""
-
-    return _filter_diagnostics(diagnostics, line, column)

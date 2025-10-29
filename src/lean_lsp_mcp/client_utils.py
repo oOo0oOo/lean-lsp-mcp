@@ -75,14 +75,13 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     abs_file_path = os.path.abspath(file_path)
     file_dir = os.path.dirname(abs_file_path)
 
-    def activate_project(project_path: Path | str, cache_dirs: list[str]) -> str | None:
-        rel = get_relative_file_path(project_path, file_path)
+    def activate_project(project_path: Path, cache_dirs: list[str]) -> str | None:
+        project_path_obj = project_path
+        rel = get_relative_file_path(project_path_obj, file_path)
         if rel is None:
             return None
 
-        project_path_obj = (
-            project_path if isinstance(project_path, Path) else Path(project_path)
-        ).resolve()
+        project_path_obj = project_path_obj.resolve()
         lifespan.lean_project_path = project_path_obj
 
         cache_targets: list[str] = []
@@ -108,11 +107,11 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     while current_dir and current_dir != prev_dir:
         cached_root = project_cache.get(current_dir)
         if cached_root:
-            rel_path = activate_project(cached_root, [current_dir])
+            rel_path = activate_project(Path(cached_root), [current_dir])
             if rel_path is not None:
                 return rel_path
         elif valid_lean_project_path(current_dir):
-            rel_path = activate_project(current_dir, [current_dir])
+            rel_path = activate_project(Path(current_dir), [current_dir])
             if rel_path is not None:
                 return rel_path
         else:
@@ -121,19 +120,3 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
         current_dir = os.path.dirname(current_dir)
 
     return None
-
-    # Try to find the correct project path by checking all directories in file_path.
-    file_path_obj = Path(file_path)
-    rel_path = None
-    for parent in file_path_obj.parents:
-        if valid_lean_project_path(parent):
-            lean_project_path = parent
-            rel_path = get_relative_file_path(lean_project_path, file_path)
-            if rel_path is not None:
-                ctx.request_context.lifespan_context.lean_project_path = (
-                    lean_project_path
-                )
-                startup_client(ctx)
-                break
-
-    return rel_path
