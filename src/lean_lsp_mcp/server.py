@@ -767,7 +767,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 
         results = results["hits"][:num_results]
         for result in results:
-            result.pop("doc")
+            result.pop("doc", None)
         return results
     except Exception as e:
         return f"loogle error:\n{str(e)}"
