@@ -1,4 +1,5 @@
 import os
+import secrets
 import sys
 import tempfile
 from typing import List, Dict, Optional
@@ -39,6 +40,19 @@ class OutputCapture:
 
     def get_output(self):
         return self.captured_output
+
+
+class OptionalTokenVerifier(TokenVerifier):
+    """Minimal verifier that accepts a single pre-shared token."""
+
+    def __init__(self, expected_token: str):
+        self._expected_token = expected_token
+
+    async def verify_token(self, token: str | None) -> AccessToken | None:
+        if token is None or not secrets.compare_digest(token, self._expected_token):
+            return None
+        # AccessToken requires both client_id and scopes parameters to be provided.
+        return AccessToken(token=token, client_id="lean-lsp-mcp-optional", scopes=[])
 
 
 def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[str]:
@@ -187,6 +201,66 @@ def format_line(
     if column < 0 or column > len(line):
         return "Invalid column number"
     return f"{line[:column]}{cursor_tag}{line[column:]}"
+
+
+def _filter_diagnostics(
+    diagnostics: List[Dict],
+    line: Optional[int],
+    column: Optional[int],
+) -> List[Dict]:
+    """Return diagnostics that intersect the requested (0-indexed) position."""
+
+    if line is None:
+        return list(diagnostics)
+
+    matches: List[Dict] = []
+    for diagnostic in diagnostics:
+        diagnostic_range = diagnostic.get("range") or diagnostic.get("fullRange")
+        if not diagnostic_range:
+            continue
+
+        start = diagnostic_range.get("start", {})
+        end = diagnostic_range.get("end", {})
+        start_line = start.get("line")
+        end_line = end.get("line")
+
+        if start_line is None or end_line is None:
+            continue
+        if line < start_line or line > end_line:
+            continue
+
+        start_char = start.get("character")
+        end_char = end.get("character")
+
+        if column is None:
+            if (
+                line == end_line
+                and line != start_line
+                and end_char is not None
+                and end_char == 0
+            ):
+                continue
+            matches.append(diagnostic)
+            continue
+
+        if start_char is None:
+            start_char = 0
+        if end_char is None:
+            end_char = column + 1
+
+        if start_line == end_line and start_char == end_char:
+            if column == start_char:
+                matches.append(diagnostic)
+            continue
+
+        if line == start_line and column < start_char:
+            continue
+        if line == end_line and column >= end_char:
+            continue
+
+        matches.append(diagnostic)
+
+    return matches
 
 
 def filter_diagnostics_by_position(
