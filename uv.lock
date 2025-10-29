@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 
 [[package]]
@@ -176,7 +176,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.10.2"
+version = "0.10.3"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -198,7 +198,7 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
-    { name = "leanclient", specifier = "==0.3.1" },
+    { name = "leanclient", specifier = "==0.4.0" },
     { name = "mcp", extras = ["cli"], specifier = "==1.19.0" },
     { name = "orjson", specifier = ">=3.11.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
@@ -210,15 +210,15 @@ provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.3.1"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/a5/2a70cbdd10e2d00edaab5cde45e11016482597ebaa1932692a324ee41c44/leanclient-0.3.1.tar.gz", hash = "sha256:e6453d6b99085140b80cd22f29b98849370453d3116c81aa38e13fbace367df7", size = 1109403, upload-time = "2025-10-27T17:35:52.328Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/be/70/409331b5daa3102874dbc830aa7acdab5ab8c56251e84c477544e5594bd4/leanclient-0.4.0.tar.gz", hash = "sha256:f6dfee65868c1e5393fc2a918e4876ae29798acdc393f2812b7425a5d6b9e768", size = 1110496, upload-time = "2025-10-29T10:53:27.499Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/27/634061fb87fbaffa6e2b535073095b238cc72df911423b670592dbf6b619/leanclient-0.3.1-py3-none-any.whl", hash = "sha256:9273dab1e70f44249a35f60df887d4839a47b90f88587278033864e162b5c24e", size = 32162, upload-time = "2025-10-27T17:35:48.327Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/7b/054ca5a60fa7919f857ad96eefa683405e3f55da47349eeca0ef561b2ba6/leanclient-0.4.0-py3-none-any.whl", hash = "sha256:18bc680c88a401254bbf4fbe3cc95d4bbfbf58538926eea7942e45f12ee786ac", size = 32502, upload-time = "2025-10-29T10:53:26.144Z" },
 ]
 
 [[package]]
