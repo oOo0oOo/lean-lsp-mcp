@@ -55,7 +55,11 @@ OR using the setup wizard:
 
 Ctrl+Shift+P > "MCP: Add Server..." > "Command (stdio)" > "uvx lean-lsp-mcp" > "lean-lsp" (or any name you like) > Global or Workspace
 
-OR manually add config to `mcp.json`:
+OR manually adding config by opening `mcp.json` with: 
+
+Ctrl+Shift+P > "MCP: Open User Configuration"
+
+and adding the following
 
 ```jsonc
 {
@@ -70,6 +74,25 @@ OR manually add config to `mcp.json`:
     }
 }
 ```
+
+If you installed VSCode on Windows and are using WSL2 as your development environment, you may need to use this config instead:
+
+```jsonc
+{
+    "servers": {
+        "lean-lsp": {
+            "type": "stdio",
+            "command": "wsl.exe",
+            "args": [
+                "uvx",
+                "lean-lsp-mcp"
+            ]
+        }
+    }
+}
+```
+If that doesn't work, you can try cloning this repository and replace `"lean-lsp-mcp"` with `"/path/to/cloned/lean-lsp-mcp"`.
+
 </details>
 
 <details>
