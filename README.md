@@ -91,7 +91,7 @@ If you installed VSCode on Windows and are using WSL2 as your development enviro
     }
 }
 ```
-If that doesn't work, you can try cloning this repository and replace `"lean-lsp-mcp"` with `"/path/to/cloned/lean-lsp-mcp"`, or replacing `"Ubuntu"` with your exact distro version, which can be found by running `C:\Windows\System32\wsl.exe -l -q` in PowerShell.
+If that doesn't work, you can try cloning this repository and replace `"lean-lsp-mcp"` with `"/path/to/cloned/lean-lsp-mcp"`.
 
 </details>
 
