@@ -555,28 +555,34 @@ def multi_attempt(
     update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 
-    client.open_file(rel_path)
+    try:
+        client.open_file(rel_path)
 
-    results = []
-    snippets[0] += "\n"  # Extra newline for the first snippet
-    for snippet in snippets:
-        # Create a DocumentContentChange for the snippet
-        change = DocumentContentChange(
-            snippet + "\n",
-            [line - 1, 0],
-            [line, 0],
-        )
-        # Apply the change to the file, capture diagnostics and goal state
-        client.update_file(rel_path, [change])
-        diag = client.get_diagnostics(rel_path)
-        formatted_diag = "\n".join(format_diagnostics(diag, select_line=line - 1))
-        goal = client.get_goal(rel_path, line - 1, len(snippet))
-        formatted_goal = format_goal(goal, "Missing goal")
-        results.append(f"{snippet}:\n {formatted_goal}\n\n{formatted_diag}")
+        results = []
+        for snippet in snippets:
+            payload = snippet if snippet.endswith("\n") else f"{snippet}\n"
+            # Create a DocumentContentChange for the snippet
+            change = DocumentContentChange(
+                payload,
+                [line - 1, 0],
+                [line, 0],
+            )
+            # Apply the change to the file, capture diagnostics and goal state
+            client.update_file(rel_path, [change])
+            diag = client.get_diagnostics(rel_path)
+            formatted_diag = "\n".join(
+                format_diagnostics(diag, select_line=line - 1)
+            )
+            goal = client.get_goal(rel_path, line - 1, len(snippet))
+            formatted_goal = format_goal(goal, "Missing goal")
+            results.append(f"{snippet}:\n {formatted_goal}\n\n{formatted_diag}")
 
-    # Make sure it's clean after the attempts
-    client.close_files([rel_path])
-    return results
+        return results
+    finally:
+        try:
+            client.close_files([rel_path])
+        except Exception as exc:  # pragma: no cover - close failures only logged
+            logger.warning("Failed to close `%s` after multi_attempt: %s", rel_path, exc)
 
 
 @mcp.tool("lean_run_code")
