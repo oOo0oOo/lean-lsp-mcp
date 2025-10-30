@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import urllib
-import json
+import orjson
 import functools
 import subprocess
 import uuid
@@ -708,9 +708,9 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        payload = json.dumps(
+        payload = orjson.dumps(
             {"num_results": str(num_results), "query": [query]}
-        ).encode("utf-8")
+        )
 
         req = urllib.request.Request(
             "https://leansearch.net/search",
@@ -720,7 +720,7 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         )
 
         with urllib.request.urlopen(req, timeout=20) as response:
-            results = json.loads(response.read().decode("utf-8"))
+            results = orjson.loads(response.read())
 
         if not results or not results[0]:
             return "No results found."
@@ -766,7 +766,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
         )
 
         with urllib.request.urlopen(req, timeout=20) as response:
-            results = json.loads(response.read().decode("utf-8"))
+            results = orjson.loads(response.read())
 
         if "hits" not in results:
             return "No results found."
@@ -803,7 +803,7 @@ def leanfinder(
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        payload = json.dumps({"data": [query, num_results, "Normal"]}).encode("utf-8")
+        payload = orjson.dumps({"data": [query, num_results, "Normal"]})
 
         req = urllib.request.Request(
             "https://delta-lab-ai-lean-finder.hf.space/gradio_api/call/retrieve",
@@ -813,7 +813,7 @@ def leanfinder(
         )
 
         with urllib.request.urlopen(req, timeout=10) as response:
-            event_data = json.loads(response.read().decode("utf-8"))
+            event_data = orjson.loads(response.read())
             event_id = event_data.get("event_id")
 
         if not event_id:
@@ -826,7 +826,7 @@ def leanfinder(
             for line in response:
                 line = line.decode("utf-8").strip()
                 if line.startswith("data: "):
-                    data = json.loads(line[6:])
+                    data = orjson.loads(line[6:])
                     if isinstance(data, list) and len(data) > 0:
                         html = data[0] if isinstance(data[0], str) else str(data)
 
@@ -893,7 +893,7 @@ def state_search(
         )
 
         with urllib.request.urlopen(req, timeout=20) as response:
-            results = json.loads(response.read().decode("utf-8"))
+            results = orjson.loads(response.read())
 
         for result in results:
             result.pop("rev")
@@ -947,11 +947,11 @@ def hammer_premise(
                 "Content-Type": "application/json",
             },
             method="POST",
-            data=json.dumps(data).encode("utf-8"),
+            data=orjson.dumps(data),
         )
 
         with urllib.request.urlopen(req, timeout=20) as response:
-            results = json.loads(response.read().decode("utf-8"))
+            results = orjson.loads(response.read())
 
         results = [result["name"] for result in results]
         results.insert(0, f"Results for line:\n{f_line}")

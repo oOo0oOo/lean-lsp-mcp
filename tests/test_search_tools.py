@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import orjson
 from collections.abc import Callable
 from pathlib import Path
 from typing import AsyncContextManager
@@ -16,8 +16,8 @@ def _first_json_block(result) -> dict[str, str] | None:
         if not text:
             continue
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
+            return orjson.loads(text)
+        except orjson.JSONDecodeError:
             continue
     return None
 

@@ -1,5 +1,5 @@
 import importlib
-import json
+import orjson
 from pathlib import Path
 
 import pytest
@@ -74,7 +74,7 @@ def test_check_ripgrep_status_when_rg_missing_platform_specific(
 
 
 def _make_match(path: str, line: str) -> str:
-    return json.dumps(
+    return orjson.dumps(
         {
             "type": "match",
             "data": {
@@ -82,7 +82,7 @@ def _make_match(path: str, line: str) -> str:
                 "lines": {"text": line},
             },
         }
-    )
+    ).decode("utf-8")
 
 
 class _DummyCompletedProcess:
