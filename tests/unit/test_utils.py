@@ -68,17 +68,48 @@ def test_format_line_with_cursor() -> None:
 
 
 def test_filter_diagnostics_by_position() -> None:
-    diagnostics = [
-        {
-            "range": {
-                "start": {"line": 1, "character": 0},
-                "end": {"line": 1, "character": 5},
-            }
-        }
-    ]
-    assert filter_diagnostics_by_position(diagnostics, 1, None) == diagnostics
-    assert filter_diagnostics_by_position(diagnostics, 1, 3) == diagnostics
+    def make_range(
+        start_line: int,
+        start_char: int | None,
+        end_line: int,
+        end_char: int | None,
+    ) -> dict:
+        start = {"line": start_line}
+        if start_char is not None:
+            start["character"] = start_char
+        end = {"line": end_line}
+        if end_char is not None:
+            end["character"] = end_char
+        return {"range": {"start": start, "end": end}}
+
+    diag_same_line = make_range(1, 0, 1, 5)
+    diag_multiline = make_range(0, 2, 1, 0)
+    diag_point = make_range(2, 3, 2, 3)
+    diag_missing_start = make_range(4, None, 4, 5)
+
+    diagnostics = [diag_same_line, diag_multiline, diag_point, diag_missing_start]
+
+    # No line filtering returns a copy of all diagnostics
+    result_all = filter_diagnostics_by_position(diagnostics, None, None)
+    assert result_all == diagnostics
+    assert result_all is not diagnostics
+
+    # Same line range selections
+    assert filter_diagnostics_by_position(diagnostics, 1, None) == [diag_same_line]
+    assert filter_diagnostics_by_position(diagnostics, 1, 3) == [diag_same_line]
     assert filter_diagnostics_by_position(diagnostics, 1, 6) == []
+
+    # Multiline diagnostic shouldn't match trailing zero-width end on next line
+    assert filter_diagnostics_by_position(diagnostics, 0, None) == [diag_multiline]
+    assert filter_diagnostics_by_position(diagnostics, 1, 0) == [diag_same_line]
+
+    # Point diagnostic requires exact column match
+    assert filter_diagnostics_by_position(diagnostics, 2, 3) == [diag_point]
+    assert filter_diagnostics_by_position(diagnostics, 2, 2) == []
+
+    # Missing start character defaults to column zero
+    assert filter_diagnostics_by_position(diagnostics, 4, 1) == [diag_missing_start]
+    assert filter_diagnostics_by_position(diagnostics, 4, 5) == []
 
 
 def test_optional_token_verifier() -> None:
