@@ -559,8 +559,10 @@ def multi_attempt(
         client.open_file(rel_path)
 
         results = []
+        # Avoid mutating caller-provided snippets; normalize locally per attempt
         for snippet in snippets:
-            payload = snippet if snippet.endswith("\n") else f"{snippet}\n"
+            snippet_str = snippet.rstrip("\n")
+            payload = f"{snippet_str}\n"
             # Create a DocumentContentChange for the snippet
             change = DocumentContentChange(
                 payload,
@@ -573,9 +575,10 @@ def multi_attempt(
             formatted_diag = "\n".join(
                 format_diagnostics(diag, select_line=line - 1)
             )
-            goal = client.get_goal(rel_path, line - 1, len(snippet))
+            # Use the snippet text length without any trailing newline for the column
+            goal = client.get_goal(rel_path, line - 1, len(snippet_str))
             formatted_goal = format_goal(goal, "Missing goal")
-            results.append(f"{snippet}:\n {formatted_goal}\n\n{formatted_diag}")
+            results.append(f"{snippet_str}:\n {formatted_goal}\n\n{formatted_diag}")
 
         return results
     finally:
