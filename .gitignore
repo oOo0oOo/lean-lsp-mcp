@@ -8,3 +8,6 @@ build/
 tests/test_project/
 tests/mathlib_project/
 .pytest_cache/
+
+# Local temp files
+.tmp/
