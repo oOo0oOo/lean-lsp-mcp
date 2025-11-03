@@ -10,6 +10,9 @@ from lean_lsp_mcp.file_utils import get_relative_file_path
 from lean_lsp_mcp.utils import OutputCapture
 
 
+AUTO_BUILD_ENV = "LEAN_LSP_AUTO_BUILD"
+
+
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
 
@@ -37,17 +40,53 @@ def startup_client(ctx: Context):
             ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         # Need to create a new client
-        with OutputCapture() as output:
-            try:
-                client = LeanLSPClient(lean_project_path)
-                logger.info(f"Connected to Lean language server at {lean_project_path}")
-            except Exception as e:
-                logger.warning(f"Initial connection failed, trying with build: {e}")
-                client = LeanLSPClient(lean_project_path, initial_build=True)
-                logger.info(f"Connected with initial build to {lean_project_path}")
-        build_output = output.get_output()
-        if build_output:
-            logger.debug(f"Build output: {build_output}")
+        capture = OutputCapture()
+        try:
+            with capture:
+                client = LeanLSPClient(
+                    lean_project_path, prevent_cache_get=True
+                )
+        except Exception as first_error:
+            first_output = capture.get_output().strip()
+            auto_build = os.environ.get(AUTO_BUILD_ENV, "").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if not auto_build:
+                msg = (
+                    "Failed to start Lean language server. "
+                    "Run `lake build` in your project manually and try again."
+                )
+                if first_output:
+                    msg = f"{msg}\n\nBuild output:\n{first_output}"
+                raise RuntimeError(msg) from first_error
+
+            if first_output:
+                logger.debug("Initial Lean startup output:\n%s", first_output)
+            logger.warning(
+                "Initial connection failed (%s). Running `lake build`; set %s=0 to disable.",
+                first_error,
+                AUTO_BUILD_ENV,
+            )
+
+            build_capture = OutputCapture()
+            with build_capture:
+                client = LeanLSPClient(
+                    lean_project_path,
+                    initial_build=True,
+                    prevent_cache_get=True,
+                )
+            build_output = build_capture.get_output().strip()
+            if build_output:
+                logger.info("Initial build output:\n%s", build_output)
+        else:
+            startup_output = capture.get_output().strip()
+            if startup_output:
+                logger.debug("Lean client startup output:\n%s", startup_output)
+
+        logger.info("Connected to Lean language server at %s", lean_project_path)
         ctx.request_context.lifespan_context.client = client
 
 

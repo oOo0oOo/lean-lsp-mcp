@@ -86,9 +86,16 @@ def update_file(ctx: Context, rel_path: str) -> str:
     file_content_hashes[rel_path] = hashed_file
 
     # Reload file in LSP
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
+    if client is None:
+        return file_content
+
+    opened = getattr(client, "opened_files", None)
+    if not opened or rel_path not in opened:
+        return file_content
+
     try:
-        client.close_files([rel_path])
+        client.close_files([rel_path], blocking=False)
     except FileNotFoundError as e:
         logger.warning(
             f"Attempted to close file {rel_path} that wasn't open in LSP client: {e}"

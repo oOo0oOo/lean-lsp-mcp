@@ -13,10 +13,13 @@ from lean_lsp_mcp.file_utils import (
 
 class _FakeClient:
     def __init__(self) -> None:
-        self.closed: list[list[str]] = []
+        self.closed: list[tuple[list[str], bool]] = []
+        self.opened_files: dict[str, object] = {}
 
-    def close_files(self, files: list[str]) -> None:
-        self.closed.append(files)
+    def close_files(self, files: list[str], blocking: bool = True) -> None:
+        self.closed.append((files, blocking))
+        for f in files:
+            self.opened_files.pop(f, None)
 
 
 class _LifespanContext:
@@ -83,9 +86,10 @@ def test_update_file_tracks_changes(tmp_path: Path) -> None:
 
     # mutated file triggers close
     lean_file.write_text("updated")
+    client.opened_files["Main.lean"] = object()
     contents = update_file(ctx, "Main.lean")
     assert contents == "updated"
-    assert client.closed == [["Main.lean"]]
+    assert client.closed == [(["Main.lean"], False)]
 
     # cache now reflects latest version
     assert lifespan.file_content_hashes["Main.lean"] == hash("updated")
