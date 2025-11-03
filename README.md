@@ -521,6 +521,10 @@ uv sync --all-extras
 uv run pytest tests
 ```
 
+## Publications using lean-lsp-mcp
+
+- Ax-Prover: A Deep Reasoning Agentic Framework for Theorem Proving in Mathematics and Quantum Physics [arxiv](https://arxiv.org/abs/2510.12787)
+
 ## Related Projects
 
 - [LeanTool](https://github.com/GasStationManager/LeanTool)
