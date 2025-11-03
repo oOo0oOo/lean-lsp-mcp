@@ -48,7 +48,8 @@ def startup_client(ctx: Context):
                 )
         except Exception as first_error:
             first_output = capture.get_output().strip()
-            auto_build = os.environ.get(AUTO_BUILD_ENV, "").lower() in {
+            # Default: auto-build enabled unless explicitly disabled
+            auto_build = os.environ.get(AUTO_BUILD_ENV, "1").lower() in {
                 "1",
                 "true",
                 "yes",

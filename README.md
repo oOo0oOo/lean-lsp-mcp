@@ -438,6 +438,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
+- `LEAN_LSP_AUTO_BUILD`: Controls whether to automatically run an initial `lake build` if the first Lean LSP client startup attempt fails. Set to `0`, `false`, `no`, or `off` to disable. Defaults to enabled.
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
