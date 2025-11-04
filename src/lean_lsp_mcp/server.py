@@ -786,71 +786,45 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
 def leanfinder(
     ctx: Context, query: str, num_results: int = 5
-) -> List[tuple] | str:
-    """Search Mathlib theorems/definitions semantically by mathematical concept using Lean Finder.
+) -> List[Dict] | str:
+    """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
 
     Effective query types:
-    - Math + API: "setAverage Icc interval", "integral_pow symmetric bounds"
-    - Conceptual: "algebraic elements same minimal polynomial", "quadrature nodes"
-    - Structure: "Finset expect sum commute", "polynomial degree bounded eval"
-    - Natural: "average equals point values", "root implies equal polynomials"
+    - Natural language mathematical statement: "For any natural numbers n and m, the sum n+m is equal to m+n."
+    - Natural language questions: "I'm working with algebraic elements over a field extension … Does this imply that the minimal polynomials of x and y are equal?"
+    - Proof state. For better results, enter a proof state followed by how you want to transform the proof state.
+    - Statement definition: Fragment or the whole statement definition.
 
-    Tips: Mix informal math terms with Lean identifiers. Multiple targeted queries beat one complex query.
+    Tips: Multiple targeted queries beat one complex query.
 
     Args:
-        query (str): Mathematical concepts combined with Lean terms
+        query (str): Mathematical concept or proof state
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[tuple] | str: (lean_statement, english_description) pairs or error
+        List[Dict] | str: List of Lean statement objects (full name, formal statement, informal statement) or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        payload = orjson.dumps({"data": [query, num_results, "Normal"]})
+        request_url = "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
+        payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
+        req = urllib.request.Request(request_url, data=payload, headers=headers, method="POST")
 
-        req = urllib.request.Request(
-            "https://delta-lab-ai-lean-finder.hf.space/gradio_api/call/retrieve",
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=10) as response:
-            event_data = orjson.loads(response.read())
-            event_id = event_data.get("event_id")
-
-        if not event_id:
-            return "Lean Finder has timed out or errored. It might be warming up, try a second time in 2 minutes."
-
-        result_url = f"https://delta-lab-ai-lean-finder.hf.space/gradio_api/call/retrieve/{event_id}"
-        req = urllib.request.Request(result_url, headers=headers, method="GET")
-
+        results = []
         with urllib.request.urlopen(req, timeout=30) as response:
-            for line in response:
-                line = line.decode("utf-8").strip()
-                if line.startswith("data: "):
-                    data = orjson.loads(line[6:])
-                    if isinstance(data, list) and len(data) > 0:
-                        html = data[0] if isinstance(data[0], str) else str(data)
+            data = orjson.loads(response.read())
+            for result in data["results"]:
+                if "https://leanprover-community.github.io/mathlib4_docs" not in result["url"]: # Do not include results from other sources other than mathlib4, since users might not have imported them
+                    continue
+                full_name = re.search(r"pattern=(.*?)#doc", result["url"]).group(1)
+                obj = {
+                    "full_name": full_name,
+                    "formal_statement": result["formal_statement"],
+                    "informal_statement": result["informal_statement"],
+                }
+                results.append(obj)
 
-                        # Parse HTML table rows
-                        rows = re.findall(
-                            r"<tr><td>\d+</td><td>(.*?)</td><td>(.*?)</td></tr>",
-                            html, re.DOTALL
-                        )
-                        results = []
-                        for formal_cell, informal_cell in rows:
-                            formal = re.search(r"<code[^>]*>(.*?)</code>", formal_cell, re.DOTALL)
-                            informal = re.search(r"<span[^>]*>(.*?)</span>", informal_cell, re.DOTALL)
-                            if formal:
-                                results.append((
-                                    formal.group(1).strip(),
-                                    informal.group(1).strip() if informal else ""
-                                ))
-
-                        return results if results else "Lean Finder: No results parsed"
-
-        return "Lean Finder: No results received"
+        return results if results else "Lean Finder: No results parsed"
     except Exception as e:
         return f"Lean Finder Error:\n{str(e)}"
 
