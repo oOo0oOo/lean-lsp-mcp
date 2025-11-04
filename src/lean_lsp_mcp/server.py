@@ -802,7 +802,7 @@ def leanfinder(
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[Dict] | str: Search results or error msg
+        List[Dict] | str: List of Lean statement objects (full name, formal statement, informal statement) or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
