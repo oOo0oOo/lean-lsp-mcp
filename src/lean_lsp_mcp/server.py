@@ -18,7 +18,11 @@ from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings
 from leanclient import LeanLSPClient, DocumentContentChange
 
-from lean_lsp_mcp.client_utils import setup_client_for_file, startup_client
+from lean_lsp_mcp.client_utils import (
+    setup_client_for_file,
+    startup_client,
+    infer_project_path,
+)
 from lean_lsp_mcp.file_utils import get_file_contents, update_file
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
@@ -154,10 +158,7 @@ async def lsp_build(
         ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
 
     if lean_project_path_obj is None:
-        return (
-            "Lean project path not known yet. Provide `lean_project_path` explicitly or call a "
-            "tool that infers it (e.g. `lean_goal`) before running `lean_build`."
-        )
+        return "Lean project path not known yet. Provide `lean_project_path` explicitly or call a tool that infers it (e.g. `lean_file_contents`) before running `lean_build`."
 
     build_output = ""
     try:
@@ -247,6 +248,10 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
     Returns:
         str: File content or error msg
     """
+    # Infer project path but do not start a client
+    if file_path.endswith(".lean"):
+        infer_project_path(ctx, file_path)  # Silently fails for non-project files
+
     try:
         data = get_file_contents(file_path)
     except FileNotFoundError:
@@ -604,7 +609,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     lifespan_context = ctx.request_context.lifespan_context
     lean_project_path = lifespan_context.lean_project_path
     if lean_project_path is None:
-        return "No valid Lean project path found. Run another tool (e.g. `lean_diagnostic_messages`) first to set it up or set the LEAN_PROJECT_PATH environment variable."
+        return "No valid Lean project path found. Run another tool (e.g. `lean_file_contents`) first to set it up."
 
     # Use a unique snippet filename to avoid collisions under concurrency
     rel_path = f"_mcp_snippet_{uuid.uuid4().hex}.lean"
@@ -684,7 +689,7 @@ def local_search(
 
     stored_root = ctx.request_context.lifespan_context.lean_project_path
     if stored_root is None:
-        return "Lean project path not set. Call a file-based tool (like lean_goal) first to set the project path."
+        return "Lean project path not set. Call a file-based tool (like lean_file_contents) first to set the project path."
 
     return lean_local_search(query=query.strip(), limit=limit, project_root=stored_root)
 
