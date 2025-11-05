@@ -242,8 +242,30 @@ def test_lean_search_handles_ripgrep_errors(monkeypatch, reload_search_utils):
         expected_cwd=str(project_root.resolve()),
     )
 
+    # With exit code 2 and no results, should raise RuntimeError
     with pytest.raises(RuntimeError):
         search_utils.lean_local_search("sample", project_root=project_root)
+
+
+def test_lean_search_handles_ripgrep_errors_with_partial_results(monkeypatch, reload_search_utils):
+    """Test that partial results are returned even when ripgrep exits with error code 2."""
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("src/Test.lean", "def partialResult : Nat := 0"),
+    ]
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        returncode=2,  # Error after getting some results
+        expected_cwd=str(project_root.resolve()),
+    )
+
+    # Should return partial results instead of raising
+    results = search_utils.lean_local_search("partial", project_root=project_root, limit=10)
+    assert len(results) == 1
+    assert results[0]["name"] == "partialResult"
 
 
 def test_lean_search_returns_empty_for_no_matches(monkeypatch, reload_search_utils):
@@ -360,3 +382,109 @@ def test_lean_search_integration_stdlib_definitions(reload_search_utils):
 
     assert results
     assert any(item["name"].startswith("Nat.succ") for item in results)
+
+
+def test_lean_search_all_declaration_types(monkeypatch, reload_search_utils):
+    """Test all supported declaration types are correctly parsed."""
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("Test.lean", "theorem myTheorem : True := by trivial"),
+        _make_match("Test.lean", "lemma myLemma : True := by trivial"),
+        _make_match("Test.lean", "def myDef : Nat := 42"),
+        _make_match("Test.lean", "axiom myAxiom : Prop"),
+        _make_match("Test.lean", "class MyClass (α : Type) where"),
+        _make_match("Test.lean", "instance myInstance : MyClass Nat where"),
+        _make_match("Test.lean", "structure MyStruct where"),
+        _make_match("Test.lean", "inductive MyInductive where"),
+        _make_match("Test.lean", "abbrev MyAbbrev := Nat"),
+        _make_match("Test.lean", "opaque myOpaque : Nat"),
+    ]
+
+    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve()))
+    results = search_utils.lean_local_search("my", project_root=project_root)
+
+    assert len(results) == 10
+    assert {r["kind"] for r in results} == {
+        "theorem", "lemma", "def", "axiom", "class", "instance",
+        "structure", "inductive", "abbrev", "opaque",
+    }
+
+
+def test_lean_search_strips_colon_from_names(monkeypatch, reload_search_utils):
+    """Test that declaration names with colons are correctly stripped."""
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("Test.lean", "def myFunc: Nat := 42"),
+        _make_match("Test.lean", "theorem myThm : True := by trivial"),
+    ]
+
+    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve()))
+    results = search_utils.lean_local_search("my", project_root=project_root)
+
+    assert len(results) == 2
+    assert results[0]["name"] == "myFunc"
+    assert results[1]["name"] == "myThm"
+
+
+def test_lean_search_uses_cwd_when_project_root_none(monkeypatch, reload_search_utils):
+    """Test that Path.cwd() is used when project_root is None."""
+    search_utils = reload_search_utils
+    fake_cwd = Path("/fake/working/dir")
+    monkeypatch.setattr(Path, "cwd", lambda: fake_cwd)
+
+    events = [_make_match("Test.lean", "def testDef : Nat := 0")]
+    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(fake_cwd.resolve()))
+
+    results = search_utils.lean_local_search("testDef", project_root=None)
+
+    assert len(results) == 1
+    assert results[0]["name"] == "testDef"
+
+
+def test_lean_search_resolves_project_root_to_absolute(monkeypatch, reload_search_utils):
+    """Test that project_root is resolved to an absolute path."""
+    search_utils = reload_search_utils
+    absolute_root = Path("/absolute/path/to/project")
+    events = [_make_match("Test.lean", "def testFunc : Nat := 0")]
+
+    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(absolute_root))
+    results = search_utils.lean_local_search("testFunc", project_root=absolute_root)
+
+    assert len(results) == 1
+    assert results[0]["name"] == "testFunc"
+
+
+def test_lean_search_uses_project_root_not_cwd(monkeypatch, reload_search_utils):
+    """Test that project_root is used instead of cwd when both differ."""
+    search_utils = reload_search_utils
+    current_dir = Path("/home/user/workspace")
+    project_root = Path("/different/project")
+
+    monkeypatch.setattr(Path, "cwd", lambda: current_dir)
+    events = [_make_match("MyModule.lean", "def myDef : Nat := 42")]
+
+    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root))
+    results = search_utils.lean_local_search("myDef", project_root=project_root)
+
+    assert len(results) == 1
+    assert results[0]["file"] == "MyModule.lean"
+
+
+def test_lean_search_handles_namespaces(monkeypatch, reload_search_utils):
+    """Test that searching without namespace prefix finds namespaced declarations."""
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("Nat.lean", "def Nat.add (a b : Nat) : Nat := a + b"),
+        _make_match("List.lean", "def List.add (xs ys : List α) : List α := xs ++ ys"),
+        _make_match("Basic.lean", "def add (x y : Int) : Int := x + y"),
+    ]
+
+    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve()))
+    results = search_utils.lean_local_search("add", project_root=project_root)
+
+    assert len(results) == 3
+    names = {r["name"] for r in results}
+    assert names == {"Nat.add", "List.add", "add"}

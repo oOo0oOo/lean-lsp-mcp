@@ -683,11 +683,10 @@ def local_search(
         return _RG_MESSAGE
 
     stored_root = ctx.request_context.lifespan_context.lean_project_path
-    project_root = Path(stored_root) if stored_root else None
-    results = lean_local_search(
-        query=query.strip(), limit=limit, project_root=project_root
-    )
-    return results
+    if stored_root is None:
+        return "Lean project path not set. Call a file-based tool (like lean_goal) first to set the project path."
+
+    return lean_local_search(query=query.strip(), limit=limit, project_root=stored_root)
 
 
 @mcp.tool("lean_leansearch")

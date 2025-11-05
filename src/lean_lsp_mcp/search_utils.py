@@ -56,82 +56,55 @@ def lean_local_search(
 ) -> list[dict[str, str]]:
     """Search Lean declarations matching ``query`` using ripgrep; results include theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls."""
     root = (project_root or Path.cwd()).resolve()
-    escaped_query = re.escape(query)
-    ripgrep_pattern = (
+
+    pattern = (
         rf"^\s*(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
-        rf"{escaped_query}[A-Za-z0-9_'.]*(?:\s|:)"
+        rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(query)}[A-Za-z0-9_'.]*(?:\s|:)"
     )
 
     command = [
-        "rg",
-        "--json",
-        "--no-ignore",
-        "--smart-case",
-        "--hidden",
-        "--color",
-        "never",
-        "-g",
-        "*.lean",
-        "-g",
-        "!.git/**",
-        "-g",
-        "!.lake/build/**",
-        ripgrep_pattern,
-        ".",
+        "rg", "--json", "--no-ignore", "--smart-case", "--hidden",
+        "--color", "never", "--no-messages",
+        "-g", "*.lean", "-g", "!.git/**", "-g", "!.lake/build/**",
+        pattern, str(root)
     ]
 
-    lean_src_path = _get_lean_src_search_path()
-    if lean_src_path is not None:
-        command.append(lean_src_path)
+    if lean_src := _get_lean_src_search_path():
+        command.append(lean_src)
 
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        cwd=str(root),
-    )
+    result = subprocess.run(command, capture_output=True, text=True, cwd=str(root))
 
-    results: list[dict[str, str]] = []
-
-    for raw_line in completed.stdout.splitlines():
-        if not raw_line:
-            continue
-
-        event = _json_loads(raw_line)
-
-        if event.get("type") != "match":
+    matches = []
+    for line in result.stdout.splitlines():
+        if not line or (event := _json_loads(line)).get("type") != "match":
             continue
 
         data = event["data"]
-        line_text = data["lines"]["text"]
-        parts = line_text.lstrip().split(maxsplit=2)
+        parts = data["lines"]["text"].lstrip().split(maxsplit=2)
         if len(parts) < 2:
             continue
 
-        decl_kind, raw_name = parts[0], parts[1]
-        decl_name = raw_name.rstrip(":")
+        decl_kind, decl_name = parts[0], parts[1].rstrip(":")
+        file_path = Path(data["path"]["text"])
+        abs_path = file_path if file_path.is_absolute() else (root / file_path).resolve()
 
-        path_text = data["path"]["text"]
-        file_path = Path(path_text)
-        absolute_path = (
-            file_path if file_path.is_absolute() else (root / file_path).resolve()
-        )
         try:
-            display_path = str(absolute_path.relative_to(root))
+            display_path = str(abs_path.relative_to(root))
         except ValueError:
             display_path = str(file_path)
 
-        results.append({"name": decl_name, "kind": decl_kind, "file": display_path})
+        matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
 
-        if len(results) >= limit:
+        if len(matches) >= limit:
             break
 
-    if completed.returncode not in (0, 1):
-        raise RuntimeError(
-            f"ripgrep exited with code {completed.returncode}\n{completed.stderr}"
-        )
+    if result.returncode not in (0, 1) and not matches:
+        error_msg = f"ripgrep exited with code {result.returncode}"
+        if result.stderr:
+            error_msg += f"\n{result.stderr}"
+        raise RuntimeError(error_msg)
 
-    return results
+    return matches
 
 
 @lru_cache(maxsize=1)
