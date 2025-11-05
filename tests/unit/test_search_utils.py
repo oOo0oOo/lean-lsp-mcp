@@ -247,7 +247,9 @@ def test_lean_search_handles_ripgrep_errors(monkeypatch, reload_search_utils):
         search_utils.lean_local_search("sample", project_root=project_root)
 
 
-def test_lean_search_handles_ripgrep_errors_with_partial_results(monkeypatch, reload_search_utils):
+def test_lean_search_handles_ripgrep_errors_with_partial_results(
+    monkeypatch, reload_search_utils
+):
     """Test that partial results are returned even when ripgrep exits with error code 2."""
     search_utils = reload_search_utils
     project_root = Path("/proj")
@@ -263,7 +265,9 @@ def test_lean_search_handles_ripgrep_errors_with_partial_results(monkeypatch, re
     )
 
     # Should return partial results instead of raising
-    results = search_utils.lean_local_search("partial", project_root=project_root, limit=10)
+    results = search_utils.lean_local_search(
+        "partial", project_root=project_root, limit=10
+    )
     assert len(results) == 1
     assert results[0]["name"] == "partialResult"
 
@@ -401,13 +405,23 @@ def test_lean_search_all_declaration_types(monkeypatch, reload_search_utils):
         _make_match("Test.lean", "opaque myOpaque : Nat"),
     ]
 
-    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve()))
+    _configure_env(
+        monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve())
+    )
     results = search_utils.lean_local_search("my", project_root=project_root)
 
     assert len(results) == 10
     assert {r["kind"] for r in results} == {
-        "theorem", "lemma", "def", "axiom", "class", "instance",
-        "structure", "inductive", "abbrev", "opaque",
+        "theorem",
+        "lemma",
+        "def",
+        "axiom",
+        "class",
+        "instance",
+        "structure",
+        "inductive",
+        "abbrev",
+        "opaque",
     }
 
 
@@ -420,7 +434,9 @@ def test_lean_search_strips_colon_from_names(monkeypatch, reload_search_utils):
         _make_match("Test.lean", "theorem myThm : True := by trivial"),
     ]
 
-    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve()))
+    _configure_env(
+        monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve())
+    )
     results = search_utils.lean_local_search("my", project_root=project_root)
 
     assert len(results) == 2
@@ -435,7 +451,9 @@ def test_lean_search_uses_cwd_when_project_root_none(monkeypatch, reload_search_
     monkeypatch.setattr(Path, "cwd", lambda: fake_cwd)
 
     events = [_make_match("Test.lean", "def testDef : Nat := 0")]
-    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(fake_cwd.resolve()))
+    _configure_env(
+        monkeypatch, search_utils, events, expected_cwd=str(fake_cwd.resolve())
+    )
 
     results = search_utils.lean_local_search("testDef", project_root=None)
 
@@ -443,7 +461,9 @@ def test_lean_search_uses_cwd_when_project_root_none(monkeypatch, reload_search_
     assert results[0]["name"] == "testDef"
 
 
-def test_lean_search_resolves_project_root_to_absolute(monkeypatch, reload_search_utils):
+def test_lean_search_resolves_project_root_to_absolute(
+    monkeypatch, reload_search_utils
+):
     """Test that project_root is resolved to an absolute path."""
     search_utils = reload_search_utils
     absolute_root = Path("/absolute/path/to/project")
@@ -482,7 +502,9 @@ def test_lean_search_handles_namespaces(monkeypatch, reload_search_utils):
         _make_match("Basic.lean", "def add (x y : Int) : Int := x + y"),
     ]
 
-    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve()))
+    _configure_env(
+        monkeypatch, search_utils, events, expected_cwd=str(project_root.resolve())
+    )
     results = search_utils.lean_local_search("add", project_root=project_root)
 
     assert len(results) == 3

@@ -121,8 +121,9 @@ async def test_search_tools(
         finder_results = _first_json_block(finder_informal)
         if finder_results:
             assert isinstance(finder_results, dict) and len(finder_results.keys()) == 3
-            assert {"full_name", "formal_statement", "informal_statement"} <= set(finder_results.keys())
+            assert {"full_name", "formal_statement", "informal_statement"} <= set(
+                finder_results.keys()
+            )
         else:
             finder_text = result_text(finder_informal)
             assert finder_text and len(finder_text) > 0
-

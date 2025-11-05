@@ -572,9 +572,7 @@ def multi_attempt(
             # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
-            formatted_diag = "\n".join(
-                format_diagnostics(diag, select_line=line - 1)
-            )
+            formatted_diag = "\n".join(format_diagnostics(diag, select_line=line - 1))
             # Use the snippet text length without any trailing newline for the column
             goal = client.get_goal(rel_path, line - 1, len(snippet_str))
             formatted_goal = format_goal(goal, "Missing goal")
@@ -585,7 +583,9 @@ def multi_attempt(
         try:
             client.close_files([rel_path])
         except Exception as exc:  # pragma: no cover - close failures only logged
-            logger.warning("Failed to close `%s` after multi_attempt: %s", rel_path, exc)
+            logger.warning(
+                "Failed to close `%s` after multi_attempt: %s", rel_path, exc
+            )
 
 
 @mcp.tool("lean_run_code")
@@ -710,9 +710,7 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        payload = orjson.dumps(
-            {"num_results": str(num_results), "query": [query]}
-        )
+        payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
 
         req = urllib.request.Request(
             "https://leansearch.net/search",
@@ -783,9 +781,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 
 @mcp.tool("lean_leanfinder")
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
-def leanfinder(
-    ctx: Context, query: str, num_results: int = 5
-) -> List[Dict] | str:
+def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
     """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
 
     Effective query types:
@@ -805,15 +801,22 @@ def leanfinder(
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        request_url = "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
+        request_url = (
+            "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
+        )
         payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
-        req = urllib.request.Request(request_url, data=payload, headers=headers, method="POST")
+        req = urllib.request.Request(
+            request_url, data=payload, headers=headers, method="POST"
+        )
 
         results = []
         with urllib.request.urlopen(req, timeout=30) as response:
             data = orjson.loads(response.read())
             for result in data["results"]:
-                if "https://leanprover-community.github.io/mathlib4_docs" not in result["url"]: # Do not include results from other sources other than mathlib4, since users might not have imported them
+                if (
+                    "https://leanprover-community.github.io/mathlib4_docs"
+                    not in result["url"]
+                ):  # Do not include results from other sources other than mathlib4, since users might not have imported them
                     continue
                 full_name = re.search(r"pattern=(.*?)#doc", result["url"]).group(1)
                 obj = {

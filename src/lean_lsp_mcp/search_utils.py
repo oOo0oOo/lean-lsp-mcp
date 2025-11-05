@@ -63,10 +63,22 @@ def lean_local_search(
     )
 
     command = [
-        "rg", "--json", "--no-ignore", "--smart-case", "--hidden",
-        "--color", "never", "--no-messages",
-        "-g", "*.lean", "-g", "!.git/**", "-g", "!.lake/build/**",
-        pattern, str(root)
+        "rg",
+        "--json",
+        "--no-ignore",
+        "--smart-case",
+        "--hidden",
+        "--color",
+        "never",
+        "--no-messages",
+        "-g",
+        "*.lean",
+        "-g",
+        "!.git/**",
+        "-g",
+        "!.lake/build/**",
+        pattern,
+        str(root),
     ]
 
     if lean_src := _get_lean_src_search_path():
@@ -86,7 +98,9 @@ def lean_local_search(
 
         decl_kind, decl_name = parts[0], parts[1].rstrip(":")
         file_path = Path(data["path"]["text"])
-        abs_path = file_path if file_path.is_absolute() else (root / file_path).resolve()
+        abs_path = (
+            file_path if file_path.is_absolute() else (root / file_path).resolve()
+        )
 
         try:
             display_path = str(abs_path.relative_to(root))
