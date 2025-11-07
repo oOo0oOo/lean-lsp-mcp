@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  prepare-lean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Lean dependencies
+        id: cache-lean
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            tests/test_project/.lake
+            tests/mathlib_project/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('tests/**/lean-toolchain', 'tests/**/lake-manifest.json') }}
+          restore-keys: lean-${{ runner.os }}-
+
+      - name: Install Lean toolchain
+        if: steps.cache-lean.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          ./elan-init -y --default-toolchain none
+
+      - name: Add Lean to PATH
+        run: echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Build test projects
+        run: |
+          cd tests/test_project && lake build
+          cd ../mathlib_project && lake exe cache get && lake build
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Check formatting
+        run: uv run ruff format --check
+
+      - name: Lint
+        run: uv run ruff check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.10"]
+    needs: prepare-lean
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache Lean dependencies
+        id: cache-lean
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            tests/test_project/.lake
+            tests/mathlib_project/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('tests/**/lean-toolchain', 'tests/**/lake-manifest.json') }}
+          restore-keys: lean-${{ runner.os }}-
+
+      - name: Install Lean toolchain
+        if: steps.cache-lean.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          ./elan-init -y --default-toolchain none
+
+      - name: Add Lean to PATH
+        run: echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run tests
+        run: uv run pytest tests/
