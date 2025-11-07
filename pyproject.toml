@@ -7,8 +7,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
-    "leanclient==0.4.0",
-    "mcp[cli]==1.19.0",
+    "leanclient==0.5.0",
+    "mcp[cli]==1.21.0",
     "orjson>=3.11.1",
 ]
 
