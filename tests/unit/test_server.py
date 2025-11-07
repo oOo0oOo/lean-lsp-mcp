@@ -20,7 +20,6 @@ def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNam
     context = server.AppContext(
         lean_project_path=None,
         client=None,
-        file_content_hashes={},
         rate_limit=rate_limit or {"test": []},
         lean_search_available=True,
     )

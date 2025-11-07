@@ -23,7 +23,7 @@ from lean_lsp_mcp.client_utils import (
     startup_client,
     infer_project_path,
 )
-from lean_lsp_mcp.file_utils import get_file_contents, update_file
+from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
@@ -51,7 +51,6 @@ _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 class AppContext:
     lean_project_path: Path | None
     client: LeanLSPClient | None
-    file_content_hashes: Dict[str, str]
     rate_limit: Dict[str, List[int]]
     lean_search_available: bool
 
@@ -68,7 +67,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
-            file_content_hashes={},
             rate_limit={
                 "leansearch": [],
                 "loogle": [],
@@ -166,7 +164,6 @@ async def lsp_build(
         if client:
             ctx.request_context.lifespan_context.client = None
             client.close()
-            ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         if clean:
             subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
@@ -286,10 +283,8 @@ def diagnostic_messages(ctx: Context, file_path: str) -> List[str] | str:
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    update_file(ctx, rel_path)
-
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    diagnostics = client.get_diagnostics(rel_path)
+    diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=10.0)
     return format_diagnostics(diagnostics)
 
 
@@ -314,8 +309,9 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    content = client.get_file_content(rel_path)
 
     if column is None:
         lines = content.splitlines()
@@ -360,14 +356,15 @@ def term_goal(
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    content = update_file(ctx, rel_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    content = client.get_file_content(rel_path)
     if column is None:
         lines = content.splitlines()
         if line < 1 or line > len(lines):
             return "Line number out of range. Try elsewhere?"
         column = len(content.splitlines()[line - 1])
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
     term_goal = client.get_term_goal(rel_path, line - 1, column - 1)
     f_line = format_line(content, line, column)
     if term_goal is None:
@@ -394,8 +391,9 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    file_content = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     if hover_info is None:
         f_line = format_line(file_content, line, column)
@@ -440,9 +438,10 @@ def completions(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
-    content = update_file(ctx, rel_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    content = client.get_file_content(rel_path)
     completions = client.get_completions(rel_path, line - 1, column - 1)
     formatted = [c["label"] for c in completions if "label" in c]
     f_line = format_line(content, line, column)
@@ -502,14 +501,16 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
-    orig_file_content = update_file(ctx, rel_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    orig_file_content = client.get_file_content(rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file,
     position = find_start_position(orig_file_content, symbol)
     if not position:
         return f"Symbol `{symbol}` (case sensitive) not found in file `{rel_path}`. Add it first, then try again."
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
     declaration = client.get_declarations(
         rel_path, position["line"], position["column"]
     )
@@ -557,8 +558,9 @@ def multi_attempt(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
-    update_file(ctx, rel_path)
+
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
 
     try:
         client.open_file(rel_path)
@@ -858,8 +860,9 @@ def state_search(
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    file_contents = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    file_contents = client.get_file_content(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     f_line = format_line(file_contents, line, column)
@@ -908,8 +911,9 @@ def hammer_premise(
     if not rel_path:
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
-    file_contents = update_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    file_contents = client.get_file_content(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     f_line = format_line(file_contents, line, column)

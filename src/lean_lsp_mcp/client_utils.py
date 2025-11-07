@@ -34,7 +34,6 @@ def startup_client(ctx: Context):
                 return  # Client already set up correctly - reuse it!
             # Different project path - close old client
             client.close()
-            ctx.request_context.lifespan_context.file_content_hashes.clear()
 
         # Need to create a new client
         with OutputCapture() as output:
