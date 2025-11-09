@@ -280,8 +280,8 @@ def diagnostic_messages(
 
     Args:
         file_path (str): Abs path to Lean file
-        start_line (int, optional): Start line (1-indexed) for filtering diagnostics. If provided, only diagnostics from this line onwards are returned.
-        end_line (int, optional): End line (1-indexed) for filtering diagnostics. If provided with start_line, only diagnostics in this range are returned.
+        start_line (int, optional): Start line (1-indexed). Filters from this line.
+        end_line (int, optional): End line (1-indexed). Filters to this line.
 
     Returns:
         List[str] | str: Diagnostic msgs or error msg
@@ -292,19 +292,16 @@ def diagnostic_messages(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 
-    # leanclient requires both start_line and end_line to filter
     # Convert 1-indexed to 0-indexed for leanclient
-    if start_line is not None or end_line is not None:
-        start_line_0 = (start_line - 1) if start_line is not None else 0
-        end_line_0 = (end_line - 1) if end_line is not None else 999999
-        diagnostics = client.get_diagnostics(
-            rel_path,
-            start_line=start_line_0,
-            end_line=end_line_0,
-            inactivity_timeout=10.0,
-        )
-    else:
-        diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=10.0)
+    start_line_0 = (start_line - 1) if start_line is not None else None
+    end_line_0 = (end_line - 1) if end_line is not None else None
+
+    diagnostics = client.get_diagnostics(
+        rel_path,
+        start_line=start_line_0,
+        end_line=end_line_0,
+        inactivity_timeout=8.0,
+    )
 
     return format_diagnostics(diagnostics)
 
@@ -660,7 +657,9 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         assert client is not None  # startup_client guarantees an initialized client
         client.open_file(rel_path)
         opened_file = True
-        diagnostics = format_diagnostics(client.get_diagnostics(rel_path))
+        diagnostics = format_diagnostics(
+            client.get_diagnostics(rel_path, inactivity_timeout=8.0)
+        )
     finally:
         if opened_file:
             try:
