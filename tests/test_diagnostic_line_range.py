@@ -186,18 +186,16 @@ async def test_diagnostic_messages_with_declaration_name_valid(
 ) -> None:
     """Test filtering diagnostics by a specific declaration name."""
     async with mcp_client_factory() as client:
-        # Get all diagnostics first to see if file has errors
+        # Get all diagnostics first to verify file has errors
         all_diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {"file_path": str(declaration_diagnostic_file)},
         )
         all_diag_text = result_text(all_diagnostics)
 
-        # Skip test if no diagnostics (file might not have compiled with errors)
-        if len(all_diag_text) == 0 or "no" in all_diag_text.lower():
-            import pytest
-
-            pytest.skip("Test file did not generate expected diagnostics")
+        # File should have diagnostics (contains intentional errors)
+        assert len(all_diag_text) > 0
+        assert "string" in all_diag_text.lower() or "type" in all_diag_text.lower()
 
         # Get diagnostics for firstTheorem only
         diagnostics = await client.call_tool(
@@ -231,11 +229,8 @@ async def test_diagnostic_messages_with_declaration_name_with_errors(
         )
         all_diag_text = result_text(all_diagnostics)
 
-        # Skip test if no diagnostics
-        if len(all_diag_text) == 0 or "no" in all_diag_text.lower():
-            import pytest
-
-            pytest.skip("Test file did not generate expected diagnostics")
+        # File should have diagnostics (contains intentional errors)
+        assert len(all_diag_text) > 0
 
         # Get diagnostics for secondTheorem (has type error in statement)
         diagnostics = await client.call_tool(
@@ -247,8 +242,8 @@ async def test_diagnostic_messages_with_declaration_name_with_errors(
         )
         diag_text = result_text(diagnostics)
 
-        # Should contain diagnostics (may or may not have errors depending on which line they're on)
-        # Just verify the tool works and returns something or empty
+        # secondTheorem has type errors, should have diagnostics
+        assert len(diag_text) > 0
         assert isinstance(diag_text, str)
 
 
