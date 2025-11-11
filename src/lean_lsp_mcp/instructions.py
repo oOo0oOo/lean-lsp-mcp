@@ -7,8 +7,8 @@ INSTRUCTIONS = """## General Rules
 ## Key Tools
 - lean_local_search: Confirm declarations (theorems/lemmas/defs/etc.) exist. VERY USEFUL AND FAST!
 - lean_goal: Check proof state. USE OFTEN!
-- lean_diagnostic_messages: Understand the current proof situation.
-  Can filter to specific theorem/lemma/definition using declaration_name parameter.
+- lean_diagnostic_messages: Understand the current proof situation. ESSENTIAL when focusing on a particular theorem/lemma/definition.
+  Use declaration_name parameter to filter diagnostics to a specific declaration.
 - lean_hover_info: Documentation about terms and lean syntax.
 - lean_leansearch: Search theorems using natural language or Lean terms.
 - lean_loogle: Search definitions and theorems by name, type, or subexpression.
