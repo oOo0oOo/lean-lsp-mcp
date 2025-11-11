@@ -261,6 +261,28 @@ def filter_diagnostics_by_position(
     return matches
 
 
+def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
+    """Recursively search through symbols and their children.
+
+    Args:
+        symbols: List of LSP document symbols
+        target_name: Name of the symbol to find (case-sensitive)
+
+    Returns:
+        The matching symbol dict, or None if not found
+    """
+    for symbol in symbols:
+        if symbol.get("name") == target_name:
+            return symbol
+        # Search nested declarations (children)
+        children = symbol.get("children", [])
+        if children:
+            result = search_symbols(children, target_name)
+            if result:
+                return result
+    return None
+
+
 def get_declaration_range(
     client, file_path: str, declaration_name: str
 ) -> tuple[int, int] | None:
@@ -275,19 +297,6 @@ def get_declaration_range(
         Tuple of (start_line, end_line) as 1-indexed integers, or None if not found
     """
     from lean_lsp_mcp.server import logger
-
-    def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
-        """Recursively search through symbols and their children."""
-        for symbol in symbols:
-            if symbol.get("name") == target_name:
-                return symbol
-            # Search nested declarations (children)
-            children = symbol.get("children", [])
-            if children:
-                result = search_symbols(children, target_name)
-                if result:
-                    return result
-        return None
 
     try:
         # Ensure file is opened (LSP needs this to analyze the file)
