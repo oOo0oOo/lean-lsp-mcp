@@ -267,12 +267,78 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
         return data
 
 
+def get_declaration_range(
+    client: LeanLSPClient, file_path: str, declaration_name: str
+) -> tuple[int, int] | None:
+    """Get the line range (1-indexed) of a declaration by name using LSP document symbols.
+
+    Args:
+        client: The Lean LSP client instance
+        file_path: Relative path to the Lean file
+        declaration_name: Name of the declaration to find (case-sensitive)
+
+    Returns:
+        Tuple of (start_line, end_line) as 1-indexed integers, or None if not found
+    """
+
+    def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
+        """Recursively search through symbols and their children."""
+        for symbol in symbols:
+            if symbol.get("name") == target_name:
+                return symbol
+            # Search nested declarations (children)
+            children = symbol.get("children", [])
+            if children:
+                result = search_symbols(children, target_name)
+                if result:
+                    return result
+        return None
+
+    try:
+        # Ensure file is opened (LSP needs this to analyze the file)
+        client.open_file(file_path)
+
+        # Get document symbols from LSP
+        symbols = client.get_document_symbols(file_path)
+
+        if not symbols:
+            logger.debug(
+                "No document symbols returned for '%s' - file may not be processed yet",
+                file_path,
+            )
+            return None
+
+        matching_symbol = search_symbols(symbols, declaration_name)
+        if not matching_symbol:
+            return None
+
+        # Extract range - LSP returns 0-indexed, convert to 1-indexed
+        range_info = matching_symbol.get("range")
+        if not range_info:
+            return None
+
+        start_line = range_info["start"]["line"] + 1
+        end_line = range_info["end"]["line"] + 1
+
+        return (start_line, end_line)
+
+    except Exception as e:
+        logger.warning(
+            "Failed to get declaration range for '%s' in '%s': %s",
+            declaration_name,
+            file_path,
+            e,
+        )
+        return None
+
+
 @mcp.tool("lean_diagnostic_messages")
 def diagnostic_messages(
     ctx: Context,
     file_path: str,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
+    declaration_name: Optional[str] = None,
 ) -> List[str] | str:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
@@ -282,6 +348,9 @@ def diagnostic_messages(
         file_path (str): Abs path to Lean file
         start_line (int, optional): Start line (1-indexed). Filters from this line.
         end_line (int, optional): End line (1-indexed). Filters to this line.
+        declaration_name (str, optional): Name of a specific theorem/lemma/definition.
+            If provided, only returns diagnostics within that declaration.
+            Takes precedence over start_line/end_line.
 
     Returns:
         List[str] | str: Diagnostic msgs or error msg
@@ -291,6 +360,13 @@ def diagnostic_messages(
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+
+    # If declaration_name is provided, get its range and use that for filtering
+    if declaration_name:
+        decl_range = get_declaration_range(client, rel_path, declaration_name)
+        if decl_range is None:
+            return f"Declaration '{declaration_name}' not found in file. Check the name (case-sensitive) and try again."
+        start_line, end_line = decl_range
 
     # Convert 1-indexed to 0-indexed for leanclient
     start_line_0 = (start_line - 1) if start_line is not None else None
