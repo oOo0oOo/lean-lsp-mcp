@@ -276,20 +276,17 @@ def diagnostic_messages(
     end_line: Optional[int] = None,
     declaration_name: Optional[str] = None,
 ) -> List[str] | str:
-    """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
-
-    "no goals to be solved" means code may need removal.
+    """Get diagnostics (errors, warnings, infos) for a Lean file.
 
     Args:
-        file_path (str): Abs path to Lean file
-        start_line (int, optional): Start line (1-indexed). Filters from this line.
-        end_line (int, optional): End line (1-indexed). Filters to this line.
-        declaration_name (str, optional): Name of a specific theorem/lemma/definition.
-            If provided, only returns diagnostics within that declaration.
-            Takes precedence over start_line/end_line.
+        file_path: Abs path to Lean file
+        start_line: 1-indexed start line for filtering (optional)
+        end_line: 1-indexed end line for filtering (optional)
+        declaration_name: Filter to specific theorem/lemma/def (optional).
+            Overrides start_line/end_line if provided.
 
     Returns:
-        List[str] | str: Diagnostic msgs or error msg
+        List[str] | str: Diagnostics or error message
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
