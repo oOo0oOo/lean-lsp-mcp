@@ -34,6 +34,7 @@ from lean_lsp_mcp.utils import (
     format_diagnostics,
     format_goal,
     format_line,
+    get_declaration_range,
     OptionalTokenVerifier,
 )
 
@@ -273,6 +274,7 @@ def diagnostic_messages(
     file_path: str,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
+    declaration_name: Optional[str] = None,
 ) -> List[str] | str:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
@@ -282,6 +284,9 @@ def diagnostic_messages(
         file_path (str): Abs path to Lean file
         start_line (int, optional): Start line (1-indexed). Filters from this line.
         end_line (int, optional): End line (1-indexed). Filters to this line.
+        declaration_name (str, optional): Name of a specific theorem/lemma/definition.
+            If provided, only returns diagnostics within that declaration.
+            Takes precedence over start_line/end_line.
 
     Returns:
         List[str] | str: Diagnostic msgs or error msg
@@ -291,6 +296,13 @@ def diagnostic_messages(
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+
+    # If declaration_name is provided, get its range and use that for filtering
+    if declaration_name:
+        decl_range = get_declaration_range(client, rel_path, declaration_name)
+        if decl_range is None:
+            return f"Declaration '{declaration_name}' not found in file. Check the name (case-sensitive) and try again."
+        start_line, end_line = decl_range
 
     # Convert 1-indexed to 0-indexed for leanclient
     start_line_0 = (start_line - 1) if start_line is not None else None
