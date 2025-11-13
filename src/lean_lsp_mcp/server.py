@@ -239,6 +239,8 @@ async def lsp_build(
 def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> str:
     """Get the text contents of a Lean file, optionally with line numbers.
 
+    Use sparingly (bloats context). Mainly when unsure about line numbers.
+
     Args:
         file_path (str): Abs path to Lean file
         annotate_lines (bool, optional): Annotate lines with line numbers. Defaults to True.
