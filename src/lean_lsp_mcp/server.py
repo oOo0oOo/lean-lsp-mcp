@@ -301,7 +301,7 @@ def diagnostic_messages(
     if declaration_name:
         decl_range = get_declaration_range(client, rel_path, declaration_name)
         if decl_range is None:
-            return f"Declaration '{declaration_name}' not found in file. Check the name (case-sensitive) and try again."
+            return f"Declaration '{declaration_name}' not found in file. This could mean:\n- The name is misspelled or has incorrect capitalization (case-sensitive)\n- The declaration is in a namespace (try the unqualified name, e.g., 'myTheorem' not 'MyNamespace.myTheorem')\n- The file hasn't been fully processed by the LSP server yet (try again in a moment)\n- Enable debug logging (LEAN_LOG_LEVEL=DEBUG) for more details"
         start_line, end_line = decl_range
 
     # Convert 1-indexed to 0-indexed for leanclient
