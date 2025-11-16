@@ -299,30 +299,57 @@ def get_declaration_range(
     from lean_lsp_mcp.server import logger
 
     try:
-        # Ensure file is opened (LSP needs this to analyze the file)
-        client.open_file(file_path)
+        # Ensure file is fully processed before requesting symbols
+        # get_diagnostics() waits for the LSP to complete file processing
+        # using the inactivity_timeout mechanism
+        client.get_diagnostics(file_path, inactivity_timeout=5.0)
 
-        # Get document symbols from LSP
+        # Now get document symbols - file should be ready
         symbols = client.get_document_symbols(file_path)
 
         if not symbols:
-            logger.debug(
-                "No document symbols returned for '%s' - file may not be processed yet",
+            logger.warning(
+                "No document symbols returned for '%s' - file may not be valid or LSP server is busy",
                 file_path,
             )
             return None
 
+        logger.debug(
+            "Searching for declaration '%s' in %d top-level symbol(s)",
+            declaration_name,
+            len(symbols),
+        )
+
         matching_symbol = search_symbols(symbols, declaration_name)
         if not matching_symbol:
+            logger.debug(
+                "Declaration '%s' not found among available symbols in '%s'",
+                declaration_name,
+                file_path,
+            )
+            # Log all available symbol names for debugging
+            all_names = _collect_all_symbol_names(symbols)
+            logger.debug("Available symbols: %s", ", ".join(all_names))
             return None
 
         # Extract range - LSP returns 0-indexed, convert to 1-indexed
         range_info = matching_symbol.get("range")
         if not range_info:
+            logger.warning(
+                "Symbol '%s' found but has no range information", declaration_name
+            )
             return None
 
         start_line = range_info["start"]["line"] + 1
         end_line = range_info["end"]["line"] + 1
+
+        logger.debug(
+            "Found '%s' at lines %d-%d in '%s'",
+            declaration_name,
+            start_line,
+            end_line,
+            file_path,
+        )
 
         return (start_line, end_line)
 
@@ -334,3 +361,23 @@ def get_declaration_range(
             e,
         )
         return None
+
+
+def _collect_all_symbol_names(symbols: List[Dict]) -> List[str]:
+    """Recursively collect all symbol names from a symbol tree.
+
+    Args:
+        symbols: List of LSP document symbols
+
+    Returns:
+        List of all symbol names found (including nested ones)
+    """
+    names = []
+    for symbol in symbols:
+        name = symbol.get("name")
+        if name:
+            names.append(name)
+        children = symbol.get("children", [])
+        if children:
+            names.extend(_collect_all_symbol_names(children))
+    return names
