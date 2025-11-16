@@ -289,6 +289,7 @@ def diagnostic_messages(
         declaration_name (str, optional): Name of a specific theorem/lemma/definition.
             If provided, only returns diagnostics within that declaration.
             Takes precedence over start_line/end_line.
+            Slow, requires waiting for full file analysis.
 
     Returns:
         List[str] | str: Diagnostic msgs or error msg
