@@ -317,3 +317,41 @@ async def test_diagnostic_messages_declaration_name_takes_precedence(
         # Should get diagnostics for firstTheorem, not lines 1-3
         # (which would only include imports)
         assert len(diag_text) > 0
+
+
+@pytest.fixture()
+def kernel_error_file(test_project_path: Path) -> Path:
+    """File with kernel error as first error (issue #63)."""
+    path = test_project_path / "KernelErrorTest.lean"
+    content = textwrap.dedent(
+        """
+        import Mathlib.Data.Real.Basic
+
+        structure test where
+          x : ℝ
+          deriving Repr
+
+        lemma test_lemma : False := by rfl
+        """
+    ).strip()
+    path.write_text(content + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_messages_detects_kernel_errors(
+    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
+    kernel_error_file: Path,
+) -> None:
+    """Test kernel errors detected when first in file (issue #63)."""
+    async with mcp_client_factory() as client:
+        diagnostics = await client.call_tool(
+            "lean_diagnostic_messages",
+            {"file_path": str(kernel_error_file)},
+        )
+        diag_text = result_text(diagnostics)
+
+        # Detect kernel error and regular error
+        assert "kernel" in diag_text.lower() or "unsafe" in diag_text.lower()
+        assert "rfl" in diag_text.lower() or "failed" in diag_text.lower()
+        assert diag_text.count("severity") >= 2

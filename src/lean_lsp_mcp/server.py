@@ -314,7 +314,7 @@ def diagnostic_messages(
         rel_path,
         start_line=start_line_0,
         end_line=end_line_0,
-        inactivity_timeout=8.0,
+        inactivity_timeout=15.0,
     )
 
     return format_diagnostics(diagnostics)
@@ -672,7 +672,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         client.open_file(rel_path)
         opened_file = True
         diagnostics = format_diagnostics(
-            client.get_diagnostics(rel_path, inactivity_timeout=8.0)
+            client.get_diagnostics(rel_path, inactivity_timeout=15.0)
         )
     finally:
         if opened_file:
