@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and platform_python_implementation != 'PyPy'",
@@ -381,7 +381,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.12.1"
+version = "0.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -403,8 +403,8 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
-    { name = "leanclient", specifier = "==0.5.2" },
-    { name = "mcp", extras = ["cli"], specifier = "==1.21.0" },
+    { name = "leanclient", specifier = "==0.5.3" },
+    { name = "mcp", extras = ["cli"], specifier = "==1.21.1" },
     { name = "orjson", specifier = ">=3.11.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -415,15 +415,15 @@ provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.5.2"
+version = "0.5.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/ac/d2b18eed3fa185e32fd33ca97e836882b855cbbf53f99408b531fef2f1ba/leanclient-0.5.2.tar.gz", hash = "sha256:4fb48b56df1cc0c36b76b637fea44703d320faddc5a99fe95b0be3ac05eac8b3", size = 1117361, upload-time = "2025-11-10T08:30:25.674Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/e0/e8be77c7772f91157690bbc90606c296c05af0e0d6c906a4070cdc4782c2/leanclient-0.5.3.tar.gz", hash = "sha256:24a0243c66f1f79e782cd7bf260502db75737b11e2c9ce9c732ba9155ad4d705", size = 1119491, upload-time = "2025-11-16T09:37:36.814Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/49/6ee1680b8bdae2b9066d305cb0d9b63d0503039e9e5e09f7b895f668dca3/leanclient-0.5.2-py3-none-any.whl", hash = "sha256:058c1cd58fc019001b12affc00e0b83f91b26a7dba94e0c1fbc151d3c9104937", size = 34363, upload-time = "2025-11-10T08:30:24.283Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/9b/baccd226791a5a7044dd288c7d2301310d4acbc604a8e74373a2a34bf3df/leanclient-0.5.3-py3-none-any.whl", hash = "sha256:f8c7e462819f197cbc249c8538fdd46d8b5feac250614b3b6bcc48d32b0fac6b", size = 34568, upload-time = "2025-11-16T09:37:33.927Z" },
 ]
 
 [[package]]
@@ -440,7 +440,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.21.0"
+version = "1.21.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -454,11 +454,13 @@ dependencies = [
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "sse-starlette" },
     { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/54/dd2330ef4611c27ae59124820863c34e1d3edb1133c58e6375e2d938c9c5/mcp-1.21.0.tar.gz", hash = "sha256:bab0a38e8f8c48080d787233343f8d301b0e1e95846ae7dead251b2421d99855", size = 452697, upload-time = "2025-11-06T23:19:58.432Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/25/4df633e7574254ada574822db2245bbee424725d1b01bccae10bf128794e/mcp-1.21.1.tar.gz", hash = "sha256:540e6ac4b12b085c43f14879fde04cbdb10148a09ea9492ff82d8c7ba651a302", size = 469071, upload-time = "2025-11-13T20:33:46.139Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/47/850b6edc96c03bd44b00de9a0ca3c1cc71e0ba1cd5822955bc9e4eb3fad3/mcp-1.21.0-py3-none-any.whl", hash = "sha256:598619e53eb0b7a6513db38c426b28a4bdf57496fed04332100d2c56acade98b", size = 173672, upload-time = "2025-11-06T23:19:56.508Z" },
+    { url = "https://files.pythonhosted.org/packages/49/af/01fb42df59ad15925ffc1e2e609adafddd3ac4572f606faae0dc8b55ba0c/mcp-1.21.1-py3-none-any.whl", hash = "sha256:dd35abe36d68530a8a1291daa25d50276d8731e545c0434d6e250a3700dd2a6d", size = 174852, upload-time = "2025-11-13T20:33:44.502Z" },
 ]
 
 [package.optional-dependencies]
