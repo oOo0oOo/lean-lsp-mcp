@@ -22,6 +22,7 @@ from lean_lsp_mcp.client_utils import (
     setup_client_for_file,
     startup_client,
     infer_project_path,
+    valid_lean_project_path,
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
@@ -45,6 +46,10 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+
+
+_DIAGNOSTIC_TIMEOUT_S = 15.0
+_DIAGNOSTIC_RETRY_TIMEOUT_S = 45.0
 
 
 # Server and context
@@ -311,14 +316,44 @@ def diagnostic_messages(
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
-    diagnostics = client.get_diagnostics(
+    diagnostics = _get_diagnostics_with_retry(
+        client,
         rel_path,
         start_line=start_line_0,
         end_line=end_line_0,
-        inactivity_timeout=15.0,
+        inactivity_timeout=_DIAGNOSTIC_TIMEOUT_S,
+        retry_timeout=_DIAGNOSTIC_RETRY_TIMEOUT_S,
     )
 
-    return format_diagnostics(diagnostics)
+    return format_diagnostics(diagnostics or [])
+
+
+def _get_diagnostics_with_retry(
+    client: LeanLSPClient,
+    rel_path: str,
+    start_line: int | None,
+    end_line: int | None,
+    *,
+    inactivity_timeout: float,
+    retry_timeout: float,
+) -> list | None:
+    diagnostics = client.get_diagnostics(
+        rel_path,
+        start_line=start_line,
+        end_line=end_line,
+        inactivity_timeout=inactivity_timeout,
+    )
+
+    if diagnostics or retry_timeout <= inactivity_timeout:
+        return diagnostics
+
+    return client.get_diagnostics(
+        rel_path,
+        start_line=start_line,
+        end_line=end_line,
+        inactivity_timeout=retry_timeout,
+    )
+
 
 
 @mcp.tool("lean_goal")
@@ -706,7 +741,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 
 @mcp.tool("lean_local_search")
 def local_search(
-    ctx: Context, query: str, limit: int = 10
+    ctx: Context, query: str, limit: int = 10, project_root: str | None = None
 ) -> List[Dict[str, str]] | str:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
@@ -724,11 +759,28 @@ def local_search(
     if not _RG_AVAILABLE:
         return _RG_MESSAGE
 
-    stored_root = ctx.request_context.lifespan_context.lean_project_path
-    if stored_root is None:
-        return "Lean project path not set. Call a file-based tool (like lean_file_contents) first to set the project path."
+    cleaned_query = query.strip()
+    if not cleaned_query:
+        return "Provide a declaration name or prefix to search for."
 
-    return lean_local_search(query=query.strip(), limit=limit, project_root=stored_root)
+    explicit_root: Path | None = None
+    if project_root:
+        candidate = Path(project_root).expanduser().resolve()
+        if not candidate.exists():
+            return f"Project root '{project_root}' does not exist."
+        if not valid_lean_project_path(candidate):
+            return f"Project root '{project_root}' is not a Lean project (missing lean-toolchain)."
+        explicit_root = candidate
+        ctx.request_context.lifespan_context.lean_project_path = candidate
+
+    stored_root = ctx.request_context.lifespan_context.lean_project_path
+    target_root = explicit_root or stored_root
+    if target_root is None:
+        return "Lean project path not set. Provide `project_root` or call a file-based tool (like lean_file_contents) first."
+
+    return lean_local_search(
+        query=cleaned_query, limit=limit, project_root=target_root
+    )
 
 
 @mcp.tool("lean_leansearch")
