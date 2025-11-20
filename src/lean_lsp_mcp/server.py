@@ -26,6 +26,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
+from lean_lsp_mcp.outline_utils import generate_outline
 from lean_lsp_mcp.utils import (
     OutputCapture,
     deprecated,
@@ -270,6 +271,26 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
         return annotated
     else:
         return data
+
+
+@mcp.tool("lean_file_outline")
+def file_outline(ctx: Context, file_path: str) -> str:
+    """Get a concise outline showing imports and declarations with type signatures (theorems, defs, classes, structures).
+
+    Highly useful and token-efficient. Slow-ish.
+
+    Args:
+        file_path (str): Abs path to Lean file
+
+    Returns:
+        str: Markdown formatted outline or error msg
+    """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "Invalid Lean file path: Unable to start LSP server or load file"
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    return generate_outline(client, rel_path)
 
 
 @mcp.tool("lean_diagnostic_messages")
