@@ -113,3 +113,51 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert wrapped(ctx=ctx) == "ok"
     assert rate_limit["test"] == [100]
+
+
+def test_local_search_project_root_updates_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_result = [{"name": "foo", "kind": "def", "file": "Foo.lean"}]
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+
+    called: dict[str, Path] = {}
+
+    def fake_search(*, query: str, limit: int, project_root: Path):
+        called["query"] = query
+        called["limit"] = limit
+        called["root"] = project_root
+        return fake_result
+
+    monkeypatch.setattr(server, "_RG_AVAILABLE", True)
+    monkeypatch.setattr(server, "lean_local_search", fake_search)
+
+    ctx = _make_ctx()
+
+    result = server.local_search(
+        ctx=ctx, query=" foo ", limit=7, project_root=str(project_dir)
+    )
+
+    assert result == fake_result
+    assert called == {
+        "query": "foo",
+        "limit": 7,
+        "root": project_dir.resolve(),
+    }
+    assert ctx.request_context.lifespan_context.lean_project_path == project_dir.resolve()
+
+
+def test_local_search_requires_project_root_when_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(server, "_RG_AVAILABLE", True)
+
+    ctx = _make_ctx()
+    missing_path = tmp_path / "missing"
+
+    message = server.local_search(
+        ctx=ctx, query="foo", project_root=str(missing_path)
+    )
+
+    assert "does not exist" in message

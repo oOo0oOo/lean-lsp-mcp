@@ -706,7 +706,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
 
 @mcp.tool("lean_local_search")
 def local_search(
-    ctx: Context, query: str, limit: int = 10
+    ctx: Context, query: str, limit: int = 10, project_root: str | None = None
 ) -> List[Dict[str, str]] | str:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
@@ -724,11 +724,29 @@ def local_search(
     if not _RG_AVAILABLE:
         return _RG_MESSAGE
 
-    stored_root = ctx.request_context.lifespan_context.lean_project_path
-    if stored_root is None:
+    lifespan = ctx.request_context.lifespan_context
+    stored_root = lifespan.lean_project_path
+
+    if project_root:
+        try:
+            resolved_root = Path(project_root).expanduser().resolve()
+        except OSError as exc:  # pragma: no cover - defensive path handling
+            return f"Invalid project root '{project_root}': {exc}"
+        if not resolved_root.exists():
+            return f"Project root '{project_root}' does not exist."
+        lifespan.lean_project_path = resolved_root
+    else:
+        resolved_root = stored_root
+
+    if resolved_root is None:
         return "Lean project path not set. Call a file-based tool (like lean_file_contents) first to set the project path."
 
-    return lean_local_search(query=query.strip(), limit=limit, project_root=stored_root)
+    try:
+        return lean_local_search(
+            query=query.strip(), limit=limit, project_root=resolved_root
+        )
+    except RuntimeError as exc:
+        return f"lean_local_search error:\n{exc}"
 
 
 @mcp.tool("lean_leansearch")
