@@ -16,6 +16,23 @@ class DummyClient:
         self.closed_calls += 1
 
 
+class _DiagnosticsClient:
+    def __init__(self, responses: list[list[dict]]):
+        self._responses = responses
+        self.calls: list[float] = []
+
+    def get_diagnostics(
+        self,
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        inactivity_timeout: float = 0.0,
+    ) -> list[dict]:
+        self.calls.append(inactivity_timeout)
+        index = min(len(self.calls) - 1, len(self._responses) - 1)
+        return self._responses[index]
+
+
 def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
@@ -113,3 +130,33 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert wrapped(ctx=ctx) == "ok"
     assert rate_limit["test"] == [100]
+
+
+def test_get_diagnostics_with_retry_retries_once() -> None:
+    client = _DiagnosticsClient([[], [{"message": "err"}]])
+    result = server._get_diagnostics_with_retry(
+        client,
+        "File.lean",
+        start_line=None,
+        end_line=None,
+        inactivity_timeout=server._DIAGNOSTIC_TIMEOUT_S,
+        retry_timeout=server._DIAGNOSTIC_RETRY_TIMEOUT_S,
+    )
+
+    assert result == [{"message": "err"}]
+    assert client.calls == [server._DIAGNOSTIC_TIMEOUT_S, server._DIAGNOSTIC_RETRY_TIMEOUT_S]
+
+
+def test_get_diagnostics_with_retry_returns_immediately() -> None:
+    client = _DiagnosticsClient([[{"message": "ok"}]])
+    result = server._get_diagnostics_with_retry(
+        client,
+        "File.lean",
+        start_line=0,
+        end_line=1,
+        inactivity_timeout=1.0,
+        retry_timeout=5.0,
+    )
+
+    assert result == [{"message": "ok"}]
+    assert client.calls == [1.0]

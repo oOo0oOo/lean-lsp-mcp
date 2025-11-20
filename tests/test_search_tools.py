@@ -40,8 +40,30 @@ theorem sample_goal : True := by
 async def test_search_tools(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     goal_file: Path,
+    test_project_path: Path,
 ) -> None:
     async with mcp_client_factory() as client:
+        explicit_local = await client.call_tool(
+            "lean_local_search",
+            {
+                "query": "sampleTheorem",
+                "project_root": str(test_project_path),
+            },
+        )
+        explicit_entry = _first_json_block(explicit_local)
+        if explicit_entry is None:
+            message = result_text(explicit_local).strip()
+            if "ripgrep" in message.lower():
+                pytest.skip(message)
+            pytest.fail(
+                f"lean_local_search with explicit project_root returned: {message}"
+            )
+        assert explicit_entry == {
+            "name": "sampleTheorem",
+            "kind": "theorem",
+            "file": "EditorTools.lean",
+        }
+
         loogle = await client.call_tool(
             "lean_loogle",
             {"query": "Nat"},
@@ -86,7 +108,6 @@ async def test_search_tools(
             "lean_local_search",
             {
                 "query": "sampleTheorem",
-                "project_root": str(goal_file.parent),
             },
         )
         local_entry = _first_json_block(local_search)
