@@ -44,7 +44,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 ### 3. Configure your IDE/Setup
 
 <details>
-<summary><b>VSCode</b></summary>
+<summary><b>VSCode (Click to expand)</b></summary>
 One-click config setup:
 
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=lean-lsp&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22lean-lsp-mcp%22%5D%7D)
@@ -96,7 +96,7 @@ If that doesn't work, you can try cloning this repository and replace `"lean-lsp
 </details>
 
 <details>
-<summary><b>Cursor</b></summary>
+<summary><b>Cursor (Click to expand)</b></summary>
 1. Open MCP Settings (File > Preferences > Cursor Settings > MCP)
 
 2. "+ Add a new global MCP Server" > ("Create File")
@@ -116,7 +116,7 @@ If that doesn't work, you can try cloning this repository and replace `"lean-lsp
 </details>
 
 <details>
-<summary><b>Claude Code</b></summary>
+<summary><b>Claude Code (Click to expand)</b></summary>
 Run one of these commands in the root directory of your Lean project (where `lakefile.toml` is located):
 
 ```bash
@@ -144,7 +144,11 @@ For the local search tool `lean_local_search`, install [ripgrep](https://github.
 
 ### File interactions (LSP)
 
-#### lean_file_contents
+#### lean_file_outline
+
+Get a concise outline of a Lean file showing imports and declarations with type signatures (theorems, definitions, classes, structures).
+
+#### lean_file_contents (DEPRECATED)
 
 Get the contents of a Lean file, optionally with line number annotations.
 

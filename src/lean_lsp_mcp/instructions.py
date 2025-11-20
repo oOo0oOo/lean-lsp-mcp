@@ -5,6 +5,7 @@ INSTRUCTIONS = """## General Rules
 - Work iteratively: Small steps, intermediate sorries, frequent checks.
 
 ## Key Tools
+- lean_file_outline: Concise skeleton of a file (imports, docstrings, declarations). Token efficient.
 - lean_local_search: Confirm declarations (theorems/lemmas/defs/etc.) exist. VERY USEFUL AND FAST!
 - lean_goal: Check proof state. USE OFTEN!
 - lean_diagnostic_messages: Understand current proof situation.
