@@ -56,7 +56,7 @@ async def test_diagnostic_messages_line_filtering(
         assert "string" in diag_text.lower() or "error" in diag_text.lower()
         assert diag_text.count("severity") >= 2
         all_diag_text = diag_text
-        
+
         # Test 2: Get diagnostics starting from line 10
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
@@ -69,9 +69,10 @@ async def test_diagnostic_messages_line_filtering(
         # Should contain the second error (line 13: anotherError)
         assert "123" in diag_text or "error" in diag_text.lower()
         assert len(diag_text) < len(all_diag_text)
-        
+
         # Test 3: Get diagnostics for specific line range
         import re
+
         line_matches = re.findall(r"l(\d+)c", all_diag_text)
         if line_matches:
             first_error_line = int(line_matches[0])
@@ -86,7 +87,7 @@ async def test_diagnostic_messages_line_filtering(
             diag_text = result_text(diagnostics)
             assert "string" in diag_text.lower() or len(diag_text) > 0
             assert len(diag_text) < len(all_diag_text)
-        
+
         # Test 4: Get diagnostics for range with no errors (lines 14-17)
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",

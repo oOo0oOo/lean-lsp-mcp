@@ -2,7 +2,7 @@ import os
 import secrets
 import sys
 import tempfile
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
@@ -334,3 +334,22 @@ def get_declaration_range(
             e,
         )
         return None
+
+
+def deprecated(func_or_msg: str | Callable | None = None) -> Callable:
+    """Mark a tool as deprecated. Can be used as @deprecated or @deprecated("msg")."""
+    msg = "Will be removed soon."
+
+    def _decorator(func: Callable) -> Callable:
+        doc = func.__doc__ or ""
+        func.__doc__ = f"DEPRECATED: {msg}\n\n{doc}"
+        return func
+
+    if isinstance(func_or_msg, str):
+        msg = func_or_msg
+        return _decorator
+
+    if func_or_msg is None:
+        return _decorator
+
+    return _decorator(func_or_msg)

@@ -28,6 +28,7 @@ from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     OutputCapture,
+    deprecated,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
@@ -236,6 +237,7 @@ async def lsp_build(
 
 # File level tools
 @mcp.tool("lean_file_contents")
+@deprecated
 def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> str:
     """Get the text contents of a Lean file, optionally with line numbers.
 
