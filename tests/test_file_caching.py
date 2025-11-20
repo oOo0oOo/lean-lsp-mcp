@@ -25,47 +25,14 @@ theorem cachedTheorem : cachedValue = 42 := by rfl
 
 
 @pytest.mark.asyncio
-async def test_disk_changes_detected(
+async def test_file_caching(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     cache_test_file: Path,
 ) -> None:
-    """Disk changes must be detected and reprocessed correctly."""
+    """Test file caching: disk changes detected and tools share state correctly."""
 
     async with mcp_client_factory() as client:
-        goal1 = await client.call_tool(
-            "lean_goal", {"file_path": str(cache_test_file), "line": 5}
-        )
-        result1 = result_text(goal1)
-        assert "no goals" in result1.lower()
-
-        cache_test_file.write_text(
-            """import Mathlib
-
-def cachedValue : Nat := 42
-
-theorem cachedTheorem : cachedValue = 42 := by sorry
-""",
-            encoding="utf-8",
-        )
-
-        goal2 = await client.call_tool(
-            "lean_goal", {"file_path": str(cache_test_file), "line": 5}
-        )
-        result2 = result_text(goal2)
-
-        assert "cachedValue = 42" in result2, (
-            f"Should show goal at sorry, got: {result2}"
-        )
-
-
-@pytest.mark.asyncio
-async def test_multiple_tools_share_file(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    cache_test_file: Path,
-) -> None:
-    """Different tools must reuse cached file state correctly."""
-
-    async with mcp_client_factory() as client:
+        # Test 1: Multiple tools share file state correctly
         await client.call_tool(
             "lean_diagnostic_messages", {"file_path": str(cache_test_file)}
         )
@@ -76,5 +43,32 @@ async def test_multiple_tools_share_file(
             "lean_hover_info",
             {"file_path": str(cache_test_file), "line": 3, "column": 5},
         )
-
         assert "cachedValue" in result_text(hover)
+
+        # Test 2: Disk changes are detected and reprocessed correctly
+        goal1 = await client.call_tool(
+            "lean_goal", {"file_path": str(cache_test_file), "line": 5}
+        )
+        result1 = result_text(goal1)
+        assert "no goals" in result1.lower()
+
+        # Modify file on disk
+        cache_test_file.write_text(
+            """import Mathlib
+
+def cachedValue : Nat := 42
+
+theorem cachedTheorem : cachedValue = 42 := by sorry
+""",
+            encoding="utf-8",
+        )
+
+        # Verify change is detected
+        goal2 = await client.call_tool(
+            "lean_goal", {"file_path": str(cache_test_file), "line": 5}
+        )
+        result2 = result_text(goal2)
+
+        assert "cachedValue = 42" in result2, (
+            f"Should show goal at sorry, got: {result2}"
+        )

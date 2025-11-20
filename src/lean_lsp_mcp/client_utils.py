@@ -36,14 +36,15 @@ def startup_client(ctx: Context):
             client.close()
 
         # Need to create a new client
+        # In test environments, prevent repeated cache downloads
+        prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
         with OutputCapture() as output:
-            try:
-                client = LeanLSPClient(lean_project_path)
-                logger.info(f"Connected to Lean language server at {lean_project_path}")
-            except Exception as e:
-                logger.warning(f"Initial connection failed, trying with build: {e}")
-                client = LeanLSPClient(lean_project_path, initial_build=True)
-                logger.info(f"Connected with initial build to {lean_project_path}")
+            client = LeanLSPClient(
+                lean_project_path, 
+                initial_build=False,
+                prevent_cache_get=prevent_cache
+            )
+            logger.info(f"Connected to Lean language server at {lean_project_path}")
         build_output = output.get_output()
         if build_output:
             logger.debug(f"Build output: {build_output}")

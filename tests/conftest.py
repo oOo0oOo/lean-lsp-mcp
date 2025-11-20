@@ -34,6 +34,7 @@ def _server_environment(repo_root: Path) -> dict[str, str]:
     env: dict[str, str] = {
         "PYTHONPATH": os.pathsep.join(pythonpath_entries),
         "LEAN_LOG_LEVEL": os.environ.get("LEAN_LOG_LEVEL", "ERROR"),
+        "LEAN_LSP_TEST_MODE": "1",  # Prevent repeated cache downloads in tests
     }
 
     token = os.environ.get("LEAN_LSP_MCP_TOKEN")

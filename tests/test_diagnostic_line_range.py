@@ -10,7 +10,7 @@ import pytest
 from tests.helpers.mcp_client import MCPClient, result_text
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def diagnostic_file(test_project_path: Path) -> Path:
     path = test_project_path / "DiagnosticTest.lean"
     content = textwrap.dedent(
@@ -34,46 +34,30 @@ def diagnostic_file(test_project_path: Path) -> Path:
           trivial
         """
     ).strip()
-    path.write_text(content + "\n", encoding="utf-8")
+    if not path.exists() or path.read_text(encoding="utf-8") != content + "\n":
+        path.write_text(content + "\n", encoding="utf-8")
     return path
 
 
 @pytest.mark.asyncio
-async def test_diagnostic_messages_without_line_range(
+async def test_diagnostic_messages_line_filtering(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     diagnostic_file: Path,
 ) -> None:
-    """Test getting all diagnostic messages without line range filtering."""
+    """Test all line range filtering scenarios in one client session."""
     async with mcp_client_factory() as client:
+        # Test 1: Get all diagnostic messages without line range filtering
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {"file_path": str(diagnostic_file)},
         )
         diag_text = result_text(diagnostics)
-
         # Should contain both errors
         assert "string" in diag_text.lower() or "error" in diag_text.lower()
-        # Check that multiple diagnostics are returned (at least the two errors we created)
         assert diag_text.count("severity") >= 2
-
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_with_start_line(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    diagnostic_file: Path,
-) -> None:
-    """Test getting diagnostic messages starting from a specific line."""
-    async with mcp_client_factory() as client:
-        # First get all diagnostics to see what we have
-        all_diagnostics = await client.call_tool(
-            "lean_diagnostic_messages",
-            {
-                "file_path": str(diagnostic_file),
-            },
-        )
-        all_diag_text = result_text(all_diagnostics)
-
-        # Get diagnostics starting from line 10 (should only include the second error)
+        all_diag_text = diag_text
+        
+        # Test 2: Get diagnostics starting from line 10
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -82,35 +66,15 @@ async def test_diagnostic_messages_with_start_line(
             },
         )
         diag_text = result_text(diagnostics)
-
         # Should contain the second error (line 13: anotherError)
         assert "123" in diag_text or "error" in diag_text.lower()
-        # Should have fewer diagnostics than all_diagnostics
         assert len(diag_text) < len(all_diag_text)
-
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_with_line_range(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    diagnostic_file: Path,
-) -> None:
-    """Test getting diagnostic messages for a specific line range."""
-    async with mcp_client_factory() as client:
-        # First, get all diagnostics to see what lines they're actually on
-        all_diagnostics = await client.call_tool(
-            "lean_diagnostic_messages",
-            {"file_path": str(diagnostic_file)},
-        )
-        all_diag_text = result_text(all_diagnostics)
-
-        # Extract line numbers from the diagnostics (format: "l7c23-l7c31")
+        
+        # Test 3: Get diagnostics for specific line range
         import re
-
         line_matches = re.findall(r"l(\d+)c", all_diag_text)
         if line_matches:
             first_error_line = int(line_matches[0])
-
-            # Get diagnostics only up to that error line
             diagnostics = await client.call_tool(
                 "lean_diagnostic_messages",
                 {
@@ -120,21 +84,10 @@ async def test_diagnostic_messages_with_line_range(
                 },
             )
             diag_text = result_text(diagnostics)
-
-            # Should contain the first error
             assert "string" in diag_text.lower() or len(diag_text) > 0
-            # Should be fewer diagnostics than all
             assert len(diag_text) < len(all_diag_text)
-
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_with_no_errors_in_range(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    diagnostic_file: Path,
-) -> None:
-    """Test getting diagnostic messages for a range with no errors."""
-    async with mcp_client_factory() as client:
-        # Get diagnostics only for lines 14-17 (valid theorem, should have no errors)
+        
+        # Test 4: Get diagnostics for range with no errors (lines 14-17)
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -144,9 +97,6 @@ async def test_diagnostic_messages_with_no_errors_in_range(
             },
         )
         diag_text = result_text(diagnostics)
-
-        # Should indicate no errors or be empty
-        # The exact format depends on how the tool formats an empty result
         assert (
             "no" in diag_text.lower()
             or len(diag_text.strip()) == 0
@@ -154,7 +104,7 @@ async def test_diagnostic_messages_with_no_errors_in_range(
         )
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def declaration_diagnostic_file(test_project_path: Path) -> Path:
     """Create a test file with multiple declarations, some with errors."""
     path = test_project_path / "DeclarationDiagnosticTest.lean"
@@ -175,29 +125,28 @@ def declaration_diagnostic_file(test_project_path: Path) -> Path:
         def anotherValidFunction : String := "hello"
         """
     ).strip()
-    path.write_text(content + "\n", encoding="utf-8")
+    if not path.exists() or path.read_text(encoding="utf-8") != content + "\n":
+        path.write_text(content + "\n", encoding="utf-8")
     return path
 
 
 @pytest.mark.asyncio
-async def test_diagnostic_messages_with_declaration_name_valid(
+async def test_diagnostic_messages_declaration_filtering(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     declaration_diagnostic_file: Path,
 ) -> None:
-    """Test filtering diagnostics by a specific declaration name."""
+    """Test all declaration-based filtering scenarios in one client session."""
     async with mcp_client_factory() as client:
-        # Get all diagnostics first to verify file has errors
+        # Test 1: Get all diagnostics first to verify file has errors
         all_diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {"file_path": str(declaration_diagnostic_file)},
         )
         all_diag_text = result_text(all_diagnostics)
-
-        # File should have diagnostics (contains intentional errors)
         assert len(all_diag_text) > 0
         assert "string" in all_diag_text.lower() or "type" in all_diag_text.lower()
 
-        # Get diagnostics for firstTheorem only
+        # Test 2: Get diagnostics for firstTheorem only
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -206,33 +155,10 @@ async def test_diagnostic_messages_with_declaration_name_valid(
             },
         )
         diag_text = result_text(diagnostics)
-
-        # Should contain error from firstTheorem
-        # The exact error message may vary, but should reference the theorem
         assert len(diag_text) > 0
-
-        # Filtered diagnostics should be shorter than or equal to all diagnostics
         assert len(diag_text) <= len(all_diag_text)
 
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_with_declaration_name_with_errors(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    declaration_diagnostic_file: Path,
-) -> None:
-    """Test filtering by declaration that has type errors."""
-    async with mcp_client_factory() as client:
-        # Get all diagnostics first to verify file has errors
-        all_diagnostics = await client.call_tool(
-            "lean_diagnostic_messages",
-            {"file_path": str(declaration_diagnostic_file)},
-        )
-        all_diag_text = result_text(all_diagnostics)
-
-        # File should have diagnostics (contains intentional errors)
-        assert len(all_diag_text) > 0
-
-        # Get diagnostics for secondTheorem (has type error in statement)
+        # Test 3: Get diagnostics for secondTheorem (has type error in statement)
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -241,20 +167,10 @@ async def test_diagnostic_messages_with_declaration_name_with_errors(
             },
         )
         diag_text = result_text(diagnostics)
-
-        # secondTheorem has type errors, should have diagnostics
         assert len(diag_text) > 0
         assert isinstance(diag_text, str)
 
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_with_declaration_name_no_errors(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    declaration_diagnostic_file: Path,
-) -> None:
-    """Test filtering by declaration that has no errors."""
-    async with mcp_client_factory() as client:
-        # Get diagnostics for validFunction (no errors)
+        # Test 4: Get diagnostics for validFunction (no errors)
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -263,8 +179,6 @@ async def test_diagnostic_messages_with_declaration_name_no_errors(
             },
         )
         diag_text = result_text(diagnostics)
-
-        # Should indicate no errors or be empty
         assert (
             "no" in diag_text.lower()
             or len(diag_text.strip()) == 0
@@ -273,13 +187,13 @@ async def test_diagnostic_messages_with_declaration_name_no_errors(
 
 
 @pytest.mark.asyncio
-async def test_diagnostic_messages_with_nonexistent_declaration(
+async def test_diagnostic_messages_declaration_edge_cases(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     declaration_diagnostic_file: Path,
 ) -> None:
-    """Test error handling when declaration name doesn't exist."""
+    """Test edge cases for declaration-based filtering."""
     async with mcp_client_factory() as client:
-        # Try to get diagnostics for non-existent declaration
+        # Test 1: Non-existent declaration
         result = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -288,21 +202,10 @@ async def test_diagnostic_messages_with_nonexistent_declaration(
             },
         )
         result_str = result_text(result)
-
-        # Should return error message about declaration not found
         assert "not found" in result_str.lower()
         assert "nonExistentTheorem" in result_str
 
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_declaration_name_takes_precedence(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    declaration_diagnostic_file: Path,
-) -> None:
-    """Test that declaration_name takes precedence over start_line/end_line."""
-    async with mcp_client_factory() as client:
-        # Use declaration_name with conflicting start_line/end_line
-        # declaration_name should take precedence
+        # Test 2: declaration_name takes precedence over start_line/end_line
         diagnostics = await client.call_tool(
             "lean_diagnostic_messages",
             {
@@ -313,13 +216,11 @@ async def test_diagnostic_messages_declaration_name_takes_precedence(
             },
         )
         diag_text = result_text(diagnostics)
-
         # Should get diagnostics for firstTheorem, not lines 1-3
-        # (which would only include imports)
         assert len(diag_text) > 0
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def kernel_error_file(test_project_path: Path) -> Path:
     """File with kernel error as first error (issue #63)."""
     path = test_project_path / "KernelErrorTest.lean"
@@ -334,7 +235,8 @@ def kernel_error_file(test_project_path: Path) -> Path:
         lemma test_lemma : False := by rfl
         """
     ).strip()
-    path.write_text(content + "\n", encoding="utf-8")
+    if not path.exists() or path.read_text(encoding="utf-8") != content + "\n":
+        path.write_text(content + "\n", encoding="utf-8")
     return path
 
 

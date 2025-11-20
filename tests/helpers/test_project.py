@@ -8,7 +8,7 @@ from typing import Final, Sequence
 __all__ = ["ensure_test_project"]
 
 PROJECT_DIRNAME: Final[str] = "test_project"
-LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.24.0\n"
+LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.25.0\n"
 
 LAKEFILE_TOML: Final[str] = """name = \"McpTestProject\"
 version = \"0.1.0\"
@@ -17,7 +17,7 @@ defaultTargets = [\"McpTestProject\"]
 [[require]]
 name = \"mathlib\"
 scope = \"leanprover-community\"
-rev = \"v4.24.0\"
+rev = \"v4.25.0\"
 
 [[lean_lib]]
 name = \"McpTestProject\"
@@ -28,8 +28,8 @@ LIB_MAIN_LEAN: Final[str] = """import Mathlib
 abbrev sampleValue : ℕ := 42
 """
 
-LAKE_COMMANDS: Final[tuple[Sequence[str], ...]] = (
-    ("lake", "update", "--keep-toolchain"),
+LAKE_UPDATE: Final[Sequence[str]] = ("lake", "update", "--keep-toolchain")
+LAKE_BUILD_STEPS: Final[tuple[Sequence[str], ...]] = (
     ("lake", "exe", "cache", "get"),
     ("lake", "build"),
 )
@@ -44,8 +44,6 @@ def ensure_test_project(repo_root: Path) -> Path:
     _write_if_changed(project_root / "McpTestProject.lean", LIB_MAIN_LEAN)
 
     should_run_setup = _should_refresh(project_root)
-    if os.environ.get("LEAN_LSP_FORCE_LAKE_UPDATE"):
-        should_run_setup = True
 
     if should_run_setup:
         _run_lake_steps(project_root)
@@ -66,7 +64,16 @@ def _should_refresh(project_root: Path) -> bool:
 
 
 def _run_lake_steps(project_root: Path) -> None:
-    for args in LAKE_COMMANDS:
+    manifest_path = project_root / "lake-manifest.json"
+    if not manifest_path.exists():
+        try:
+            subprocess.run(LAKE_UPDATE, cwd=project_root, check=True)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "`lake` executable is required for end-to-end tests"
+            ) from exc
+
+    for args in LAKE_BUILD_STEPS:
         try:
             subprocess.run(args, cwd=project_root, check=True)
         except (
