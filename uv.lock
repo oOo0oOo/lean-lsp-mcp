@@ -381,7 +381,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.14.1"
+version = "0.15.0"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -405,6 +405,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
     { name = "leanclient", specifier = "==0.6.1" },
     { name = "mcp", extras = ["cli"], specifier = "==1.23.1" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.22.0" },
     { name = "orjson", specifier = ">=3.11.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },

@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 import time
-from typing import List, Optional, Dict
+from typing import Annotated, List, Optional, Dict
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -13,7 +13,9 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from pydantic import Field
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
 from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings
 from leanclient import LeanLSPClient, DocumentContentChange
@@ -161,20 +163,24 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 
 
 # Project level tools
-@mcp.tool("lean_build")
+@mcp.tool(
+    "lean_build",
+    annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True),
+)
 async def lsp_build(
-    ctx: Context, lean_project_path: str = None, clean: bool = False
+    ctx: Context,
+    lean_project_path: Annotated[
+        Optional[str],
+        Field(description="Path to Lean project. If not provided, inferred from previous tool calls."),
+    ] = None,
+    clean: Annotated[
+        bool,
+        Field(description="Run `lake clean` before building. Only use if really necessary - very slow!"),
+    ] = False,
 ) -> str:
     """Build the Lean project and restart the LSP Server.
 
     Use only if needed (e.g. new imports).
-
-    Args:
-        lean_project_path (str, optional): Path to the Lean project. If not provided, it will be inferred from previous tool calls.
-        clean (bool, optional): Run `lake clean` before building. Attention: Only use if it is really necessary! It can take a long time! Defaults to False.
-
-    Returns:
-        str: Build output or error msg
     """
     if not lean_project_path:
         lean_project_path_obj = ctx.request_context.lifespan_context.lean_project_path
@@ -261,19 +267,23 @@ async def lsp_build(
 
 
 # File level tools
-@mcp.tool("lean_file_contents")
+@mcp.tool(
+    "lean_file_contents",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 @deprecated
-def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> str:
-    """Get the text contents of a Lean file, optionally with line numbers.
+def file_contents(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    annotate_lines: Annotated[
+        bool, Field(description="Annotate lines with line numbers")
+    ] = True,
+) -> str:
+    """DEPRECATED: Will be removed soon.
+
+    Get the text contents of a Lean file, optionally with line numbers.
 
     Use sparingly (bloats context). Mainly when unsure about line numbers.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        annotate_lines (bool, optional): Annotate lines with line numbers. Defaults to True.
-
-    Returns:
-        str: File content or error msg
     """
     # Infer project path but do not start a client
     if file_path.endswith(".lean"):
@@ -297,17 +307,17 @@ def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> 
         return data
 
 
-@mcp.tool("lean_file_outline")
-def file_outline(ctx: Context, file_path: str) -> str:
+@mcp.tool(
+    "lean_file_outline",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
+def file_outline(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+) -> str:
     """Get a concise outline showing imports and declarations with type signatures (theorems, defs, classes, structures).
 
     Highly useful and token-efficient. Slow-ish.
-
-    Args:
-        file_path (str): Abs path to Lean file
-
-    Returns:
-        str: Markdown formatted outline or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -317,29 +327,27 @@ def file_outline(ctx: Context, file_path: str) -> str:
     return generate_outline(client, rel_path)
 
 
-@mcp.tool("lean_diagnostic_messages")
+@mcp.tool(
+    "lean_diagnostic_messages",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def diagnostic_messages(
     ctx: Context,
-    file_path: str,
-    start_line: Optional[int] = None,
-    end_line: Optional[int] = None,
-    declaration_name: Optional[str] = None,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    start_line: Annotated[
+        Optional[int], Field(description="Start line (1-indexed). Filters from this line.", ge=1)
+    ] = None,
+    end_line: Annotated[
+        Optional[int], Field(description="End line (1-indexed). Filters to this line.", ge=1)
+    ] = None,
+    declaration_name: Annotated[
+        Optional[str],
+        Field(description="Name of theorem/lemma/definition. Takes precedence over line filters. Slow."),
+    ] = None,
 ) -> List[str] | str:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
     "no goals to be solved" means code may need removal.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        start_line (int, optional): Start line (1-indexed). Filters from this line.
-        end_line (int, optional): End line (1-indexed). Filters to this line.
-        declaration_name (str, optional): Name of a specific theorem/lemma/definition.
-            If provided, only returns diagnostics within that declaration.
-            Takes precedence over start_line/end_line.
-            Slow, requires waiting for full file analysis.
-
-    Returns:
-        List[str] | str: Diagnostic msgs or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -369,22 +377,25 @@ def diagnostic_messages(
     return format_diagnostics(diagnostics)
 
 
-@mcp.tool("lean_goal")
-def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
+@mcp.tool(
+    "lean_goal",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
+def goal(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[
+        Optional[int],
+        Field(description="Column number (1-indexed). If omitted, shows goals at both line start and end.", ge=1),
+    ] = None,
+) -> str:
     """Get the proof goals (proof state) at a specific location in a Lean file.
 
     VERY USEFUL! Main tool to understand the proof state and its evolution!
     Returns "no goals" if solved.
     To see the goal at sorry, use the cursor before the "s".
     Avoid giving a column if unsure-default behavior works well.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int, optional): Column number (1-indexed). Defaults to None => Both before and after the line.
-
-    Returns:
-        str: Goal(s) or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -419,19 +430,19 @@ def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) 
         return f"Goals at:\n{f_line}\n{f_goal}"
 
 
-@mcp.tool("lean_term_goal")
+@mcp.tool(
+    "lean_term_goal",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def term_goal(
-    ctx: Context, file_path: str, line: int, column: Optional[int] = None
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[
+        Optional[int], Field(description="Column number (1-indexed). Defaults to end of line.", ge=1)
+    ] = None,
 ) -> str:
     """Get the expected type (term goal) at a specific location in a Lean file.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int, optional): Column number (1-indexed). Defaults to None => end of line.
-
-    Returns:
-        str: Expected type or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -456,17 +467,19 @@ def term_goal(
     return f"Term goal at:\n{f_line}\n{rendered or 'No term goal found.'}"
 
 
-@mcp.tool("lean_hover_info")
-def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
+@mcp.tool(
+    "lean_hover_info",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
+def hover(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[
+        int, Field(description="Column number (1-indexed). Use the start or within the term, not the end.", ge=1)
+    ],
+) -> str:
     """Get hover info (docs for syntax, variables, functions, etc.) at a specific location in a Lean file.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed). Make sure to use the start or within the term, not the end.
-
-    Returns:
-        str: Hover info or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -496,9 +509,18 @@ def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
     return msg
 
 
-@mcp.tool("lean_completions")
+@mcp.tool(
+    "lean_completions",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def completions(
-    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 32
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    max_completions: Annotated[
+        int, Field(description="Maximum number of completions to return", ge=1)
+    ] = 32,
 ) -> str:
     """Get code completions at a location in a Lean file.
 
@@ -506,15 +528,6 @@ def completions(
     - Dot Completion: Displays relevant identifiers after a dot (e.g., `Nat.`, `x.`, or `Nat.ad`).
     - Identifier Completion: Suggests matching identifiers after part of a name.
     - Import Completion: Lists importable files after `import` at the beginning of a file.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
-        max_completions (int, optional): Maximum number of completions to return. Defaults to 32
-
-    Returns:
-        str: List of possible completions or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -564,20 +577,20 @@ def completions(
     return f"Completions at:\n{f_line}\n{completions_text}"
 
 
-@mcp.tool("lean_declaration_file")
-def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
+@mcp.tool(
+    "lean_declaration_file",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
+def declaration_file(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    symbol: Annotated[str, Field(description="Symbol to look up (case sensitive). Must be present in the file!")],
+) -> str:
     """Get the file contents where a symbol/lemma/class/structure is declared.
 
     Note:
         Symbol must be present in the file! Add if necessary!
         Lean files can be large, use `lean_hover_info` before this tool.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        symbol (str): Symbol to look up the declaration for. Case sensitive!
-
-    Returns:
-        str: File contents or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -614,9 +627,15 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
     return f"Declaration of `{symbol}`:\n{file_content}"
 
 
-@mcp.tool("lean_multi_attempt")
+@mcp.tool(
+    "lean_multi_attempt",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def multi_attempt(
-    ctx: Context, file_path: str, line: int, snippets: List[str]
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    snippets: Annotated[List[str], Field(description="List of code snippets to try (3+ recommended)")],
 ) -> List[str] | str:
     """Try multiple Lean code snippets at a line and get the goal state and diagnostics for each.
 
@@ -627,14 +646,6 @@ def multi_attempt(
     Note:
         Only single-line, fully-indented snippets are supported.
         Avoid comments for best results.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        snippets (List[str]): List of snippets (3+ are recommended)
-
-    Returns:
-        List[str] | str: Diagnostics and goal states or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -676,18 +687,18 @@ def multi_attempt(
             )
 
 
-@mcp.tool("lean_run_code")
-def run_code(ctx: Context, code: str) -> List[str] | str:
+@mcp.tool(
+    "lean_run_code",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
+def run_code(
+    ctx: Context,
+    code: Annotated[str, Field(description="Complete, self-contained Lean code snippet with all imports")],
+) -> List[str] | str:
     """Run a complete, self-contained code snippet and return diagnostics.
 
     Has to include all imports and definitions!
     Only use for testing outside open files! Keep the user in the loop by editing files instead.
-
-    Args:
-        code (str): Code snippet
-
-    Returns:
-        List[str] | str: Diagnostics msgs or error msg
     """
     lifespan_context = ctx.request_context.lifespan_context
     lean_project_path = lifespan_context.lean_project_path
@@ -752,22 +763,23 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     )
 
 
-@mcp.tool("lean_local_search")
+@mcp.tool(
+    "lean_local_search",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+)
 def local_search(
-    ctx: Context, query: str, limit: int = 10, project_root: str | None = None
+    ctx: Context,
+    query: Annotated[str, Field(description="Declaration name or prefix to search for")],
+    limit: Annotated[int, Field(description="Max matches to return", ge=1)] = 10,
+    project_root: Annotated[
+        Optional[str], Field(description="Lean project root. Inferred if not provided.")
+    ] = None,
 ) -> List[Dict[str, str]] | str:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
     VERY USEFUL AND FAST!
     Pass a short prefix (e.g. ``map_mul``); the metadata shows the declaration kind and file.
     The index spans theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls.
-
-    Args:
-        query (str): Declaration name or prefix.
-        limit (int): Max matches to return (default 10).
-
-    Returns:
-        List[Dict[str, str]] | str: Matches as ``{"name", "kind", "file"}`` or error message.
     """
     if not _RG_AVAILABLE:
         return _RG_MESSAGE
@@ -797,9 +809,16 @@ def local_search(
         return f"lean_local_search error:\n{exc}"
 
 
-@mcp.tool("lean_leansearch")
+@mcp.tool(
+    "lean_leansearch",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+)
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
+def leansearch(
+    ctx: Context,
+    query: Annotated[str, Field(description="Natural language or Lean term search query")],
+    num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
+) -> List[Dict] | str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net.
 
     Query patterns:
@@ -808,13 +827,6 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
       - Concept names: "Cauchy Schwarz"
       - Lean identifiers: "List.sum", "Finset induction"
       - Lean term: "{f : A → B} {g : B → A} (hf : Injective f) (hg : Injective g) : ∃ h, Bijective h"
-
-    Args:
-        query (str): Search query
-        num_results (int, optional): Max results. Defaults to 5.
-
-    Returns:
-        List[Dict] | str: Search results or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
@@ -845,8 +857,15 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         return f"leansearch error:\n{str(e)}"
 
 
-@mcp.tool("lean_loogle")
-async def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
+@mcp.tool(
+    "lean_loogle",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+)
+async def loogle(
+    ctx: Context,
+    query: Annotated[str, Field(description="Loogle query pattern (constant, name, type shape, etc.)")],
+    num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 8,
+) -> List[dict] | str:
     """Search for definitions and theorems using loogle.
 
     Query patterns:
@@ -857,13 +876,6 @@ async def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] |
       - By type shape: (?a -> ?b) -> List ?a -> List ?b
       - By conclusion: |- tsum _ = _ * tsum _
       - By conclusion w/hyps: |- _ < _ → tsum _ < tsum _
-
-    Args:
-        query (str): Search query
-        num_results (int, optional): Max results. Defaults to 8.
-
-    Returns:
-        List[dict] | str: Search results or error msg
     """
     app_ctx: AppContext = ctx.request_context.lifespan_context
 
@@ -888,25 +900,25 @@ async def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] |
     return loogle_remote(query, num_results)
 
 
-@mcp.tool("lean_leanfinder")
+@mcp.tool(
+    "lean_leanfinder",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+)
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
-def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
+def leanfinder(
+    ctx: Context,
+    query: Annotated[str, Field(description="Mathematical concept, proof state, or statement to search")],
+    num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
+) -> List[Dict] | str:
     """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
 
     Effective query types:
     - Natural language mathematical statement: "For any natural numbers n and m, the sum n+m is equal to m+n."
-    - Natural language questions: "I'm working with algebraic elements over a field extension … Does this imply that the minimal polynomials of x and y are equal?"
+    - Natural language questions: "I'm working with algebraic elements over a field extension ... Does this imply that the minimal polynomials of x and y are equal?"
     - Proof state. For better results, enter a proof state followed by how you want to transform the proof state.
     - Statement definition: Fragment or the whole statement definition.
 
     Tips: Multiple targeted queries beat one complex query.
-
-    Args:
-        query (str): Mathematical concept or proof state
-        num_results (int, optional): Max results. Defaults to 5.
-
-    Returns:
-        List[Dict] | str: List of Lean statement objects (full name, formal statement, informal statement) or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
@@ -940,23 +952,21 @@ def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         return f"Lean Finder Error:\n{str(e)}"
 
 
-@mcp.tool("lean_state_search")
+@mcp.tool(
+    "lean_state_search",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+)
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 def state_search(
-    ctx: Context, file_path: str, line: int, column: int, num_results: int = 5
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
 ) -> List | str:
     """Search for theorems based on proof state using premise-search.com.
 
     Only uses first goal if multiple.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
-        num_results (int, optional): Max results. Defaults to 5.
-
-    Returns:
-        List | str: Search results or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -993,21 +1003,19 @@ def state_search(
         return f"lean state search error:\n{str(e)}"
 
 
-@mcp.tool("lean_hammer_premise")
+@mcp.tool(
+    "lean_hammer_premise",
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+)
 @rate_limited("hammer_premise", max_requests=3, per_seconds=30)
 def hammer_premise(
-    ctx: Context, file_path: str, line: int, column: int, num_results: int = 32
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 32,
 ) -> List[str] | str:
     """Search for premises based on proof state using the lean hammer premise search.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
-        num_results (int, optional): Max results. Defaults to 32.
-
-    Returns:
-        List[str] | str: List of relevant premises or error message
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
