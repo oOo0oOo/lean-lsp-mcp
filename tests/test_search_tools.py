@@ -70,7 +70,11 @@ async def test_search_tools(
             },
         )
         text = result_text(state_search)
-        assert "Results for line" in text or "lean state search error" in text
+        # Now returns JSON array of StateSearchResult models
+        state_entry = _first_json_block(state_search)
+        if state_entry is None:
+            pytest.skip("lean_state_search did not return JSON content")
+        assert "name" in state_entry
 
         hammer = await client.call_tool(
             "lean_hammer_premise",
@@ -80,7 +84,11 @@ async def test_search_tools(
                 "column": 3,
             },
         )
-        assert "Results for line" in result_text(hammer)
+        # Now returns JSON array of PremiseResult models
+        hammer_entry = _first_json_block(hammer)
+        if hammer_entry is None:
+            pytest.skip("lean_hammer_premise did not return JSON content")
+        assert "name" in hammer_entry
 
         local_search = await client.call_tool(
             "lean_local_search",

@@ -13,11 +13,11 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
 from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings
+from mcp.types import ToolAnnotations
 from leanclient import LeanLSPClient, DocumentContentChange
 
 from lean_lsp_mcp.client_utils import (
@@ -42,6 +42,65 @@ from lean_lsp_mcp.utils import (
     get_declaration_range,
     OptionalTokenVerifier,
 )
+
+
+# LSP SymbolKind enum (https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
+SYMBOL_KIND: Dict[int, str] = {
+    1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class",
+    6: "method", 7: "property", 8: "field", 9: "constructor", 10: "enum",
+    11: "interface", 12: "function", 13: "variable", 14: "constant", 15: "string",
+    16: "number", 17: "boolean", 18: "array", 19: "object", 20: "key",
+    21: "null", 22: "enum_member", 23: "struct", 24: "event", 25: "operator",
+    26: "type_parameter",
+}
+
+
+def symbol_kind_name(kind: int | str) -> str:
+    """Convert LSP SymbolKind int to readable string."""
+    if isinstance(kind, str):
+        return kind
+    return SYMBOL_KIND.get(kind, f"unknown({kind})")
+
+
+# Pydantic models for structured tool outputs
+class LocalSearchResult(BaseModel):
+    """A declaration found in local workspace search."""
+    name: str = Field(description="Declaration name")
+    kind: str = Field(description="Declaration kind (theorem, def, class, etc.)")
+    file: str = Field(description="Relative file path")
+
+
+class LeanSearchResult(BaseModel):
+    """Result from leansearch.net."""
+    name: str = Field(description="Full qualified name")
+    module_name: str = Field(description="Module where declared")
+    kind: Optional[str] = Field(None, description="Declaration kind")
+    type: Optional[str] = Field(None, description="Type signature")
+
+
+class LoogleResult(BaseModel):
+    """Result from loogle.lean-lang.org."""
+    name: str = Field(description="Declaration name")
+    type: str = Field(description="Type signature")
+    module: str = Field(description="Module where declared")
+
+
+class LeanFinderResult(BaseModel):
+    """Result from Lean Finder semantic search."""
+    full_name: str = Field(description="Full qualified name")
+    formal_statement: str = Field(description="Lean type signature")
+    informal_statement: str = Field(description="Natural language description")
+
+
+class StateSearchResult(BaseModel):
+    """Result from premise-search.com state search."""
+    name: str = Field(description="Theorem/lemma name")
+    score: Optional[float] = Field(None, description="Relevance score")
+
+
+class PremiseResult(BaseModel):
+    """A premise suggestion from hammer search."""
+    name: str = Field(description="Premise name to use with simp/omega/etc.")
 
 
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
@@ -763,6 +822,35 @@ def run_code(
     )
 
 
+class LocalSearchError(Exception):
+    """Error during local search."""
+    pass
+
+
+def _build_declaration_index(project_root: Path, limit: int = 5000) -> List[LocalSearchResult]:
+    """Build a declaration index for a project by searching common prefixes."""
+    if not _RG_AVAILABLE:
+        return []
+
+    all_results: Dict[str, LocalSearchResult] = {}
+
+    # Search with empty prefix to get all declarations (ripgrep pattern matches any declaration)
+    try:
+        raw_results = lean_local_search(query="", limit=limit, project_root=project_root)
+        for r in raw_results:
+            key = f"{r['name']}:{r['file']}"
+            if key not in all_results:
+                all_results[key] = LocalSearchResult(
+                    name=r["name"],
+                    kind=r["kind"],
+                    file=r["file"]
+                )
+    except RuntimeError:
+        pass
+
+    return list(all_results.values())
+
+
 @mcp.tool(
     "lean_local_search",
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
@@ -774,7 +862,7 @@ def local_search(
     project_root: Annotated[
         Optional[str], Field(description="Lean project root. Inferred if not provided.")
     ] = None,
-) -> List[Dict[str, str]] | str:
+) -> List[LocalSearchResult]:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
     VERY USEFUL AND FAST!
@@ -782,7 +870,7 @@ def local_search(
     The index spans theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls.
     """
     if not _RG_AVAILABLE:
-        return _RG_MESSAGE
+        raise LocalSearchError(_RG_MESSAGE)
 
     lifespan = ctx.request_context.lifespan_context
     stored_root = lifespan.lean_project_path
@@ -790,23 +878,27 @@ def local_search(
     if project_root:
         try:
             resolved_root = Path(project_root).expanduser().resolve()
-        except OSError as exc:  # pragma: no cover - defensive path handling
-            return f"Invalid project root '{project_root}': {exc}"
+        except OSError as exc:
+            raise LocalSearchError(f"Invalid project root '{project_root}': {exc}")
         if not resolved_root.exists():
-            return f"Project root '{project_root}' does not exist."
+            raise LocalSearchError(f"Project root '{project_root}' does not exist.")
         lifespan.lean_project_path = resolved_root
     else:
         resolved_root = stored_root
 
     if resolved_root is None:
-        return "Lean project path not set. Call a file-based tool (like lean_file_contents) first to set the project path."
+        raise LocalSearchError("Lean project path not set. Call a file-based tool first.")
 
     try:
-        return lean_local_search(
+        raw_results = lean_local_search(
             query=query.strip(), limit=limit, project_root=resolved_root
         )
+        return [
+            LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
+            for r in raw_results
+        ]
     except RuntimeError as exc:
-        return f"lean_local_search error:\n{exc}"
+        raise LocalSearchError(f"Search failed: {exc}")
 
 
 @mcp.tool(
@@ -818,7 +910,7 @@ def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term search query")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
-) -> List[Dict] | str:
+) -> List[LeanSearchResult]:
     """Search for Lean theorems, definitions, and tactics using leansearch.net.
 
     Query patterns:
@@ -828,33 +920,32 @@ def leansearch(
       - Lean identifiers: "List.sum", "Finset induction"
       - Lean term: "{f : A → B} {g : B → A} (hf : Injective f) (hg : Injective g) : ∃ h, Bijective h"
     """
-    try:
-        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
+    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+    payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
 
-        req = urllib.request.Request(
-            "https://leansearch.net/search",
-            data=payload,
-            headers=headers,
-            method="POST",
+    req = urllib.request.Request(
+        "https://leansearch.net/search",
+        data=payload,
+        headers=headers,
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as response:
+        results = orjson.loads(response.read())
+
+    if not results or not results[0]:
+        return []
+
+    raw_results = [r["result"] for r in results[0][:num_results]]
+    return [
+        LeanSearchResult(
+            name=".".join(r["name"]),
+            module_name=".".join(r["module_name"]),
+            kind=r.get("kind"),
+            type=r.get("type"),
         )
-
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
-
-        if not results or not results[0]:
-            return "No results found."
-        results = results[0][:num_results]
-        results = [r["result"] for r in results]
-
-        for result in results:
-            result.pop("docstring")
-            result["module_name"] = ".".join(result["module_name"])
-            result["name"] = ".".join(result["name"])
-
-        return results
-    except Exception as e:
-        return f"leansearch error:\n{str(e)}"
+        for r in raw_results
+    ]
 
 
 @mcp.tool(
@@ -865,7 +956,7 @@ async def loogle(
     ctx: Context,
     query: Annotated[str, Field(description="Loogle query pattern (constant, name, type shape, etc.)")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 8,
-) -> List[dict] | str:
+) -> List[LoogleResult]:
     """Search for definitions and theorems using loogle.
 
     Query patterns:
@@ -909,7 +1000,7 @@ def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept, proof state, or statement to search")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
-) -> List[Dict] | str:
+) -> List[LeanFinderResult]:
     """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
 
     Effective query types:
@@ -920,36 +1011,33 @@ def leanfinder(
 
     Tips: Multiple targeted queries beat one complex query.
     """
-    try:
-        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        request_url = (
-            "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
-        )
-        payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
-        req = urllib.request.Request(
-            request_url, data=payload, headers=headers, method="POST"
-        )
+    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+    request_url = (
+        "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
+    )
+    payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
+    req = urllib.request.Request(
+        request_url, data=payload, headers=headers, method="POST"
+    )
 
-        results = []
-        with urllib.request.urlopen(req, timeout=30) as response:
-            data = orjson.loads(response.read())
-            for result in data["results"]:
-                if (
-                    "https://leanprover-community.github.io/mathlib4_docs"
-                    not in result["url"]
-                ):  # Do not include results from other sources other than mathlib4, since users might not have imported them
-                    continue
-                full_name = re.search(r"pattern=(.*?)#doc", result["url"]).group(1)
-                obj = {
-                    "full_name": full_name,
-                    "formal_statement": result["formal_statement"],
-                    "informal_statement": result["informal_statement"],
-                }
-                results.append(obj)
+    results = []
+    with urllib.request.urlopen(req, timeout=30) as response:
+        data = orjson.loads(response.read())
+        for result in data["results"]:
+            if (
+                "https://leanprover-community.github.io/mathlib4_docs"
+                not in result["url"]
+            ):  # Only include mathlib4 results
+                continue
+            match = re.search(r"pattern=(.*?)#doc", result["url"])
+            if match:
+                results.append(LeanFinderResult(
+                    full_name=match.group(1),
+                    formal_statement=result["formal_statement"],
+                    informal_statement=result["informal_statement"],
+                ))
 
-        return results if results else "Lean Finder: No results parsed"
-    except Exception as e:
-        return f"Lean Finder Error:\n{str(e)}"
+    return results
 
 
 @mcp.tool(
@@ -963,44 +1051,38 @@ def state_search(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
-) -> List | str:
+) -> List[StateSearchResult]:
     """Search for theorems based on proof state using premise-search.com.
 
     Only uses first goal if multiple.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        raise ValueError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    file_contents = client.get_file_content(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
-    f_line = format_line(file_contents, line, column)
     if not goal or not goal.get("goals"):
-        return f"No goals found:\n{f_line}\nTry elsewhere?"
+        raise ValueError(f"No goals found at line {line}, column {column}")
 
-    goal = urllib.parse.quote(goal["goals"][0])
+    goal_str = urllib.parse.quote(goal["goals"][0])
 
-    try:
-        url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
-        req = urllib.request.Request(
-            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.22.0",
-            headers={"User-Agent": "lean-lsp-mcp/0.1"},
-            method="GET",
-        )
+    url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
+    req = urllib.request.Request(
+        f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
+        headers={"User-Agent": "lean-lsp-mcp/0.1"},
+        method="GET",
+    )
 
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
+    with urllib.request.urlopen(req, timeout=20) as response:
+        results = orjson.loads(response.read())
 
-        for result in results:
-            result.pop("rev")
-        # Very dirty type mix
-        results.insert(0, f"Results for line:\n{f_line}")
-        return results
-    except Exception as e:
-        return f"lean state search error:\n{str(e)}"
+    return [
+        StateSearchResult(name=r["name"], score=r.get("score"))
+        for r in results
+    ]
 
 
 @mcp.tool(
@@ -1014,21 +1096,19 @@ def hammer_premise(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 32,
-) -> List[str] | str:
+) -> List[PremiseResult]:
     """Search for premises based on proof state using the lean hammer premise search.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        raise ValueError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    file_contents = client.get_file_content(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
-    f_line = format_line(file_contents, line, column)
     if not goal or not goal.get("goals"):
-        return f"No goals found:\n{f_line}\nTry elsewhere?"
+        raise ValueError(f"No goals found at line {line}, column {column}")
 
     data = {
         "state": goal["goals"][0],
@@ -1036,26 +1116,21 @@ def hammer_premise(
         "k": num_results,
     }
 
-    try:
-        url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
-        req = urllib.request.Request(
-            url + "/retrieve",
-            headers={
-                "User-Agent": "lean-lsp-mcp/0.1",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-            data=orjson.dumps(data),
-        )
+    url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
+    req = urllib.request.Request(
+        url + "/retrieve",
+        headers={
+            "User-Agent": "lean-lsp-mcp/0.1",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+        data=orjson.dumps(data),
+    )
 
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
+    with urllib.request.urlopen(req, timeout=20) as response:
+        results = orjson.loads(response.read())
 
-        results = [result["name"] for result in results]
-        results.insert(0, f"Results for line:\n{f_line}")
-        return results
-    except Exception as e:
-        return f"lean hammer premise error:\n{str(e)}"
+    return [PremiseResult(name=r["name"]) for r in results]
 
 
 if __name__ == "__main__":

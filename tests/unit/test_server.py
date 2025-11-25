@@ -139,7 +139,11 @@ def test_local_search_project_root_updates_context(
         ctx=ctx, query=" foo ", limit=7, project_root=str(project_dir)
     )
 
-    assert result == fake_result
+    # Result is now a list of LocalSearchResult Pydantic models
+    assert len(result) == 1
+    assert result[0].name == "foo"
+    assert result[0].kind == "def"
+    assert result[0].file == "Foo.lean"
     assert called == {
         "query": "foo",
         "limit": 7,
@@ -158,6 +162,8 @@ def test_local_search_requires_project_root_when_unset(
     ctx = _make_ctx()
     missing_path = tmp_path / "missing"
 
-    message = server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
+    # Now raises LocalSearchError instead of returning error string
+    with pytest.raises(server.LocalSearchError) as exc_info:
+         server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
-    assert "does not exist" in message
+    assert "does not exist" in str(exc_info.value)
