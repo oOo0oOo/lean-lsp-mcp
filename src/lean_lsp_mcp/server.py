@@ -103,6 +103,52 @@ class PremiseResult(BaseModel):
     name: str = Field(description="Premise name to use with simp/omega/etc.")
 
 
+# LSP Diagnostic severity mapping
+DIAGNOSTIC_SEVERITY: Dict[int, str] = {
+    1: "error",
+    2: "warning",
+    3: "info",
+    4: "hint",
+}
+
+
+class DiagnosticMessage(BaseModel):
+    """A compiler diagnostic from Lean."""
+    severity: str = Field(description="Severity level: error, warning, info, or hint")
+    message: str = Field(description="Diagnostic message text")
+    start_line: int = Field(description="Start line number (1-indexed)")
+    start_column: int = Field(description="Start column number (1-indexed)")
+    end_line: int = Field(description="End line number (1-indexed)")
+    end_column: int = Field(description="End column number (1-indexed)")
+
+
+class GoalState(BaseModel):
+    """Proof goal state at a position in a Lean file."""
+    line_context: str = Field(description="The source line where goals were queried")
+    goals_before: Optional[str] = Field(None, description="Goal state at line start (before tactics)")
+    goals_after: Optional[str] = Field(None, description="Goal state at line end (after tactics)")
+    goals: Optional[str] = Field(None, description="Goal state at specific column (when column provided)")
+
+
+class CompletionItem(BaseModel):
+    """A code completion suggestion."""
+    label: str = Field(description="Completion text to insert")
+    kind: Optional[str] = Field(None, description="Completion kind (function, variable, etc.)")
+    detail: Optional[str] = Field(None, description="Additional detail about the completion")
+
+
+class HoverInfo(BaseModel):
+    """Hover information for a symbol."""
+    symbol: str = Field(description="The symbol being hovered")
+    info: str = Field(description="Type signature and documentation")
+    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Related diagnostics at this position")
+
+
+class LeanToolError(Exception):
+    """Error during Lean tool execution."""
+    pass
+
+
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
 configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
@@ -386,6 +432,25 @@ def file_outline(
     return generate_outline(client, rel_path)
 
 
+def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
+    """Convert raw LSP diagnostics to DiagnosticMessage models."""
+    result = []
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if r is None:
+            continue
+        severity_int = diag.get("severity", 1)
+        result.append(DiagnosticMessage(
+            severity=DIAGNOSTIC_SEVERITY.get(severity_int, f"unknown({severity_int})"),
+            message=diag.get("message", ""),
+            start_line=r["start"]["line"] + 1,
+            start_column=r["start"]["character"] + 1,
+            end_line=r["end"]["line"] + 1,
+            end_column=r["end"]["character"] + 1,
+        ))
+    return result
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
@@ -403,14 +468,14 @@ def diagnostic_messages(
         Optional[str],
         Field(description="Name of theorem/lemma/definition. Takes precedence over line filters. Slow."),
     ] = None,
-) -> List[str] | str:
+) -> List[DiagnosticMessage]:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
     "no goals to be solved" means code may need removal.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -419,7 +484,7 @@ def diagnostic_messages(
     if declaration_name:
         decl_range = get_declaration_range(client, rel_path, declaration_name)
         if decl_range is None:
-            return f"Declaration '{declaration_name}' not found in file. Check the name (case-sensitive) and try again."
+            raise LeanToolError(f"Declaration '{declaration_name}' not found in file.")
         start_line, end_line = decl_range
 
     # Convert 1-indexed to 0-indexed for leanclient
@@ -433,7 +498,7 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return format_diagnostics(diagnostics)
+    return _to_diagnostic_messages(diagnostics)
 
 
 @mcp.tool(
@@ -448,7 +513,7 @@ def goal(
         Optional[int],
         Field(description="Column number (1-indexed). If omitted, shows goals at both line start and end.", ge=1),
     ] = None,
-) -> str:
+) -> GoalState:
     """Get the proof goals (proof state) at a specific location in a Lean file.
 
     VERY USEFUL! Main tool to understand the proof state and its evolution!
@@ -458,35 +523,40 @@ def goal(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
+    lines = content.splitlines()
+
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+
+    line_context = lines[line - 1]
 
     if column is None:
-        lines = content.splitlines()
-        if line < 1 or line > len(lines):
-            return "Line number out of range. Try elsewhere?"
-        column_end = len(lines[line - 1])
+        column_end = len(line_context)
         column_start = next(
-            (i for i, c in enumerate(lines[line - 1]) if not c.isspace()), 0
+            (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
 
-        if goal_start is None and goal_end is None:
-            return f"No goals on line:\n{lines[line - 1]}\nTry another line?"
-
-        start_text = format_goal(goal_start, "No goals at line start.")
-        end_text = format_goal(goal_end, "No goals at line end.")
-        return f"Goals on line:\n{lines[line - 1]}\nBefore:\n{start_text}\nAfter:\n{end_text}"
-
+        return GoalState(
+            line_context=line_context,
+            goals_before=format_goal(goal_start, None),
+            goals_after=format_goal(goal_end, None),
+            goals=None,
+        )
     else:
-        goal = client.get_goal(rel_path, line - 1, column - 1)
-        f_goal = format_goal(goal, "Not a valid goal position. Try elsewhere?")
-        f_line = format_line(content, line, column)
-        return f"Goals at:\n{f_line}\n{f_goal}"
+        goal_result = client.get_goal(rel_path, line - 1, column - 1)
+        return GoalState(
+            line_context=line_context,
+            goals_before=None,
+            goals_after=None,
+            goals=format_goal(goal_result, None),
+        )
 
 
 @mcp.tool(
@@ -537,24 +607,23 @@ def hover(
     column: Annotated[
         int, Field(description="Column number (1-indexed). Use the start or within the term, not the end.", ge=1)
     ],
-) -> str:
+) -> HoverInfo:
     """Get hover info (docs for syntax, variables, functions, etc.) at a specific location in a Lean file.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     if hover_info is None:
-        f_line = format_line(file_content, line, column)
-        return f"No hover information at position:\n{f_line}\nTry elsewhere?"
+        raise LeanToolError(f"No hover information at line {line}, column {column}")
 
     # Get the symbol and the hover information
     h_range = hover_info.get("range")
-    symbol = extract_range(file_content, h_range)
+    symbol = extract_range(file_content, h_range) or ""
     info = hover_info["contents"].get("value", "No hover information available.")
     info = info.replace("```lean\n", "").replace("\n```", "").strip()
 
@@ -562,10 +631,21 @@ def hover(
     diagnostics = client.get_diagnostics(rel_path)
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
-    msg = f"Hover info `{symbol}`:\n{info}"
-    if filtered:
-        msg += "\n\nDiagnostics\n" + "\n".join(format_diagnostics(filtered))
-    return msg
+    return HoverInfo(
+        symbol=symbol,
+        info=info,
+        diagnostics=_to_diagnostic_messages(filtered),
+    )
+
+
+# LSP CompletionItemKind mapping
+COMPLETION_KIND: Dict[int, str] = {
+    1: "text", 2: "method", 3: "function", 4: "constructor", 5: "field",
+    6: "variable", 7: "class", 8: "interface", 9: "module", 10: "property",
+    11: "unit", 12: "value", 13: "enum", 14: "keyword", 15: "snippet",
+    16: "color", 17: "file", 18: "reference", 19: "folder", 20: "enum_member",
+    21: "constant", 22: "struct", 23: "event", 24: "operator", 25: "type_parameter",
+}
 
 
 @mcp.tool(
@@ -580,7 +660,7 @@ def completions(
     max_completions: Annotated[
         int, Field(description="Maximum number of completions to return", ge=1)
     ] = 32,
-) -> str:
+) -> List[CompletionItem]:
     """Get code completions at a location in a Lean file.
 
     Only use this on INCOMPLETE lines/statements to check available identifiers and imports:
@@ -590,17 +670,28 @@ def completions(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
-    completions = client.get_completions(rel_path, line - 1, column - 1)
-    formatted = [c["label"] for c in completions if "label" in c]
-    f_line = format_line(content, line, column)
+    raw_completions = client.get_completions(rel_path, line - 1, column - 1)
 
-    if not formatted:
-        return f"No completions at position:\n{f_line}\nTry elsewhere?"
+    # Convert to CompletionItem models
+    items = []
+    for c in raw_completions:
+        if "label" not in c:
+            continue
+        kind_int = c.get("kind")
+        kind_str = COMPLETION_KIND.get(kind_int) if kind_int else None
+        items.append(CompletionItem(
+            label=c["label"],
+            kind=kind_str,
+            detail=c.get("detail"),
+        ))
+
+    if not items:
+        return []
 
     # Find the sort term: The last word/identifier before the cursor
     lines = content.splitlines()
@@ -612,28 +703,20 @@ def completions(
 
     # Sort completions: prefix matches first, then contains, then alphabetical
     if prefix:
-
-        def sort_key(item):
-            item_lower = item.lower()
-            if item_lower.startswith(prefix):
-                return (0, item_lower)
-            elif prefix in item_lower:
-                return (1, item_lower)
+        def sort_key(item: CompletionItem):
+            label_lower = item.label.lower()
+            if label_lower.startswith(prefix):
+                return (0, label_lower)
+            elif prefix in label_lower:
+                return (1, label_lower)
             else:
-                return (2, item_lower)
-
-        formatted.sort(key=sort_key)
+                return (2, label_lower)
+        items.sort(key=sort_key)
     else:
-        formatted.sort(key=str.lower)
+        items.sort(key=lambda x: x.label.lower())
 
     # Truncate if too many results
-    if len(formatted) > max_completions:
-        remaining = len(formatted) - max_completions
-        formatted = formatted[:max_completions] + [
-            f"{remaining} more, keep typing to filter further"
-        ]
-    completions_text = "\n".join(formatted)
-    return f"Completions at:\n{f_line}\n{completions_text}"
+    return items[:max_completions]
 
 
 @mcp.tool(
