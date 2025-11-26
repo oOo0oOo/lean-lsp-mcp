@@ -1274,14 +1274,14 @@ def state_search(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise ValueError("Invalid Lean file path: Unable to start LSP server or load file")
+        raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
-        raise ValueError(f"No goals found at line {line}, column {column}")
+        raise LeanToolError(f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete.")
 
     goal_str = urllib.parse.quote(goal["goals"][0])
 
@@ -1327,14 +1327,14 @@ def hammer_premise(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise ValueError("Invalid Lean file path: Unable to start LSP server or load file")
+        raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
-        raise ValueError(f"No goals found at line {line}, column {column}")
+        raise LeanToolError(f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete.")
 
     data = {
         "state": goal["goals"][0],
