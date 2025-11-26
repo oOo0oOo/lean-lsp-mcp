@@ -543,7 +543,16 @@ def diagnostic_messages(
 ) -> List[DiagnosticMessage]:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
-    "no goals to be solved" means code may need removal.
+    Common patterns:
+    - "no goals to be solved" → remove extraneous tactics
+    - "unknown identifier" → check imports or use lean_local_search
+    - "type mismatch" → check expected vs actual types in the message
+    - "failed to synthesize instance" → add instance with `haveI` or `letI`
+
+    Tips:
+    - Call without filters first to see all issues
+    - Use declaration_name to focus on one theorem (slower but precise)
+    - Severity: error > warning > info > hint
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -588,10 +597,22 @@ def goal(
 ) -> GoalState:
     """Get the proof goals (proof state) at a specific location in a Lean file.
 
-    VERY USEFUL! Main tool to understand the proof state and its evolution!
-    Returns "no goals" if solved.
-    To see the goal at sorry, use the cursor before the "s".
-    Avoid giving a column if unsure-default behavior works well.
+    MOST IMPORTANT TOOL for proof development! Call this often.
+
+    Returns goals_before (line start) and goals_after (line end) showing
+    how the tactic on that line transforms the proof state.
+
+    Workflow:
+    1. Find the sorry line → call lean_goal on that line
+    2. Read the goal state → understand what needs to be proved
+    3. Try a tactic → call lean_goal again to see progress
+    4. Repeat until "no goals" (proof complete)
+
+    Tips:
+    - For `sorry`: position cursor at column 1 (before the 's')
+    - No column needed for most cases - default shows both before/after
+    - "no goals" means proof is complete at that point
+    - Watch for hypothesis changes (new `h :` bindings)
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -683,7 +704,19 @@ def hover(
         int, Field(description="Column number (1-indexed). Use the start or within the term, not the end.", ge=1)
     ],
 ) -> HoverInfo:
-    """Get hover info (docs for syntax, variables, functions, etc.) at a specific location in a Lean file.
+    """Get type signature and documentation for any symbol in a Lean file.
+
+    ESSENTIAL for understanding what a function/lemma does and how to use it.
+
+    Use cases:
+    - "What's the type of this variable?" → hover on the variable
+    - "What arguments does this function take?" → hover on function name
+    - "Is this a theorem or definition?" → hover shows the declaration
+
+    Tips:
+    - Column should be at START of identifier, not end
+    - Also returns any diagnostics at that position (errors/warnings)
+    - Use after lean_local_search to get full signatures
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -736,12 +769,19 @@ def completions(
         int, Field(description="Maximum number of completions to return", ge=1)
     ] = 32,
 ) -> List[CompletionItem]:
-    """Get code completions at a location in a Lean file.
+    """Get IDE autocompletions at a position in a Lean file.
 
-    Only use this on INCOMPLETE lines/statements to check available identifiers and imports:
-    - Dot Completion: Displays relevant identifiers after a dot (e.g., `Nat.`, `x.`, or `Nat.ad`).
-    - Identifier Completion: Suggests matching identifiers after part of a name.
-    - Import Completion: Lists importable files after `import` at the beginning of a file.
+    Use on INCOMPLETE code to discover available identifiers:
+    - After `.`: field/method access (e.g., `h.` → symm, trans, mp...)
+    - Partial name: `Nat.add_` → add_comm, add_assoc, add_zero...
+    - After `import `: available modules
+
+    Workflow:
+    1. Write partial identifier in file
+    2. Call completions at cursor position
+    3. See what's available in scope
+
+    Note: Requires the partial text to be in the file - edit first, then complete.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -852,15 +892,19 @@ def multi_attempt(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[List[str], Field(description="List of code snippets to try (3+ recommended)")],
 ) -> List[AttemptResult]:
-    """Try multiple Lean code snippets at a line and get the goal state and diagnostics for each.
+    """Try multiple tactics at a line WITHOUT modifying the file.
 
-    Use to compare tactics or approaches.
-    Use rarely-prefer direct file edits to keep users involved.
-    For a single snippet, edit the file and run `lean_diagnostic_messages` instead.
+    BEST FOR: "Which tactic works here?" - test several approaches at once.
 
-    Note:
-        Only single-line, fully-indented snippets are supported.
-        Avoid comments for best results.
+    Example:
+        snippets=["simp", "ring", "omega", "exact?", "apply?"]
+
+    Returns for each snippet:
+    - goal_state: resulting proof state (null if error)
+    - diagnostics: any errors/warnings
+
+    Use this when unsure which tactic to try - faster than editing file repeatedly.
+    Single-line snippets only. Include proper indentation.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -1011,9 +1055,16 @@ def local_search(
 ) -> List[LocalSearchResult]:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
-    VERY USEFUL AND FAST!
-    Pass a short prefix (e.g. ``map_mul``); the metadata shows the declaration kind and file.
-    The index spans theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls.
+    FASTEST search tool - use BEFORE trying a lemma name!
+    Searches: theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs.
+
+    Use cases:
+    - "Does `Nat.add_comm` exist?" → search "Nat.add_comm"
+    - "What's in List module?" → search "List."
+    - "Find mul lemmas" → search "mul_"
+
+    Returns kind (theorem/def/class/etc.) and file path.
+    Use lean_hover_info after to get the full type signature.
     """
     if not _RG_AVAILABLE:
         raise LocalSearchError(_RG_MESSAGE)
@@ -1057,14 +1108,18 @@ def leansearch(
     query: Annotated[str, Field(description="Natural language or Lean term search query")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
 ) -> List[LeanSearchResult]:
-    """Search for Lean theorems, definitions, and tactics using leansearch.net.
+    """Search Mathlib theorems using natural language via leansearch.net.
 
-    Query patterns:
-      - Natural language: "If there exist injective maps of sets from A to B and from B to A, then there exists a bijective map between A and B."
-      - Mixed natural/Lean: "natural numbers. from: n < m, to: n + 1 < m + 1", "n + 1 <= m if n < m"
-      - Concept names: "Cauchy Schwarz"
-      - Lean identifiers: "List.sum", "Finset induction"
-      - Lean term: "{f : A → B} {g : B → A} (hf : Injective f) (hg : Injective g) : ∃ h, Bijective h"
+    BEST FOR: "I need a lemma that says X" in plain English.
+    Rate limited: 3 requests per 30 seconds.
+
+    Query examples:
+    - "sum of two even numbers is even"
+    - "injective function has left inverse"
+    - "Cauchy Schwarz inequality"
+    - Lean term: "{f : A → B} (hf : Injective f) : ∃ g, LeftInverse g f"
+
+    Tip: Use lean_local_search first to verify returned names exist in your project.
     """
     headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
     payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
@@ -1103,16 +1158,19 @@ async def loogle(
     query: Annotated[str, Field(description="Loogle query pattern (constant, name, type shape, etc.)")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 8,
 ) -> List[LoogleResult]:
-    """Search for definitions and theorems using loogle.
+    """Search Mathlib by TYPE SIGNATURE pattern via loogle.lean-lang.org.
+
+    BEST FOR: "Find lemma with this type shape" or "uses this constant".
+    Rate limited: 3 requests per 30 seconds.
 
     Query patterns:
-      - By constant: Real.sin  # finds lemmas mentioning Real.sin
-      - By lemma name: "differ"  # finds lemmas with "differ" in the name
-      - By subexpression: _ * (_ ^ _)  # finds lemmas with a product and power
-      - Non-linear: Real.sqrt ?a * Real.sqrt ?a
-      - By type shape: (?a -> ?b) -> List ?a -> List ?b
-      - By conclusion: |- tsum _ = _ * tsum _
-      - By conclusion w/hyps: |- _ < _ → tsum _ < tsum _
+    - Constant: `Real.sin` → lemmas mentioning Real.sin
+    - Name substring: `"comm"` → lemmas with "comm" in name
+    - Type shape: `(?a → ?b) → List ?a → List ?b` → finds map
+    - Subexpression: `_ * (_ ^ _)` → products with powers
+    - Conclusion: `|- _ + _ = _ + _` → addition equations
+
+    Returns full type signatures - very useful for understanding how to apply lemmas.
     """
     app_ctx: AppContext = ctx.request_context.lifespan_context
 
@@ -1147,15 +1205,18 @@ def leanfinder(
     query: Annotated[str, Field(description="Mathematical concept, proof state, or statement to search")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
 ) -> List[LeanFinderResult]:
-    """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
+    """Semantic search of Mathlib by mathematical MEANING via Lean Finder.
 
-    Effective query types:
-    - Natural language mathematical statement: "For any natural numbers n and m, the sum n+m is equal to m+n."
-    - Natural language questions: "I'm working with algebraic elements over a field extension ... Does this imply that the minimal polynomials of x and y are equal?"
-    - Proof state. For better results, enter a proof state followed by how you want to transform the proof state.
-    - Statement definition: Fragment or the whole statement definition.
+    BEST FOR: When you know what you want mathematically but not the exact name.
+    Rate limited: 10 requests per 30 seconds (highest limit).
 
-    Tips: Multiple targeted queries beat one complex query.
+    Query strategies:
+    - Mathematical statement: "commutativity of addition on natural numbers"
+    - Proof state + goal: "I have h : n < m and need to show n + 1 < m + 1"
+    - Informal question: "how to prove a function is continuous"
+
+    Returns informal_statement (English) + formal_statement (Lean) for each result.
+    Use multiple focused queries rather than one complex query.
     """
     headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
     request_url = (
@@ -1198,9 +1259,18 @@ def state_search(
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
 ) -> List[StateSearchResult]:
-    """Search for theorems based on proof state using premise-search.com.
+    """Find lemmas that can close the CURRENT GOAL at a position.
 
-    Only uses first goal if multiple.
+    BEST FOR: "What lemma finishes this proof state?"
+    Rate limited: 3 requests per 30 seconds.
+
+    Automatically reads the goal at the given position and searches premise-search.com.
+    Returns lemma names ranked by relevance score.
+
+    Workflow:
+    1. Position at a sorry or tactic
+    2. Call state_search with that position
+    3. Try returned lemmas with `exact`, `apply`, or as simp hints
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -1243,7 +1313,17 @@ def hammer_premise(
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 32,
 ) -> List[PremiseResult]:
-    """Search for premises based on proof state using the lean hammer premise search.
+    """Get premises for automation tactics (simp, omega, aesop) at a position.
+
+    BEST FOR: "What lemmas should I feed to simp/omega/decide?"
+    Rate limited: 3 requests per 30 seconds.
+
+    Returns premise names optimized for use with:
+    - `simp only [premise1, premise2, ...]`
+    - `omega` / `decide` (for decidable goals)
+    - `aesop (add unsafe [premise1, premise2])`
+
+    Higher num_results (32+) often helps automation find the right combination.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:

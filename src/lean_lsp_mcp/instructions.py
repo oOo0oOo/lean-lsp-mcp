@@ -14,4 +14,29 @@ INSTRUCTIONS = """## General Rules
 - lean_loogle: Search definitions and theorems by name, type, or subexpression.
 - lean_leanfinder: Semantic search for theorems using Lean Finder.
 - lean_state_search: Search theorems using goal-based search.
+
+## Search Tool Decision Tree
+Use this to pick the right search tool:
+
+1. "Does lemma X exist?" → lean_local_search (fastest, local)
+2. "I need a lemma that says X" (English) → lean_leansearch
+3. "Find lemma with type (?a → ?b) → ..." → lean_loogle
+4. "What math concept is this?" → lean_leanfinder
+5. "What closes this goal?" → lean_state_search (at sorry position)
+6. "What premises for simp?" → lean_hammer_premise
+
+After finding a lemma name, use lean_hover_info to get the full signature.
+
+## Proof Development Workflow
+1. Read goal with lean_goal at sorry line
+2. Search for relevant lemmas (decision tree above)
+3. Try tactics with lean_multi_attempt
+4. Edit file, check with lean_diagnostic_messages
+5. Repeat until "no goals"
+
+## Common Error Fixes
+- "unknown identifier X" → lean_local_search "X" or check imports
+- "type mismatch" → read expected vs actual in error message
+- "failed to synthesize instance" → add with haveI/letI before use
+- "no goals to be solved" → remove extraneous tactics
 """
