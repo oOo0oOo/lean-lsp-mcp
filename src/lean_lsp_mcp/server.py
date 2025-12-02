@@ -26,7 +26,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
-from lean_lsp_mcp.loogle_local import LoogleManager
+from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.outline_utils import generate_outline
 from lean_lsp_mcp.utils import (
     OutputCapture,
@@ -78,7 +78,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             logger.info("Local loogle enabled, initializing...")
             loogle_manager = LoogleManager()
             if loogle_manager.ensure_installed():
-                if loogle_manager.start():
+                if await loogle_manager.start():
                     loogle_local_available = True
                     logger.info("Local loogle started successfully")
                 else:
@@ -102,13 +102,13 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
         yield context
     finally:
-        logger.info("Shutting down Lean LSP MCP server")
+        logger.info("Closing Lean LSP client")
 
         if context.client:
             context.client.close()
 
         if loogle_manager:
-            loogle_manager.stop()
+            await loogle_manager.stop()
 
 
 mcp_kwargs = dict(
@@ -844,31 +844,8 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         return f"leansearch error:\n{str(e)}"
 
 
-def _loogle_remote(query: str, num_results: int) -> List[dict] | str:
-    """Query the remote loogle API (rate-limited)."""
-    try:
-        req = urllib.request.Request(
-            f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
-            headers={"User-Agent": "lean-lsp-mcp/0.1"},
-            method="GET",
-        )
-
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
-
-        if "hits" not in results:
-            return "No results found."
-
-        results = results["hits"][:num_results]
-        for result in results:
-            result.pop("doc", None)
-        return results
-    except Exception as e:
-        return f"loogle error:\n{str(e)}"
-
-
 @mcp.tool("lean_loogle")
-def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
+async def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
     """Search for definitions and theorems using loogle.
 
     Query patterns:
@@ -886,18 +863,13 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
 
     Returns:
         List[dict] | str: Search results or error msg
-
-    Note:
-        Use --loogle-local or LEAN_LOOGLE_LOCAL=true to enable local loogle
-        (avoids rate limits, requires ~5-10 min initial setup).
     """
     app_ctx: AppContext = ctx.request_context.lifespan_context
 
     # Try local loogle first if available (no rate limiting)
     if app_ctx.loogle_local_available and app_ctx.loogle_manager:
         try:
-            results = app_ctx.loogle_manager.query(query, num_results)
-            # Format to match remote API response
+            results = await app_ctx.loogle_manager.query(query, num_results)
             for result in results:
                 result.pop("doc", None)
             return results if results else "No results found."
@@ -912,7 +884,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
         return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
     rate_limit.append(now)
 
-    return _loogle_remote(query, num_results)
+    return loogle_remote(query, num_results)
 
 
 @mcp.tool("lean_leanfinder")

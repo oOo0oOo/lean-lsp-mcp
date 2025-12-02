@@ -1,15 +1,19 @@
-"""Local Loogle subprocess manager - avoids rate limits."""
+"""Loogle search - local subprocess and remote API."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import select
 import shutil
 import subprocess
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
+
+import orjson
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +25,36 @@ def get_cache_dir() -> Path:
     return Path(xdg) / "lean-lsp-mcp" / "loogle"
 
 
+def loogle_remote(query: str, num_results: int) -> list[dict] | str:
+    """Query the remote loogle API."""
+    try:
+        req = urllib.request.Request(
+            f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
+            headers={"User-Agent": "lean-lsp-mcp/0.1"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = orjson.loads(response.read())
+        if "hits" not in results:
+            return "No results found."
+        results = results["hits"][:num_results]
+        for r in results:
+            r.pop("doc", None)
+        return results
+    except Exception as e:
+        return f"loogle error:\n{e}"
+
+
 class LoogleManager:
-    """Manages local loogle installation and interactive subprocess."""
+    """Manages local loogle installation and async subprocess."""
 
     REPO_URL = "https://github.com/nomeata/loogle.git"
-    READY_SIGNAL = "Loogle is ready.\n"
+    READY_SIGNAL = "Loogle is ready."
 
     def __init__(self, cache_dir: Path | None = None):
         self.cache_dir = cache_dir or get_cache_dir()
         self.repo_dir = self.cache_dir / "repo"
         self.index_dir = self.cache_dir / "index"
-        self.process: subprocess.Popen[bytes] | None = None
+        self.process: asyncio.subprocess.Process | None = None
         self._ready = False
         self._restart_count = 0
 
@@ -45,7 +68,7 @@ class LoogleManager:
 
     @property
     def is_running(self) -> bool:
-        return self._ready and self.process is not None and self.process.poll() is None
+        return self._ready and self.process is not None and self.process.returncode is None
 
     def _check_prerequisites(self) -> tuple[bool, str]:
         if not shutil.which("git"):
@@ -128,8 +151,8 @@ class LoogleManager:
             logger.warning("Index build failed, loogle will build on startup")
         return self.is_installed
 
-    def start(self) -> bool:
-        if self.process is not None and self.process.poll() is None:
+    async def start(self) -> bool:
+        if self.process is not None and self.process.returncode is None:
             return self._ready
         if not self.is_installed:
             return False
@@ -138,55 +161,56 @@ class LoogleManager:
             cmd.extend(["--read-index", str(idx)])
         logger.info("Starting loogle subprocess...")
         try:
-            self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE, cwd=self.repo_dir)
-            if self.process.stdout and select.select([self.process.stdout], [], [], 120)[0]:
-                if self.READY_SIGNAL in self.process.stdout.readline().decode():
-                    self._ready = True
-                    logger.info("Loogle ready")
-                    return True
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, cwd=self.repo_dir
+            )
+            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
+            if self.READY_SIGNAL in line.decode():
+                self._ready = True
+                logger.info("Loogle ready")
+                return True
+            return False
+        except asyncio.TimeoutError:
+            logger.error("Loogle startup timeout")
             return False
         except Exception as e:
             logger.error(f"Start failed: {e}")
             return False
 
-    def query(self, q: str, num_results: int = 8) -> list[dict[str, Any]]:
-        if not self._ready or self.process is None or self.process.poll() is not None:
+    async def query(self, q: str, num_results: int = 8) -> list[dict[str, Any]]:
+        if not self._ready or self.process is None or self.process.returncode is not None:
             if self._restart_count < 1:
                 self._restart_count += 1
                 self._ready = False
-                if self.start():
-                    return self.query(q, num_results)
+                if await self.start():
+                    return await self.query(q, num_results)
             raise RuntimeError("Loogle subprocess not ready")
         try:
-            self.process.stdin.write(f"{q}\n".encode())  # type: ignore
-            self.process.stdin.flush()  # type: ignore
-            if not select.select([self.process.stdout], [], [], 30)[0]:
-                raise RuntimeError("Query timeout")
-            response = json.loads(self.process.stdout.readline().decode())  # type: ignore
+            self.process.stdin.write(f"{q}\n".encode())
+            await self.process.stdin.drain()
+            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=30)
+            response = json.loads(line.decode())
             if err := response.get("error"):
                 logger.warning(f"Query error: {err}")
                 return []
             self._restart_count = 0
             return [{"name": h.get("name", ""), "type": h.get("type", ""), "module": h.get("module", ""),
                      "doc": h.get("doc")} for h in response.get("hits", [])[:num_results]]
+        except asyncio.TimeoutError:
+            raise RuntimeError("Query timeout")
         except json.JSONDecodeError as e:
             raise RuntimeError(f"Invalid response: {e}") from e
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         if self.process:
             try:
                 self.process.terminate()
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(self.process.wait(), timeout=5)
+            except asyncio.TimeoutError:
                 self.process.kill()
             except Exception:
                 pass
             self.process = None
             self._ready = False
             self._restart_count = 0
-
-    def _get_lake_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        env["LAKE_ARTIFACT_CACHE"] = "false"
-        return env

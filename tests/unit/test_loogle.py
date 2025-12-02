@@ -1,13 +1,14 @@
-"""Tests for local loogle functionality."""
+"""Tests for loogle functionality."""
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lean_lsp_mcp.loogle_local import LoogleManager, get_cache_dir
+from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir, loogle_remote
 
 
 class TestGetCacheDir:
@@ -51,15 +52,12 @@ class TestLoogleManager:
         monkeypatch.setattr("shutil.which", lambda c: f"/bin/{c}")
         assert mgr._check_prerequisites() == (True, "")
 
-    def test_lake_env(self, mgr):
-        assert mgr._get_lake_env()["LAKE_ARTIFACT_CACHE"] == "false"
-
     def test_is_running(self, mgr):
         assert not mgr.is_running
-        mgr.process = MagicMock(poll=lambda: None)
+        mgr.process = MagicMock(returncode=None)
         mgr._ready = True
         assert mgr.is_running
-        mgr.process.poll = lambda: 1
+        mgr.process.returncode = 1
         assert not mgr.is_running
 
     def test_clone_repo_exists(self, mgr):
@@ -83,52 +81,67 @@ class TestLoogleManager:
         (mgr.repo_dir / "lake-manifest.json").unlink()
         assert mgr._get_mathlib_version() == "unknown"
 
-    def test_query_not_ready(self, mgr):
+    @pytest.mark.asyncio
+    async def test_query_not_ready(self, mgr):
         mgr._restart_count = 1
         with pytest.raises(RuntimeError, match="not ready"):
-            mgr.query("test")
+            await mgr.query("test")
 
-    def test_query_success(self, mgr):
+    @pytest.mark.asyncio
+    async def test_query_success(self, mgr):
         mgr._ready = True
         mgr._restart_count = 1
-        proc = MagicMock(poll=lambda: None, stdin=MagicMock(), stdout=MagicMock(fileno=lambda: 0))
-        proc.stdout.readline.return_value = json.dumps(
+        proc = AsyncMock()
+        proc.returncode = None
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdout.readline = AsyncMock(return_value=json.dumps(
             {"hits": [{"name": "Nat.add", "type": "Nat → Nat", "module": "Init", "doc": "doc"}]}
-        ).encode()
+        ).encode())
         mgr.process = proc
-        with patch("select.select", return_value=([proc.stdout], [], [])):
-            r = mgr.query("Nat", 2)
+        r = await mgr.query("Nat", 2)
         assert r == [{"name": "Nat.add", "type": "Nat → Nat", "module": "Init", "doc": "doc"}]
         assert mgr._restart_count == 0
 
-    def test_query_error(self, mgr):
+    @pytest.mark.asyncio
+    async def test_query_error(self, mgr):
         mgr._ready = True
-        proc = MagicMock(poll=lambda: None, stdin=MagicMock(), stdout=MagicMock(fileno=lambda: 0))
-        proc.stdout.readline.return_value = json.dumps({"error": "parse error"}).encode()
+        proc = AsyncMock()
+        proc.returncode = None
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdout.readline = AsyncMock(return_value=json.dumps({"error": "parse error"}).encode())
         mgr.process = proc
-        with patch("select.select", return_value=([proc.stdout], [], [])):
-            assert mgr.query("bad") == []
+        assert await mgr.query("bad") == []
 
-    def test_query_timeout(self, mgr):
+    @pytest.mark.asyncio
+    async def test_query_timeout(self, mgr):
         mgr._ready = True
         mgr._restart_count = 1
-        mgr.process = MagicMock(poll=lambda: None, stdin=MagicMock(), stdout=MagicMock(fileno=lambda: 0))
-        with patch("select.select", return_value=([], [], [])):
-            with pytest.raises(RuntimeError, match="timeout"):
-                mgr.query("test")
+        proc = AsyncMock()
+        proc.returncode = None
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError())
+        mgr.process = proc
+        with pytest.raises(RuntimeError, match="timeout"):
+            await mgr.query("test")
 
-    def test_stop(self, mgr):
-        proc = MagicMock()
+    @pytest.mark.asyncio
+    async def test_stop(self, mgr):
+        proc = AsyncMock()
+        proc.wait = AsyncMock()
         mgr.process, mgr._ready = proc, True
-        mgr.stop()
+        await mgr.stop()
         proc.terminate.assert_called_once()
         assert mgr.process is None and not mgr._ready
 
-    def test_stop_force_kill(self, mgr):
-        proc = MagicMock()
-        proc.wait.side_effect = subprocess.TimeoutExpired("loogle", 5)
+    @pytest.mark.asyncio
+    async def test_stop_force_kill(self, mgr):
+        proc = AsyncMock()
+        proc.wait = AsyncMock(side_effect=asyncio.TimeoutError())
         mgr.process = proc
-        mgr.stop()
+        await mgr.stop()
         proc.kill.assert_called_once()
 
     def test_ensure_installed_no_prereqs(self, tmp_path, monkeypatch):
@@ -136,5 +149,6 @@ class TestLoogleManager:
         monkeypatch.setattr("shutil.which", lambda _: None)
         assert not mgr.ensure_installed()
 
-    def test_start_not_installed(self, tmp_path):
-        assert not LoogleManager(cache_dir=tmp_path).start()
+    @pytest.mark.asyncio
+    async def test_start_not_installed(self, tmp_path):
+        assert not await LoogleManager(cache_dir=tmp_path).start()

@@ -502,54 +502,19 @@ Clients should then include the token in the `Authorization` header.
 
 ### Local Loogle
 
-By default, loogle queries are sent to the remote API at [loogle.lean-lang.org](https://loogle.lean-lang.org/), which is rate-limited to 3 requests per 30 seconds.
+Run loogle locally to avoid the remote API's rate limit (3 req/30s). First run takes ~5-10 minutes to build; subsequent runs start in seconds.
 
-You can run loogle locally to avoid rate limits and network dependencies. When enabled, the server will automatically:
-1. Clone the loogle repository
-2. Download the mathlib cache
-3. Build loogle
-4. Create and cache the search index
-
-**First run takes ~5-10 minutes** (clone + build + index). Subsequent runs start in ~2-5 seconds (cached index).
-
-#### Enabling Local Loogle
-
-**Via CLI argument:**
 ```bash
+# Enable via CLI
 uvx lean-lsp-mcp --loogle-local
 
-# With custom cache directory
-uvx lean-lsp-mcp --loogle-local --loogle-cache-dir /path/to/cache
-```
-
-**Via environment variable:**
-```bash
+# Or via environment variable
 export LEAN_LOOGLE_LOCAL=true
-uvx lean-lsp-mcp
 ```
 
-**Via MCP config (VSCode example):**
-```jsonc
-{
-    "servers": {
-        "lean-lsp": {
-            "type": "stdio",
-            "command": "uvx",
-            "args": ["lean-lsp-mcp", "--loogle-local"]
-        }
-    }
-}
-```
+**Requirements:** `git`, `lake` ([elan](https://github.com/leanprover/elan)), ~2GB disk space.
 
-#### Requirements
-
-- `git` must be installed and available in PATH
-- `lake` (part of [elan](https://github.com/leanprover/elan)) must be installed and available in PATH
-- ~2GB disk space for the loogle repository and index
-
-#### Fallback Behavior
-
-If local loogle fails to start or a query fails, the server automatically falls back to the remote API (with rate limiting). Check the server logs for details.
+Falls back to remote API if local loogle fails.
 
 ## Notes on MCP Security
 
