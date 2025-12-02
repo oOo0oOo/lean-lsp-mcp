@@ -42,6 +42,7 @@ from lean_lsp_mcp.utils import (
 )
 
 
+# LSP SymbolKind enum: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
 SYMBOL_KIND: Dict[int, str] = {
     1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class",
     6: "method", 7: "property", 8: "field", 9: "constructor", 10: "enum",
@@ -56,95 +57,96 @@ def symbol_kind_name(kind: int | str) -> str:
     return kind if isinstance(kind, str) else SYMBOL_KIND.get(kind, f"unknown({kind})")
 
 
-# Structured output models
+# Structured output models for MCP tools
 class LocalSearchResult(BaseModel):
-    name: str
-    kind: str
-    file: str
+    name: str = Field(description="Declaration name")
+    kind: str = Field(description="Declaration kind (theorem, def, class, etc.)")
+    file: str = Field(description="Relative file path")
 
 class LeanSearchResult(BaseModel):
-    name: str
-    module_name: str
-    kind: Optional[str] = None
-    type: Optional[str] = None
+    name: str = Field(description="Full qualified name")
+    module_name: str = Field(description="Module where declared")
+    kind: Optional[str] = Field(None, description="Declaration kind")
+    type: Optional[str] = Field(None, description="Type signature")
 
 class LoogleResult(BaseModel):
-    name: str
-    type: str
-    module: str
+    name: str = Field(description="Declaration name")
+    type: str = Field(description="Type signature")
+    module: str = Field(description="Module where declared")
 
 class LeanFinderResult(BaseModel):
-    full_name: str
-    formal_statement: str
-    informal_statement: str
+    full_name: str = Field(description="Full qualified name")
+    formal_statement: str = Field(description="Lean type signature")
+    informal_statement: str = Field(description="Natural language description")
 
 class StateSearchResult(BaseModel):
-    name: str
-    score: Optional[float] = None
+    name: str = Field(description="Theorem/lemma name")
+    score: Optional[float] = Field(None, description="Relevance score")
 
 class PremiseResult(BaseModel):
-    name: str
+    name: str = Field(description="Premise name for simp/omega/aesop")
 
+# LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
 class DiagnosticMessage(BaseModel):
-    severity: str
-    message: str
-    start_line: int
-    start_column: int
-    end_line: int
-    end_column: int
+    severity: str = Field(description="error, warning, info, or hint")
+    message: str = Field(description="Diagnostic message text")
+    start_line: int = Field(description="Start line (1-indexed)")
+    start_column: int = Field(description="Start column (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    end_column: int = Field(description="End column (1-indexed)")
 
 class GoalState(BaseModel):
-    line_context: str
-    goals_before: Optional[str] = None
-    goals_after: Optional[str] = None
-    goals: Optional[str] = None
+    line_context: str = Field(description="Source line where goals were queried")
+    goals_before: Optional[str] = Field(None, description="Goal state at line start (before tactics)")
+    goals_after: Optional[str] = Field(None, description="Goal state at line end (after tactics)")
+    goals: Optional[str] = Field(None, description="Goal state at specific column")
 
 class CompletionItem(BaseModel):
-    label: str
-    kind: Optional[str] = None
-    detail: Optional[str] = None
+    label: str = Field(description="Completion text to insert")
+    kind: Optional[str] = Field(None, description="Completion kind (function, variable, etc.)")
+    detail: Optional[str] = Field(None, description="Additional detail")
 
 class HoverInfo(BaseModel):
-    symbol: str
-    info: str
-    diagnostics: List[DiagnosticMessage] = []
+    symbol: str = Field(description="The symbol being hovered")
+    info: str = Field(description="Type signature and documentation")
+    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Diagnostics at this position")
 
 class TermGoalState(BaseModel):
-    line_context: str
-    expected_type: Optional[str] = None
+    line_context: str = Field(description="Source line where term goal was queried")
+    expected_type: Optional[str] = Field(None, description="Expected type at this position")
 
 class OutlineEntry(BaseModel):
-    name: str
-    kind: str
-    start_line: int
-    end_line: int
-    type_signature: Optional[str] = None
-    children: List["OutlineEntry"] = []
+    name: str = Field(description="Declaration name")
+    kind: str = Field(description="Declaration kind (Thm, Def, Class, Struct, Ns, Ex)")
+    start_line: int = Field(description="Start line (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    type_signature: Optional[str] = Field(None, description="Type signature if available")
+    children: List["OutlineEntry"] = Field(default_factory=list, description="Nested declarations")
 
 class FileOutline(BaseModel):
-    imports: List[str] = []
-    declarations: List[OutlineEntry] = []
+    imports: List[str] = Field(default_factory=list, description="Import statements")
+    declarations: List[OutlineEntry] = Field(default_factory=list, description="Top-level declarations")
 
 class AttemptResult(BaseModel):
-    snippet: str
-    goal_state: Optional[str] = None
-    diagnostics: List[DiagnosticMessage] = []
+    snippet: str = Field(description="Code snippet that was tried")
+    goal_state: Optional[str] = Field(None, description="Goal state after applying snippet")
+    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Diagnostics for this attempt")
 
 class BuildResult(BaseModel):
-    success: bool
-    output: str
-    errors: List[str] = []
+    success: bool = Field(description="Whether build succeeded")
+    output: str = Field(description="Build output")
+    errors: List[str] = Field(default_factory=list, description="Build errors if any")
 
 class RunResult(BaseModel):
-    success: bool
-    diagnostics: List[DiagnosticMessage] = []
+    success: bool = Field(description="Whether code compiled successfully")
+    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Compiler diagnostics")
 
 class DeclarationInfo(BaseModel):
-    symbol: str
-    file_path: str
-    content: str
+    symbol: str = Field(description="Symbol that was looked up")
+    file_path: str = Field(description="Path to declaration file")
+    content: str = Field(description="File content")
 
 
 class LeanToolError(Exception):
@@ -603,6 +605,7 @@ def hover(
     )
 
 
+# LSP CompletionItemKind enum: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
 COMPLETION_KIND: Dict[int, str] = {
     1: "text", 2: "method", 3: "function", 4: "constructor", 5: "field",
     6: "variable", 7: "class", 8: "interface", 9: "module", 10: "property",
