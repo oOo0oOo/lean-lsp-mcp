@@ -26,6 +26,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
+from lean_lsp_mcp.loogle_local import LoogleManager
 from lean_lsp_mcp.outline_utils import generate_outline
 from lean_lsp_mcp.utils import (
     OutputCapture,
@@ -56,16 +57,34 @@ class AppContext:
     client: LeanLSPClient | None
     rate_limit: Dict[str, List[int]]
     lean_search_available: bool
+    loogle_manager: LoogleManager | None = None
+    loogle_local_available: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    loogle_manager: LoogleManager | None = None
+    loogle_local_available = False
+
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
         if not lean_project_path_str:
             lean_project_path = None
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
+
+        # Initialize local loogle if enabled via env var or CLI
+        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
+            logger.info("Local loogle enabled, initializing...")
+            loogle_manager = LoogleManager()
+            if loogle_manager.ensure_installed():
+                if loogle_manager.start():
+                    loogle_local_available = True
+                    logger.info("Local loogle started successfully")
+                else:
+                    logger.warning("Local loogle failed to start, will use remote API")
+            else:
+                logger.warning("Local loogle installation failed, will use remote API")
 
         context = AppContext(
             lean_project_path=lean_project_path,
@@ -78,13 +97,18 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 "hammer_premise": [],
             },
             lean_search_available=_RG_AVAILABLE,
+            loogle_manager=loogle_manager,
+            loogle_local_available=loogle_local_available,
         )
         yield context
     finally:
-        logger.info("Closing Lean LSP client")
+        logger.info("Shutting down Lean LSP MCP server")
 
         if context.client:
             context.client.close()
+
+        if loogle_manager:
+            loogle_manager.stop()
 
 
 mcp_kwargs = dict(
@@ -820,27 +844,8 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         return f"leansearch error:\n{str(e)}"
 
 
-@mcp.tool("lean_loogle")
-@rate_limited("loogle", max_requests=3, per_seconds=30)
-def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
-    """Search for definitions and theorems using loogle.
-
-    Query patterns:
-      - By constant: Real.sin  # finds lemmas mentioning Real.sin
-      - By lemma name: "differ"  # finds lemmas with "differ" in the name
-      - By subexpression: _ * (_ ^ _)  # finds lemmas with a product and power
-      - Non-linear: Real.sqrt ?a * Real.sqrt ?a
-      - By type shape: (?a -> ?b) -> List ?a -> List ?b
-      - By conclusion: |- tsum _ = _ * tsum _
-      - By conclusion w/hyps: |- _ < _ → tsum _ < tsum _
-
-    Args:
-        query (str): Search query
-        num_results (int, optional): Max results. Defaults to 8.
-
-    Returns:
-        List[dict] | str: Search results or error msg
-    """
+def _loogle_remote(query: str, num_results: int) -> List[dict] | str:
+    """Query the remote loogle API (rate-limited)."""
     try:
         req = urllib.request.Request(
             f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
@@ -860,6 +865,54 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
         return results
     except Exception as e:
         return f"loogle error:\n{str(e)}"
+
+
+@mcp.tool("lean_loogle")
+def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
+    """Search for definitions and theorems using loogle.
+
+    Query patterns:
+      - By constant: Real.sin  # finds lemmas mentioning Real.sin
+      - By lemma name: "differ"  # finds lemmas with "differ" in the name
+      - By subexpression: _ * (_ ^ _)  # finds lemmas with a product and power
+      - Non-linear: Real.sqrt ?a * Real.sqrt ?a
+      - By type shape: (?a -> ?b) -> List ?a -> List ?b
+      - By conclusion: |- tsum _ = _ * tsum _
+      - By conclusion w/hyps: |- _ < _ → tsum _ < tsum _
+
+    Args:
+        query (str): Search query
+        num_results (int, optional): Max results. Defaults to 8.
+
+    Returns:
+        List[dict] | str: Search results or error msg
+
+    Note:
+        Use --loogle-local or LEAN_LOOGLE_LOCAL=true to enable local loogle
+        (avoids rate limits, requires ~5-10 min initial setup).
+    """
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+
+    # Try local loogle first if available (no rate limiting)
+    if app_ctx.loogle_local_available and app_ctx.loogle_manager:
+        try:
+            results = app_ctx.loogle_manager.query(query, num_results)
+            # Format to match remote API response
+            for result in results:
+                result.pop("doc", None)
+            return results if results else "No results found."
+        except Exception as e:
+            logger.warning(f"Local loogle failed: {e}, falling back to remote")
+
+    # Fall back to remote (with rate limiting)
+    rate_limit = app_ctx.rate_limit["loogle"]
+    now = int(time.time())
+    rate_limit[:] = [t for t in rate_limit if now - t < 30]
+    if len(rate_limit) >= 3:
+        return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+    rate_limit.append(now)
+
+    return _loogle_remote(query, num_results)
 
 
 @mcp.tool("lean_leanfinder")
