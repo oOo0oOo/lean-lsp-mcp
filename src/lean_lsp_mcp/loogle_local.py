@@ -334,6 +334,11 @@ class LoogleManager:
             logger.error(f"Failed to start loogle: {e}")
             return False
 
+    @property
+    def is_running(self) -> bool:
+        """Check if the loogle subprocess is running and ready."""
+        return self._ready and self.process is not None and self.process.poll() is None
+
     def query(self, q: str, num_results: int = 8) -> list[dict[str, Any]]:
         """Send a query to loogle and return results.
 
@@ -342,7 +347,7 @@ class LoogleManager:
             num_results: Maximum number of results to return
 
         Returns:
-            List of result dicts with 'name', 'type', 'module' keys
+            List of result dicts with 'name', 'type', 'module', 'doc' keys
 
         Raises:
             RuntimeError: If loogle is not running or query fails
@@ -392,11 +397,14 @@ class LoogleManager:
 
             # Extract hits
             hits = response.get("hits", [])
+            # Reset restart count on successful query
+            self._restart_count = 0
             return [
                 {
                     "name": h.get("name", ""),
                     "type": h.get("type", ""),
                     "module": h.get("module", ""),
+                    "doc": h.get("doc"),  # May be None
                 }
                 for h in hits[:num_results]
             ]

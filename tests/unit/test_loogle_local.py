@@ -91,6 +91,36 @@ class TestLoogleManager:
         assert ok is True
         assert msg == ""
 
+    def test_get_lake_env_disables_artifact_cache(self, manager):
+        """Test _get_lake_env sets LAKE_ARTIFACT_CACHE=false."""
+        env = manager._get_lake_env()
+
+        assert env["LAKE_ARTIFACT_CACHE"] == "false"
+        # Should inherit other env vars
+        assert "PATH" in env
+
+    def test_is_running_false_when_not_started(self, manager):
+        """Test is_running returns False when process not started."""
+        assert manager.is_running is False
+
+    def test_is_running_true_when_process_running(self, manager):
+        """Test is_running returns True when process is running and ready."""
+        mock_process = MagicMock()
+        mock_process.poll.return_value = None  # Process is still running
+        manager.process = mock_process
+        manager._ready = True
+
+        assert manager.is_running is True
+
+    def test_is_running_false_when_process_died(self, manager):
+        """Test is_running returns False when process has terminated."""
+        mock_process = MagicMock()
+        mock_process.poll.return_value = 1  # Process has exited
+        manager.process = mock_process
+        manager._ready = True
+
+        assert manager.is_running is False
+
     def test_clone_repo_already_exists(self, manager):
         """Test clone_repo returns True when repo already exists."""
         manager.repo_dir.mkdir(parents=True, exist_ok=True)
@@ -156,6 +186,7 @@ class TestLoogleManager:
     def test_query_success(self, manager):
         """Test query returns results on success."""
         manager._ready = True
+        manager._restart_count = 1  # Set to 1 to verify it gets reset
 
         mock_process = MagicMock()
         mock_process.poll.return_value = None
@@ -165,8 +196,8 @@ class TestLoogleManager:
 
         response = json.dumps({
             "hits": [
-                {"name": "Nat.add", "type": "(a b : Nat) → Nat", "module": "Init"},
-                {"name": "Nat.mul", "type": "(a b : Nat) → Nat", "module": "Init"},
+                {"name": "Nat.add", "type": "(a b : Nat) → Nat", "module": "Init", "doc": "Addition"},
+                {"name": "Nat.mul", "type": "(a b : Nat) → Nat", "module": "Init", "doc": None},
             ]
         })
         mock_process.stdout.readline.return_value = response.encode()
@@ -178,7 +209,11 @@ class TestLoogleManager:
 
         assert len(results) == 2
         assert results[0]["name"] == "Nat.add"
+        assert results[0]["doc"] == "Addition"
         assert results[1]["name"] == "Nat.mul"
+        assert results[1]["doc"] is None
+        # Verify restart count was reset
+        assert manager._restart_count == 0
 
     def test_query_empty_hits(self, manager):
         """Test query returns empty list when no hits."""
