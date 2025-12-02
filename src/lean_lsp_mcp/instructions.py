@@ -7,12 +7,17 @@ INSTRUCTIONS = """## General Rules
 
 ### Core Tools (no rate limit)
 - **lean_goal**: Proof state at position. Omit `column` to see before/after tactic effect. USE OFTEN!
+  - "no goals" = proof complete at that point. You're done!
 - **lean_diagnostic_messages**: Compiler errors/warnings. Check after edits.
+  - "no goals to be solved" = remove extraneous tactics
 - **lean_hover_info**: Type signature + docs. Column must be at START of identifier.
 - **lean_completions**: IDE autocomplete. Use on incomplete code (after `.` or partial name).
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
-- **lean_file_outline**: Token-efficient file skeleton (imports + declarations with signatures).
+- **lean_file_outline**: Token-efficient file skeleton. Slow-ish but very useful.
 - **lean_multi_attempt**: Test multiple tactics without editing. Pass list like ["simp", "ring", "omega"].
+- **lean_declaration_file**: Get source where symbol is declared. Use sparingly (large output).
+- **lean_run_code**: Run standalone snippet. Use rarely - prefer editing actual files.
+- **lean_build**: Rebuild project + restart LSP. Only if needed (new imports). SLOW!
 
 ### Search Tools (rate limited: 3 req/30s, except leanfinder: 10 req/30s)
 - **lean_leansearch**: Natural language → mathlib. "sum of even numbers is even"
@@ -51,7 +56,8 @@ After finding a name, verify with lean_local_search, then lean_hover_info for fu
 3. lean_multi_attempt to test candidates
 4. Edit file externally
 5. lean_diagnostic_messages to verify
-6. Repeat until goals_after shows "no goals"
+6. lean_goal again - if goals_after is "no goals", proof is COMPLETE. Stop!
+7. Repeat until done
 
 ## Common Errors
 - "unknown identifier X" → lean_local_search "X", check imports
