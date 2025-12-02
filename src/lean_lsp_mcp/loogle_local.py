@@ -110,6 +110,16 @@ class LoogleManager:
             logger.error(f"Git clone error: {e}")
             return False
 
+    def _get_lake_env(self) -> dict[str, str]:
+        """Get environment variables for lake commands.
+
+        Disables LAKE_ARTIFACT_CACHE to ensure olean files are stored in
+        traditional paths that loogle expects (not content-addressable storage).
+        """
+        env = os.environ.copy()
+        env["LAKE_ARTIFACT_CACHE"] = "false"
+        return env
+
     def _build_loogle(self) -> bool:
         """Build loogle binary.
 
@@ -128,6 +138,8 @@ class LoogleManager:
             logger.error("Repo not cloned, cannot build")
             return False
 
+        lake_env = self._get_lake_env()
+
         # Download mathlib cache first
         logger.info("Downloading mathlib cache (this may take a few minutes)...")
         try:
@@ -137,6 +149,7 @@ class LoogleManager:
                 capture_output=True,
                 text=True,
                 timeout=600,  # 10 min timeout
+                env=lake_env,
             )
             if result.returncode != 0:
                 logger.warning(f"Cache get warning: {result.stderr}")
@@ -155,6 +168,7 @@ class LoogleManager:
                 capture_output=True,
                 text=True,
                 timeout=900,  # 15 min timeout for build
+                env=lake_env,
             )
             if result.returncode != 0:
                 logger.error(f"Build failed: {result.stderr}")
