@@ -139,11 +139,13 @@ def test_local_search_project_root_updates_context(
         ctx=ctx, query=" foo ", limit=7, project_root=str(project_dir)
     )
 
-    # Result is now a list of LocalSearchResult Pydantic models
-    assert len(result) == 1
-    assert result[0].name == "foo"
-    assert result[0].kind == "def"
-    assert result[0].file == "Foo.lean"
+    # Result is now a JSON string with array of LocalSearchResult objects
+    import orjson
+    parsed = orjson.loads(result)
+    assert len(parsed) == 1
+    assert parsed[0]["name"] == "foo"
+    assert parsed[0]["kind"] == "def"
+    assert parsed[0]["file"] == "Foo.lean"
     assert called == {
         "query": "foo",
         "limit": 7,

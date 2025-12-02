@@ -11,12 +11,20 @@ from tests.helpers.mcp_client import MCPClient, result_text
 
 
 def _first_json_block(result) -> dict[str, str] | None:
+    """Extract the first JSON object from result content.
+
+    Handles both single JSON objects and JSON arrays (extracts first element).
+    """
     for block in result.content:
         text = getattr(block, "text", "").strip()
         if not text:
             continue
         try:
-            return orjson.loads(text)
+            parsed = orjson.loads(text)
+            # If it's a list, return the first element
+            if isinstance(parsed, list):
+                return parsed[0] if parsed else None
+            return parsed
         except orjson.JSONDecodeError:
             continue
     return None

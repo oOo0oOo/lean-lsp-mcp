@@ -196,6 +196,15 @@ class LeanToolError(Exception):
     pass
 
 
+def _to_json_array(items: List[BaseModel]) -> str:
+    """Convert a list of Pydantic models to a JSON array string.
+
+    This ensures tools returning lists produce a single JSON array
+    rather than multiple separate JSON objects (FastMCP's default behavior).
+    """
+    return orjson.dumps([item.model_dump() for item in items], option=orjson.OPT_INDENT_2).decode()
+
+
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
 configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
@@ -540,8 +549,10 @@ def diagnostic_messages(
         Optional[str],
         Field(description="Name of theorem/lemma/definition. Takes precedence over line filters. Slow."),
     ] = None,
-) -> List[DiagnosticMessage]:
+) -> str:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
+
+    Returns a JSON array of diagnostics with severity, message, and location.
 
     Common patterns:
     - "no goals to be solved" → remove extraneous tactics
@@ -579,7 +590,7 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return _to_diagnostic_messages(diagnostics)
+    return _to_json_array(_to_diagnostic_messages(diagnostics))
 
 
 @mcp.tool(
@@ -768,8 +779,10 @@ def completions(
     max_completions: Annotated[
         int, Field(description="Maximum number of completions to return", ge=1)
     ] = 32,
-) -> List[CompletionItem]:
+) -> str:
     """Get IDE autocompletions at a position in a Lean file.
+
+    Returns a JSON array of completion items with label, kind, and detail.
 
     Use on INCOMPLETE code to discover available identifiers:
     - After `.`: field/method access (e.g., `h.` → symm, trans, mp...)
@@ -793,7 +806,7 @@ def completions(
     raw_completions = client.get_completions(rel_path, line - 1, column - 1)
 
     # Convert to CompletionItem models
-    items = []
+    items: List[CompletionItem] = []
     for c in raw_completions:
         if "label" not in c:
             continue
@@ -806,7 +819,7 @@ def completions(
         ))
 
     if not items:
-        return []
+        return "[]"
 
     # Find the sort term: The last word/identifier before the cursor
     lines = content.splitlines()
@@ -831,7 +844,7 @@ def completions(
         items.sort(key=lambda x: x.label.lower())
 
     # Truncate if too many results
-    return items[:max_completions]
+    return _to_json_array(items[:max_completions])
 
 
 @mcp.tool(
@@ -891,8 +904,10 @@ def multi_attempt(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[List[str], Field(description="List of code snippets to try (3+ recommended)")],
-) -> List[AttemptResult]:
+) -> str:
     """Try multiple tactics at a line WITHOUT modifying the file.
+
+    Returns a JSON array of attempt results.
 
     BEST FOR: "Which tactic works here?" - test several approaches at once.
 
@@ -916,7 +931,7 @@ def multi_attempt(
     try:
         client.open_file(rel_path)
 
-        results = []
+        results: List[AttemptResult] = []
         # Avoid mutating caller-provided snippets; normalize locally per attempt
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
@@ -940,7 +955,7 @@ def multi_attempt(
                 diagnostics=_to_diagnostic_messages(filtered_diag),
             ))
 
-        return results
+        return _to_json_array(results)
     finally:
         try:
             client.close_files([rel_path])
@@ -1052,8 +1067,10 @@ def local_search(
     project_root: Annotated[
         Optional[str], Field(description="Lean project root. Inferred if not provided.")
     ] = None,
-) -> List[LocalSearchResult]:
+) -> str:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
+
+    Returns a JSON array of matching declarations.
 
     FASTEST search tool - use BEFORE trying a lemma name!
     Searches: theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs.
@@ -1090,10 +1107,11 @@ def local_search(
         raw_results = lean_local_search(
             query=query.strip(), limit=limit, project_root=resolved_root
         )
-        return [
+        results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
             for r in raw_results
         ]
+        return _to_json_array(results)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
 
@@ -1107,8 +1125,10 @@ def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term search query")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
-) -> List[LeanSearchResult]:
+) -> str:
     """Search Mathlib theorems using natural language via leansearch.net.
+
+    Returns a JSON array of search results.
 
     BEST FOR: "I need a lemma that says X" in plain English.
     Rate limited: 3 requests per 30 seconds.
@@ -1135,10 +1155,10 @@ def leansearch(
         results = orjson.loads(response.read())
 
     if not results or not results[0]:
-        return []
+        return "[]"
 
     raw_results = [r["result"] for r in results[0][:num_results]]
-    return [
+    items = [
         LeanSearchResult(
             name=".".join(r["name"]),
             module_name=".".join(r["module_name"]),
@@ -1147,6 +1167,7 @@ def leansearch(
         )
         for r in raw_results
     ]
+    return _to_json_array(items)
 
 
 @mcp.tool(
@@ -1157,8 +1178,10 @@ async def loogle(
     ctx: Context,
     query: Annotated[str, Field(description="Loogle query pattern (constant, name, type shape, etc.)")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 8,
-) -> List[LoogleResult]:
+) -> str:
     """Search Mathlib by TYPE SIGNATURE pattern via loogle.lean-lang.org.
+
+    Returns a JSON array of search results with type signatures.
 
     BEST FOR: "Find lemma with this type shape" or "uses this constant".
     Rate limited: 3 requests per 30 seconds.
@@ -1204,8 +1227,10 @@ def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept, proof state, or statement to search")],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
-) -> List[LeanFinderResult]:
+) -> str:
     """Semantic search of Mathlib by mathematical MEANING via Lean Finder.
+
+    Returns a JSON array of results with formal and informal statements.
 
     BEST FOR: When you know what you want mathematically but not the exact name.
     Rate limited: 10 requests per 30 seconds (highest limit).
@@ -1227,7 +1252,7 @@ def leanfinder(
         request_url, data=payload, headers=headers, method="POST"
     )
 
-    results = []
+    results: List[LeanFinderResult] = []
     with urllib.request.urlopen(req, timeout=30) as response:
         data = orjson.loads(response.read())
         for result in data["results"]:
@@ -1244,7 +1269,7 @@ def leanfinder(
                     informal_statement=result["informal_statement"],
                 ))
 
-    return results
+    return _to_json_array(results)
 
 
 @mcp.tool(
@@ -1258,8 +1283,10 @@ def state_search(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 5,
-) -> List[StateSearchResult]:
+) -> str:
     """Find lemmas that can close the CURRENT GOAL at a position.
+
+    Returns a JSON array of lemma names ranked by relevance score.
 
     BEST FOR: "What lemma finishes this proof state?"
     Rate limited: 3 requests per 30 seconds.
@@ -1295,10 +1322,11 @@ def state_search(
     with urllib.request.urlopen(req, timeout=20) as response:
         results = orjson.loads(response.read())
 
-    return [
+    items = [
         StateSearchResult(name=r["name"], score=r.get("score"))
         for r in results
     ]
+    return _to_json_array(items)
 
 
 @mcp.tool(
@@ -1312,8 +1340,10 @@ def hammer_premise(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results to return", ge=1)] = 32,
-) -> List[PremiseResult]:
+) -> str:
     """Get premises for automation tactics (simp, omega, aesop) at a position.
+
+    Returns a JSON array of premise names.
 
     BEST FOR: "What lemmas should I feed to simp/omega/decide?"
     Rate limited: 3 requests per 30 seconds.
@@ -1356,7 +1386,8 @@ def hammer_premise(
     with urllib.request.urlopen(req, timeout=20) as response:
         results = orjson.loads(response.read())
 
-    return [PremiseResult(name=r["name"]) for r in results]
+    items = [PremiseResult(name=r["name"]) for r in results]
+    return _to_json_array(items)
 
 
 if __name__ == "__main__":
