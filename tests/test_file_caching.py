@@ -33,9 +33,12 @@ async def test_file_caching(
 
     async with mcp_client_factory() as client:
         # Test 1: Multiple tools share file state correctly
-        await client.call_tool(
+        diagnostics_before = await client.call_tool(
             "lean_diagnostic_messages", {"file_path": str(cache_test_file)}
         )
+        diag_text_before = result_text(diagnostics_before).lower()
+        assert "sorry" not in diag_text_before
+
         await client.call_tool(
             "lean_goal", {"file_path": str(cache_test_file), "line": 5}
         )
@@ -72,3 +75,9 @@ theorem cachedTheorem : cachedValue = 42 := by sorry
         assert "cachedValue = 42" in result2, (
             f"Should show goal at sorry, got: {result2}"
         )
+
+        diagnostics_after = await client.call_tool(
+            "lean_diagnostic_messages", {"file_path": str(cache_test_file)}
+        )
+        diag_text_after = result_text(diagnostics_after).lower()
+        assert "sorry" in diag_text_after or "declaration uses 'sorry'" in diag_text_after
