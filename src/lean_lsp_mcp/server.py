@@ -322,6 +322,7 @@ def diagnostic_messages(
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
 
     # If declaration_name is provided, get its range and use that for filtering
     if declaration_name:
