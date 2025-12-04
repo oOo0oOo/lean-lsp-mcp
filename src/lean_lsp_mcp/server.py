@@ -188,7 +188,13 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
     return decorator
 
 
-@mcp.tool("lean_build", annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
+@mcp.tool("lean_build", annotations=ToolAnnotations(
+    title="Build Project",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 async def lsp_build(
     ctx: Context,
     lean_project_path: Annotated[Optional[str], Field(description="Path to Lean project")] = None,
@@ -288,7 +294,12 @@ async def lsp_build(
         )
 
 
-@mcp.tool("lean_file_contents", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_file_contents", annotations=ToolAnnotations(
+    title="File Contents (Deprecated)",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 @deprecated
 def file_contents(
     ctx: Context,
@@ -318,7 +329,12 @@ def file_contents(
         return data
 
 
-@mcp.tool("lean_file_outline", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_file_outline", annotations=ToolAnnotations(
+    title="File Outline",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def file_outline(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -350,7 +366,12 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
     return result
 
 
-@mcp.tool("lean_diagnostic_messages", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_diagnostic_messages", annotations=ToolAnnotations(
+    title="Diagnostics",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def diagnostic_messages(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -387,7 +408,12 @@ def diagnostic_messages(
     return _to_json_array(_to_diagnostic_messages(diagnostics))
 
 
-@mcp.tool("lean_goal", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_goal", annotations=ToolAnnotations(
+    title="Proof Goals",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def goal(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -437,7 +463,12 @@ def goal(
         )
 
 
-@mcp.tool("lean_term_goal", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_term_goal", annotations=ToolAnnotations(
+    title="Term Goal",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def term_goal(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -471,7 +502,12 @@ def term_goal(
     return TermGoalState(line_context=line_context, expected_type=expected_type)
 
 
-@mcp.tool("lean_hover_info", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_hover_info", annotations=ToolAnnotations(
+    title="Hover Info",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def hover(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -517,7 +553,12 @@ COMPLETION_KIND: Dict[int, str] = {
 }
 
 
-@mcp.tool("lean_completions", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_completions", annotations=ToolAnnotations(
+    title="Completions",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def completions(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -577,7 +618,12 @@ def completions(
     return _to_json_array(items[:max_completions])
 
 
-@mcp.tool("lean_declaration_file", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_declaration_file", annotations=ToolAnnotations(
+    title="Declaration Source",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def declaration_file(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -617,7 +663,12 @@ def declaration_file(
     return DeclarationInfo(symbol=symbol, file_path=str(abs_path), content=file_content)
 
 
-@mcp.tool("lean_multi_attempt", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_multi_attempt", annotations=ToolAnnotations(
+    title="Multi-Attempt",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def multi_attempt(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -669,7 +720,12 @@ def multi_attempt(
             )
 
 
-@mcp.tool("lean_run_code", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_run_code", annotations=ToolAnnotations(
+    title="Run Code",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def run_code(
     ctx: Context,
     code: Annotated[str, Field(description="Self-contained Lean code with imports")],
@@ -728,7 +784,12 @@ class LocalSearchError(Exception):
     pass
 
 
-@mcp.tool("lean_local_search", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+@mcp.tool("lean_local_search", annotations=ToolAnnotations(
+    title="Local Search",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+))
 def local_search(
     ctx: Context,
     query: Annotated[str, Field(description="Declaration name or prefix")],
@@ -769,7 +830,12 @@ def local_search(
         raise LocalSearchError(f"Search failed: {exc}")
 
 
-@mcp.tool("lean_leansearch", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+@mcp.tool("lean_leansearch", annotations=ToolAnnotations(
+    title="LeanSearch",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
 def leansearch(
     ctx: Context,
@@ -810,7 +876,12 @@ def leansearch(
     return _to_json_array(items)
 
 
-@mcp.tool("lean_loogle", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+@mcp.tool("lean_loogle", annotations=ToolAnnotations(
+    title="Loogle",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 async def loogle(
     ctx: Context,
     query: Annotated[str, Field(description="Type pattern, constant, or name substring")],
@@ -844,7 +915,12 @@ async def loogle(
     return loogle_remote(query, num_results)
 
 
-@mcp.tool("lean_leanfinder", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+@mcp.tool("lean_leanfinder", annotations=ToolAnnotations(
+    title="Lean Finder",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
 def leanfinder(
     ctx: Context,
@@ -885,7 +961,12 @@ def leanfinder(
     return _to_json_array(results)
 
 
-@mcp.tool("lean_state_search", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+@mcp.tool("lean_state_search", annotations=ToolAnnotations(
+    title="State Search",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 def state_search(
     ctx: Context,
@@ -925,7 +1006,12 @@ def state_search(
     return _to_json_array(items)
 
 
-@mcp.tool("lean_hammer_premise", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+@mcp.tool("lean_hammer_premise", annotations=ToolAnnotations(
+    title="Hammer Premises",
+    readOnlyHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+))
 @rate_limited("hammer_premise", max_requests=3, per_seconds=30)
 def hammer_premise(
     ctx: Context,
