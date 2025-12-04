@@ -145,7 +145,9 @@ def test_local_search_project_root_updates_context(
         "limit": 7,
         "root": project_dir.resolve(),
     }
-    assert ctx.request_context.lifespan_context.lean_project_path == project_dir.resolve()
+    assert (
+        ctx.request_context.lifespan_context.lean_project_path == project_dir.resolve()
+    )
 
 
 def test_local_search_requires_project_root_when_unset(
@@ -156,8 +158,6 @@ def test_local_search_requires_project_root_when_unset(
     ctx = _make_ctx()
     missing_path = tmp_path / "missing"
 
-    message = server.local_search(
-        ctx=ctx, query="foo", project_root=str(missing_path)
-    )
+    message = server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in message

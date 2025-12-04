@@ -2,13 +2,12 @@
 
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir, loogle_remote
+from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir
 
 
 class TestGetCacheDir:
@@ -42,9 +41,13 @@ class TestLoogleManager:
         mgr.binary_path.touch()
         assert mgr.is_installed
 
-    @pytest.mark.parametrize("missing,expected_msg", [("git", "git not found"), ("lake", "lake not found")])
+    @pytest.mark.parametrize(
+        "missing,expected_msg", [("git", "git not found"), ("lake", "lake not found")]
+    )
     def test_prerequisites_missing(self, mgr, monkeypatch, missing, expected_msg):
-        monkeypatch.setattr("shutil.which", lambda c: None if c == missing else f"/bin/{c}")
+        monkeypatch.setattr(
+            "shutil.which", lambda c: None if c == missing else f"/bin/{c}"
+        )
         ok, msg = mgr._check_prerequisites()
         assert not ok and expected_msg in msg
 
@@ -69,7 +72,9 @@ class TestLoogleManager:
             assert mgr._clone_repo()
 
     def test_clone_repo_fail(self, mgr):
-        with patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="err")):
+        with patch(
+            "subprocess.run", return_value=MagicMock(returncode=1, stderr="err")
+        ):
             assert not mgr._clone_repo()
 
     def test_mathlib_version(self, mgr):
@@ -94,12 +99,25 @@ class TestLoogleManager:
         proc.returncode = None
         proc.stdin.write = MagicMock()
         proc.stdin.drain = AsyncMock()
-        proc.stdout.readline = AsyncMock(return_value=json.dumps(
-            {"hits": [{"name": "Nat.add", "type": "Nat → Nat", "module": "Init", "doc": "doc"}]}
-        ).encode())
+        proc.stdout.readline = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "hits": [
+                        {
+                            "name": "Nat.add",
+                            "type": "Nat → Nat",
+                            "module": "Init",
+                            "doc": "doc",
+                        }
+                    ]
+                }
+            ).encode()
+        )
         mgr.process = proc
         r = await mgr.query("Nat", 2)
-        assert r == [{"name": "Nat.add", "type": "Nat → Nat", "module": "Init", "doc": "doc"}]
+        assert r == [
+            {"name": "Nat.add", "type": "Nat → Nat", "module": "Init", "doc": "doc"}
+        ]
 
     @pytest.mark.asyncio
     async def test_query_error(self, mgr):
@@ -108,7 +126,9 @@ class TestLoogleManager:
         proc.returncode = None
         proc.stdin.write = MagicMock()
         proc.stdin.drain = AsyncMock()
-        proc.stdout.readline = AsyncMock(return_value=json.dumps({"error": "parse error"}).encode())
+        proc.stdout.readline = AsyncMock(
+            return_value=json.dumps({"error": "parse error"}).encode()
+        )
         mgr.process = proc
         assert await mgr.query("bad") == []
 
@@ -186,6 +206,7 @@ class TestLoogleIntegration:
     async def test_local_loogle_full_workflow(self, tmp_path):
         """Test the complete workflow: install, start, query, stop."""
         import shutil
+
         if not shutil.which("git") or not shutil.which("lake"):
             pytest.skip("git and lake required for integration test")
 

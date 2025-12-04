@@ -68,19 +68,33 @@ class LoogleManager:
 
     @property
     def is_running(self) -> bool:
-        return self._ready and self.process is not None and self.process.returncode is None
+        return (
+            self._ready and self.process is not None and self.process.returncode is None
+        )
 
     def _check_prerequisites(self) -> tuple[bool, str]:
         if not shutil.which("git"):
             return False, "git not found in PATH"
         if not shutil.which("lake"):
-            return False, "lake not found (install elan: https://github.com/leanprover/elan)"
+            return (
+                False,
+                "lake not found (install elan: https://github.com/leanprover/elan)",
+            )
         return True, ""
 
-    def _run(self, cmd: list[str], timeout: int = 300, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    def _run(
+        self, cmd: list[str], timeout: int = 300, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env["LAKE_ARTIFACT_CACHE"] = "false"
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd or self.repo_dir, env=env)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd or self.repo_dir,
+            env=env,
+        )
 
     def _clone_repo(self) -> bool:
         if self.repo_dir.exists():
@@ -88,7 +102,10 @@ class LoogleManager:
         logger.info(f"Cloning loogle to {self.repo_dir}...")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
-            r = self._run(["git", "clone", "--depth", "1", self.REPO_URL, str(self.repo_dir)], cwd=self.cache_dir)
+            r = self._run(
+                ["git", "clone", "--depth", "1", self.REPO_URL, str(self.repo_dir)],
+                cwd=self.cache_dir,
+            )
             if r.returncode != 0:
                 logger.error(f"Clone failed: {r.stderr}")
                 return False
@@ -150,7 +167,10 @@ class LoogleManager:
         self._cleanup_old_indices()
         logger.info("Building search index...")
         try:
-            self._run([str(self.binary_path), "--write-index", str(index_path), "--json", ""], timeout=600)
+            self._run(
+                [str(self.binary_path), "--write-index", str(index_path), "--json", ""],
+                timeout=600,
+            )
             return index_path if index_path.exists() else None
         except Exception as e:
             logger.error(f"Index build error: {e}")
@@ -178,8 +198,11 @@ class LoogleManager:
         logger.info("Starting loogle subprocess...")
         try:
             self.process = await asyncio.create_subprocess_exec(
-                *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL, cwd=self.repo_dir
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                cwd=self.repo_dir,
             )
             line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
             if self.READY_SIGNAL in line.decode():
@@ -198,7 +221,11 @@ class LoogleManager:
         async with self._lock:
             # Try up to 2 attempts (initial + one restart)
             for attempt in range(2):
-                if not self._ready or self.process is None or self.process.returncode is not None:
+                if (
+                    not self._ready
+                    or self.process is None
+                    or self.process.returncode is not None
+                ):
                     if attempt > 0:
                         raise RuntimeError("Loogle subprocess not ready")
                     self._ready = False
@@ -209,13 +236,22 @@ class LoogleManager:
                 try:
                     self.process.stdin.write(f"{q}\n".encode())
                     await self.process.stdin.drain()
-                    line = await asyncio.wait_for(self.process.stdout.readline(), timeout=30)
+                    line = await asyncio.wait_for(
+                        self.process.stdout.readline(), timeout=30
+                    )
                     response = json.loads(line.decode())
                     if err := response.get("error"):
                         logger.warning(f"Query error: {err}")
                         return []
-                    return [{"name": h.get("name", ""), "type": h.get("type", ""), "module": h.get("module", ""),
-                             "doc": h.get("doc")} for h in response.get("hits", [])[:num_results]]
+                    return [
+                        {
+                            "name": h.get("name", ""),
+                            "type": h.get("type", ""),
+                            "module": h.get("module", ""),
+                            "doc": h.get("doc"),
+                        }
+                        for h in response.get("hits", [])[:num_results]
+                    ]
                 except asyncio.TimeoutError:
                     raise RuntimeError("Query timeout") from None
                 except json.JSONDecodeError as e:

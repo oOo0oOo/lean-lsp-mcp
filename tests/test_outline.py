@@ -28,12 +28,14 @@ async def test_outline_simple_files(
         test_project_path / "StructTest.lean",
         test_project_path / "TheoremTest.lean",
     ]
-    
+
     async with mcp_client_factory() as client:
         for test_file in test_files:
-            result = await client.call_tool("lean_file_outline", {"file_path": str(test_file)})
+            result = await client.call_tool(
+                "lean_file_outline", {"file_path": str(test_file)}
+            )
             outline = result_text(result)
-            
+
             # Basic structure checks
             assert "## Imports" in outline or "## Declarations" in outline
             assert len(outline) > 0
@@ -46,19 +48,21 @@ async def test_mathlib_outline_structure(
 ) -> None:
     """Test outline generation with a real Mathlib file."""
     async with mcp_client_factory() as client:
-        result = await client.call_tool("lean_file_outline", {"file_path": str(mathlib_nat_basic)})
+        result = await client.call_tool(
+            "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
+        )
         outline = result_text(result)
-        
+
         # Basic structure checks (no filename header now)
         assert "## Imports" in outline
         assert "## Declarations" in outline
-        
+
         # Should have imports from Mathlib
         assert "Mathlib.Data.Nat.Init" in outline
-        
+
         # Should have namespace (new format)
         assert "[Ns:" in outline and "Nat" in outline
-        
+
         # Should have instance declarations
         assert "instLinearOrder" in outline or "LinearOrder" in outline
 
@@ -70,13 +74,15 @@ async def test_mathlib_outline_has_line_numbers(
 ) -> None:
     """Verify line numbers are present in outline."""
     async with mcp_client_factory() as client:
-        result = await client.call_tool("lean_file_outline", {"file_path": str(mathlib_nat_basic)})
+        result = await client.call_tool(
+            "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
+        )
         outline = result_text(result)
-        
+
         # Should have line numbers in format "[Tag: L27-135]" or "[Tag: L31]"
-        line_pattern = r'L(\d+)(?:-(\d+))?'
+        line_pattern = r"L(\d+)(?:-(\d+))?"
         matches = re.findall(line_pattern, outline)
-        
+
         assert len(matches) > 0, "Should have line number annotations"
 
 
@@ -87,7 +93,9 @@ async def test_mathlib_outline_has_types(
 ) -> None:
     """Verify type signatures are included."""
     async with mcp_client_factory() as client:
-        result = await client.call_tool("lean_file_outline", {"file_path": str(mathlib_nat_basic)})
+        result = await client.call_tool(
+            "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
+        )
         outline = result_text(result)
 
         # Should have type annotations with ":"
@@ -105,13 +113,19 @@ async def test_mathlib_outline_file_cleanup(
         original_content = mathlib_nat_basic.read_text()
 
         # Generate outline (which inserts and removes #info_trees lines)
-        await client.call_tool("lean_file_outline", {"file_path": str(mathlib_nat_basic)})
+        await client.call_tool(
+            "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
+        )
 
         # Read file content again
         final_content = mathlib_nat_basic.read_text()
 
         # File should be unchanged
-        assert final_content == original_content, "File should be restored to original state after outline generation"
+        assert final_content == original_content, (
+            "File should be restored to original state after outline generation"
+        )
 
         # Specifically check that no #info_trees lines remain
-        assert "#info_trees" not in final_content, "No #info_trees directives should remain in file"
+        assert "#info_trees" not in final_content, (
+            "No #info_trees directives should remain in file"
+        )
