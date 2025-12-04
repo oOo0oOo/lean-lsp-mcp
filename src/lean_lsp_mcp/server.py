@@ -30,6 +30,25 @@ from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.models import (
+    LocalSearchResult,
+    LeanSearchResult,
+    LoogleResult,
+    LeanFinderResult,
+    StateSearchResult,
+    PremiseResult,
+    DiagnosticMessage,
+    GoalState,
+    CompletionItem,
+    HoverInfo,
+    TermGoalState,
+    OutlineEntry,
+    FileOutline,
+    AttemptResult,
+    BuildResult,
+    RunResult,
+    DeclarationInfo,
+)
 from lean_lsp_mcp.utils import (
     OutputCapture,
     deprecated,
@@ -41,112 +60,8 @@ from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
 )
 
-
-# LSP SymbolKind enum: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
-SYMBOL_KIND: Dict[int, str] = {
-    1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class",
-    6: "method", 7: "property", 8: "field", 9: "constructor", 10: "enum",
-    11: "interface", 12: "function", 13: "variable", 14: "constant", 15: "string",
-    16: "number", 17: "boolean", 18: "array", 19: "object", 20: "key",
-    21: "null", 22: "enum_member", 23: "struct", 24: "event", 25: "operator",
-    26: "type_parameter",
-}
-
-
-def symbol_kind_name(kind: int | str) -> str:
-    return kind if isinstance(kind, str) else SYMBOL_KIND.get(kind, f"unknown({kind})")
-
-
-# Structured output models for MCP tools
-class LocalSearchResult(BaseModel):
-    name: str = Field(description="Declaration name")
-    kind: str = Field(description="Declaration kind (theorem, def, class, etc.)")
-    file: str = Field(description="Relative file path")
-
-class LeanSearchResult(BaseModel):
-    name: str = Field(description="Full qualified name")
-    module_name: str = Field(description="Module where declared")
-    kind: Optional[str] = Field(None, description="Declaration kind")
-    type: Optional[str] = Field(None, description="Type signature")
-
-class LoogleResult(BaseModel):
-    name: str = Field(description="Declaration name")
-    type: str = Field(description="Type signature")
-    module: str = Field(description="Module where declared")
-
-class LeanFinderResult(BaseModel):
-    full_name: str = Field(description="Full qualified name")
-    formal_statement: str = Field(description="Lean type signature")
-    informal_statement: str = Field(description="Natural language description")
-
-class StateSearchResult(BaseModel):
-    name: str = Field(description="Theorem/lemma name")
-    score: Optional[float] = Field(None, description="Relevance score")
-
-class PremiseResult(BaseModel):
-    name: str = Field(description="Premise name for simp/omega/aesop")
-
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-
-class DiagnosticMessage(BaseModel):
-    severity: str = Field(description="error, warning, info, or hint")
-    message: str = Field(description="Diagnostic message text")
-    start_line: int = Field(description="Start line (1-indexed)")
-    start_column: int = Field(description="Start column (1-indexed)")
-    end_line: int = Field(description="End line (1-indexed)")
-    end_column: int = Field(description="End column (1-indexed)")
-
-class GoalState(BaseModel):
-    line_context: str = Field(description="Source line where goals were queried")
-    goals_before: Optional[str] = Field(None, description="Goal state at line start (before tactics)")
-    goals_after: Optional[str] = Field(None, description="Goal state at line end (after tactics)")
-    goals: Optional[str] = Field(None, description="Goal state at specific column")
-
-class CompletionItem(BaseModel):
-    label: str = Field(description="Completion text to insert")
-    kind: Optional[str] = Field(None, description="Completion kind (function, variable, etc.)")
-    detail: Optional[str] = Field(None, description="Additional detail")
-
-class HoverInfo(BaseModel):
-    symbol: str = Field(description="The symbol being hovered")
-    info: str = Field(description="Type signature and documentation")
-    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Diagnostics at this position")
-
-class TermGoalState(BaseModel):
-    line_context: str = Field(description="Source line where term goal was queried")
-    expected_type: Optional[str] = Field(None, description="Expected type at this position")
-
-class OutlineEntry(BaseModel):
-    name: str = Field(description="Declaration name")
-    kind: str = Field(description="Declaration kind (Thm, Def, Class, Struct, Ns, Ex)")
-    start_line: int = Field(description="Start line (1-indexed)")
-    end_line: int = Field(description="End line (1-indexed)")
-    type_signature: Optional[str] = Field(None, description="Type signature if available")
-    children: List["OutlineEntry"] = Field(default_factory=list, description="Nested declarations")
-
-class FileOutline(BaseModel):
-    imports: List[str] = Field(default_factory=list, description="Import statements")
-    declarations: List[OutlineEntry] = Field(default_factory=list, description="Top-level declarations")
-
-class AttemptResult(BaseModel):
-    snippet: str = Field(description="Code snippet that was tried")
-    goal_state: Optional[str] = Field(None, description="Goal state after applying snippet")
-    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Diagnostics for this attempt")
-
-class BuildResult(BaseModel):
-    success: bool = Field(description="Whether build succeeded")
-    output: str = Field(description="Build output")
-    errors: List[str] = Field(default_factory=list, description="Build errors if any")
-
-class RunResult(BaseModel):
-    success: bool = Field(description="Whether code compiled successfully")
-    diagnostics: List[DiagnosticMessage] = Field(default_factory=list, description="Compiler diagnostics")
-
-class DeclarationInfo(BaseModel):
-    symbol: str = Field(description="Symbol that was looked up")
-    file_path: str = Field(description="Path to declaration file")
-    content: str = Field(description="File content")
 
 
 class LeanToolError(Exception):
@@ -496,7 +411,11 @@ def goal(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[Optional[int], Field(description="Column (1-indexed). Omit for before/after", ge=1)] = None,
 ) -> GoalState:
-    """Get proof goals at a position. MOST IMPORTANT for proof development - use often!"""
+    """Get proof goals at a position. MOST IMPORTANT tool - use often!
+
+    Omit column to see goals_before (line start) and goals_after (line end),
+    showing how the tactic transforms the state. "no goals" = proof complete.
+    """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
@@ -826,29 +745,6 @@ class LocalSearchError(Exception):
     pass
 
 
-def _build_declaration_index(project_root: Path, limit: int = 5000) -> List[LocalSearchResult]:
-    if not _RG_AVAILABLE:
-        return []
-
-    all_results: Dict[str, LocalSearchResult] = {}
-
-    # Search with empty prefix to get all declarations (ripgrep pattern matches any declaration)
-    try:
-        raw_results = lean_local_search(query="", limit=limit, project_root=project_root)
-        for r in raw_results:
-            key = f"{r['name']}:{r['file']}"
-            if key not in all_results:
-                all_results[key] = LocalSearchResult(
-                    name=r["name"],
-                    kind=r["kind"],
-                    file=r["file"]
-                )
-    except RuntimeError:
-        pass
-
-    return list(all_results.values())
-
-
 @mcp.tool("lean_local_search", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
 def local_search(
     ctx: Context,
@@ -897,7 +793,11 @@ def leansearch(
     query: Annotated[str, Field(description="Natural language or Lean term query")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> str:
-    """Search Mathlib via leansearch.net. Best for natural language queries."""
+    """Search Mathlib via leansearch.net using natural language.
+
+    Examples: "sum of two even numbers is even", "Cauchy-Schwarz inequality",
+    "{f : A → B} (hf : Injective f) : ∃ g, LeftInverse g f"
+    """
     headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
     payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
 
@@ -933,7 +833,11 @@ async def loogle(
     query: Annotated[str, Field(description="Type pattern, constant, or name substring")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 8,
 ) -> str:
-    """Search Mathlib by type signature via loogle.lean-lang.org."""
+    """Search Mathlib by type signature via loogle.lean-lang.org.
+
+    Examples: `Real.sin`, `"comm"`, `(?a → ?b) → List ?a → List ?b`,
+    `_ * (_ ^ _)`, `|- _ < _ → _ + 1 < _ + 1`
+    """
     app_ctx: AppContext = ctx.request_context.lifespan_context
 
     # Try local loogle first if available (no rate limiting)
@@ -964,7 +868,11 @@ def leanfinder(
     query: Annotated[str, Field(description="Mathematical concept or proof state")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> str:
-    """Semantic search by mathematical meaning. Best when you know the concept but not the name."""
+    """Semantic search by mathematical meaning via Lean Finder.
+
+    Examples: "commutativity of addition on natural numbers",
+    "I have h : n < m and need n + 1 < m + 1", proof state text.
+    """
     headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
     request_url = (
         "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
@@ -1043,7 +951,10 @@ def hammer_premise(
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 32,
 ) -> str:
-    """Get premises for simp/omega/aesop at a position."""
+    """Get premise suggestions for automation tactics at a goal position.
+
+    Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
+    """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
