@@ -42,7 +42,6 @@ from lean_lsp_mcp.models import (
     CompletionItem,
     HoverInfo,
     TermGoalState,
-    OutlineEntry,
     FileOutline,
     AttemptResult,
     BuildResult,
@@ -330,23 +329,7 @@ def file_outline(
         raise LeanToolError("Invalid Lean file path: Unable to start LSP server or load file")
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    data = generate_outline_data(client, rel_path)
-
-    # Convert nested dicts to OutlineEntry models
-    def to_outline_entry(d: dict) -> OutlineEntry:
-        return OutlineEntry(
-            name=d['name'],
-            kind=d['kind'],
-            start_line=d['start_line'],
-            end_line=d['end_line'],
-            type_signature=d.get('type_signature'),
-            children=[to_outline_entry(c) for c in d.get('children', [])],
-        )
-
-    return FileOutline(
-        imports=data.get('imports', []),
-        declarations=[to_outline_entry(d) for d in data.get('declarations', [])],
-    )
+    return generate_outline_data(client, rel_path)
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:

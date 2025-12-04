@@ -3,6 +3,8 @@ from typing import Dict, List, Optional, Tuple
 from leanclient import LeanLSPClient
 from leanclient.utils import DocumentContentChange
 
+from lean_lsp_mcp.models import FileOutline, OutlineEntry
+
 
 METHOD_KIND = {6, "method"}
 KIND_TAGS = {"namespace": "Ns"}
@@ -183,7 +185,7 @@ def _format_symbol(sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int) ->
 
 def _build_outline_entry(
     sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int
-) -> Optional[Dict]:
+) -> Optional[OutlineEntry]:
     """Build a structured outline entry for a symbol."""
     name = sym['name']
     type_sig = sym.get('_type') or type_sigs.get(name, "")
@@ -193,35 +195,31 @@ def _build_outline_entry(
     start = sym['range']['start']['line'] + 1
     end = sym['range']['end']['line'] + 1
 
-    entry = {
-        'name': name,
-        'kind': tag,
-        'start_line': start,
-        'end_line': end,
-        'type_signature': type_sig if type_sig else None,
-        'children': [],
-    }
-
     # Add fields as children for structs/classes
-    for fname, ftype in fields:
-        entry['children'].append({
-            'name': fname,
-            'kind': 'field',
-            'start_line': start,
-            'end_line': start,
-            'type_signature': ftype,
-            'children': [],
-        })
+    children = [
+        OutlineEntry(
+            name=fname,
+            kind='field',
+            start_line=start,
+            end_line=start,
+            type_signature=ftype,
+            children=[],
+        )
+        for fname, ftype in fields
+    ]
 
-    return entry
+    return OutlineEntry(
+        name=name,
+        kind=tag,
+        start_line=start,
+        end_line=end,
+        type_signature=type_sig if type_sig else None,
+        children=children,
+    )
 
 
-def generate_outline_data(client: LeanLSPClient, path: str) -> Dict:
-    """Generate structured outline data for a Lean file.
-
-    Returns:
-        Dict with 'imports' (List[str]) and 'declarations' (List[Dict]) keys.
-    """
+def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
+    """Generate structured outline data for a Lean file."""
     client.open_file(path)
     content = client.get_file_content(path)
 
@@ -231,7 +229,7 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> Dict:
 
     symbols = client.get_document_symbols(path)
     if not symbols and not imports:
-        return {'imports': [], 'declarations': []}
+        return FileOutline(imports=[], declarations=[])
 
     # Flatten symbol tree and extract namespace declarations
     all_symbols = _flatten_symbols(symbols, content=content)
@@ -246,7 +244,7 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> Dict:
     fields_map = {name: fields for name, info in info_trees.items()
                   if (fields := _extract_fields(info, name))}
 
-    # Build declarations list (flat for now - could be hierarchical)
+    # Build declarations list
     declarations = []
     for sym, indent in all_symbols:
         if sym.get('kind') in METHOD_KIND or sym.get('_keyword') or sym.get('kind') == 'namespace':
@@ -254,7 +252,7 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> Dict:
             if entry:
                 declarations.append(entry)
 
-    return {'imports': imports, 'declarations': declarations}
+    return FileOutline(imports=imports, declarations=declarations)
 
 
 def generate_outline(client: LeanLSPClient, path: str) -> str:
