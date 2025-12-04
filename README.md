@@ -514,6 +514,8 @@ export LEAN_LOOGLE_LOCAL=true
 
 **Requirements:** `git`, `lake` ([elan](https://github.com/leanprover/elan)), ~2GB disk space.
 
+**Note:** Local loogle is currently only supported on Unix systems (Linux/macOS). Windows users should use WSL or the remote API.
+
 Falls back to remote API if local loogle fails.
 
 ## Notes on MCP Security

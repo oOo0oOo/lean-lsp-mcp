@@ -129,7 +129,9 @@ class TestLoogleManager:
 
     @pytest.mark.asyncio
     async def test_stop(self, mgr):
-        proc = AsyncMock()
+        proc = MagicMock()
+        proc.returncode = None
+        proc.terminate = MagicMock()
         proc.wait = AsyncMock()
         mgr.process, mgr._ready = proc, True
         await mgr.stop()
@@ -138,7 +140,10 @@ class TestLoogleManager:
 
     @pytest.mark.asyncio
     async def test_stop_force_kill(self, mgr):
-        proc = AsyncMock()
+        proc = MagicMock()
+        proc.returncode = None
+        proc.terminate = MagicMock()
+        proc.kill = MagicMock()
         proc.wait = AsyncMock(side_effect=asyncio.TimeoutError())
         mgr.process = proc
         await mgr.stop()
@@ -152,3 +157,42 @@ class TestLoogleManager:
     @pytest.mark.asyncio
     async def test_start_not_installed(self, tmp_path):
         assert not await LoogleManager(cache_dir=tmp_path).start()
+
+
+@pytest.mark.slow
+class TestLoogleIntegration:
+    """Integration tests that actually download and run loogle.
+
+    Run with: pytest -m slow tests/unit/test_loogle.py
+    These tests require git, lake, and ~2GB disk space.
+    Skipped by default in CI.
+    """
+
+    @pytest.mark.asyncio
+    async def test_local_loogle_full_workflow(self, tmp_path):
+        """Test the complete workflow: install, start, query, stop."""
+        import shutil
+        if not shutil.which("git") or not shutil.which("lake"):
+            pytest.skip("git and lake required for integration test")
+
+        mgr = LoogleManager(cache_dir=tmp_path / "loogle")
+
+        try:
+            # Install (this takes several minutes on first run)
+            assert mgr.ensure_installed(), "Failed to install loogle"
+            assert mgr.is_installed
+
+            # Start subprocess
+            started = await mgr.start()
+            assert started, "Failed to start loogle"
+            assert mgr.is_running
+
+            # Query
+            results = await mgr.query("Nat.add", num_results=3)
+            assert isinstance(results, list)
+            assert len(results) > 0
+            assert any("add" in r.get("name", "").lower() for r in results)
+
+        finally:
+            await mgr.stop()
+            assert not mgr.is_running
