@@ -83,14 +83,13 @@ class TestLoogleManager:
 
     @pytest.mark.asyncio
     async def test_query_not_ready(self, mgr):
-        mgr._restart_count = 1
-        with pytest.raises(RuntimeError, match="not ready"):
+        # Without binary installed, start() fails, so query should fail after retry
+        with pytest.raises(RuntimeError, match="Failed to start"):
             await mgr.query("test")
 
     @pytest.mark.asyncio
     async def test_query_success(self, mgr):
         mgr._ready = True
-        mgr._restart_count = 1
         proc = AsyncMock()
         proc.returncode = None
         proc.stdin.write = MagicMock()
@@ -101,7 +100,6 @@ class TestLoogleManager:
         mgr.process = proc
         r = await mgr.query("Nat", 2)
         assert r == [{"name": "Nat.add", "type": "Nat → Nat", "module": "Init", "doc": "doc"}]
-        assert mgr._restart_count == 0
 
     @pytest.mark.asyncio
     async def test_query_error(self, mgr):
@@ -117,7 +115,6 @@ class TestLoogleManager:
     @pytest.mark.asyncio
     async def test_query_timeout(self, mgr):
         mgr._ready = True
-        mgr._restart_count = 1
         proc = AsyncMock()
         proc.returncode = None
         proc.stdin.write = MagicMock()
@@ -144,10 +141,12 @@ class TestLoogleManager:
         proc.returncode = None
         proc.terminate = MagicMock()
         proc.kill = MagicMock()
-        proc.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+        # First wait (after terminate) times out, second wait (after kill) succeeds
+        proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError(), None])
         mgr.process = proc
         await mgr.stop()
         proc.kill.assert_called_once()
+        assert proc.wait.await_count == 2
 
     def test_ensure_installed_no_prereqs(self, tmp_path, monkeypatch):
         mgr = LoogleManager(cache_dir=tmp_path)
@@ -157,6 +156,21 @@ class TestLoogleManager:
     @pytest.mark.asyncio
     async def test_start_not_installed(self, tmp_path):
         assert not await LoogleManager(cache_dir=tmp_path).start()
+
+    def test_cleanup_old_indices(self, mgr):
+        mgr.index_dir.mkdir(parents=True)
+        # Create some old index files
+        (mgr.index_dir / "mathlib-old1.idx").touch()
+        (mgr.index_dir / "mathlib-old2.idx").touch()
+        current = mgr._get_index_path()
+        current.touch()
+
+        mgr._cleanup_old_indices()
+
+        # Only current should remain
+        remaining = list(mgr.index_dir.glob("*.idx"))
+        assert len(remaining) == 1
+        assert remaining[0] == current
 
 
 @pytest.mark.slow

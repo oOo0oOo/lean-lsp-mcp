@@ -56,7 +56,7 @@ class LoogleManager:
         self.index_dir = self.cache_dir / "index"
         self.process: asyncio.subprocess.Process | None = None
         self._ready = False
-        self._restart_count = 0
+        self._lock = asyncio.Lock()
 
     @property
     def binary_path(self) -> Path:
@@ -89,7 +89,10 @@ class LoogleManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
             r = self._run(["git", "clone", "--depth", "1", self.REPO_URL, str(self.repo_dir)], cwd=self.cache_dir)
-            return r.returncode == 0 or logger.error(f"Clone failed: {r.stderr}") or False
+            if r.returncode != 0:
+                logger.error(f"Clone failed: {r.stderr}")
+                return False
+            return True
         except Exception as e:
             logger.error(f"Clone error: {e}")
             return False
@@ -122,8 +125,20 @@ class LoogleManager:
         return "unknown"
 
     def _get_index_path(self) -> Path:
-        self.index_dir.mkdir(parents=True, exist_ok=True)
         return self.index_dir / f"mathlib-{self._get_mathlib_version()}.idx"
+
+    def _cleanup_old_indices(self) -> None:
+        """Remove old index files from previous mathlib versions."""
+        if not self.index_dir.exists():
+            return
+        current = self._get_index_path()
+        for idx in self.index_dir.glob("*.idx"):
+            if idx != current:
+                try:
+                    idx.unlink()
+                    logger.info(f"Removed old index: {idx.name}")
+                except Exception:
+                    pass
 
     def _build_index(self) -> Path | None:
         index_path = self._get_index_path()
@@ -131,10 +146,11 @@ class LoogleManager:
             return index_path
         if not self.is_installed:
             return None
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_old_indices()
         logger.info("Building search index...")
         try:
-            subprocess.run([str(self.binary_path), "--write-index", str(index_path), "--json", ""],
-                          cwd=self.repo_dir, capture_output=True, timeout=600)
+            self._run([str(self.binary_path), "--write-index", str(index_path), "--json", ""], timeout=600)
             return index_path if index_path.exists() else None
         except Exception as e:
             logger.error(f"Index build error: {e}")
@@ -163,7 +179,7 @@ class LoogleManager:
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE, cwd=self.repo_dir
+                stderr=asyncio.subprocess.DEVNULL, cwd=self.repo_dir
             )
             line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
             if self.READY_SIGNAL in line.decode():
@@ -179,28 +195,33 @@ class LoogleManager:
             return False
 
     async def query(self, q: str, num_results: int = 8) -> list[dict[str, Any]]:
-        if not self._ready or self.process is None or self.process.returncode is not None:
-            if self._restart_count < 1:
-                self._restart_count += 1
-                self._ready = False
-                if await self.start():
-                    return await self.query(q, num_results)
+        async with self._lock:
+            # Try up to 2 attempts (initial + one restart)
+            for attempt in range(2):
+                if not self._ready or self.process is None or self.process.returncode is not None:
+                    if attempt > 0:
+                        raise RuntimeError("Loogle subprocess not ready")
+                    self._ready = False
+                    if not await self.start():
+                        raise RuntimeError("Failed to start loogle")
+                    continue
+
+                try:
+                    self.process.stdin.write(f"{q}\n".encode())
+                    await self.process.stdin.drain()
+                    line = await asyncio.wait_for(self.process.stdout.readline(), timeout=30)
+                    response = json.loads(line.decode())
+                    if err := response.get("error"):
+                        logger.warning(f"Query error: {err}")
+                        return []
+                    return [{"name": h.get("name", ""), "type": h.get("type", ""), "module": h.get("module", ""),
+                             "doc": h.get("doc")} for h in response.get("hits", [])[:num_results]]
+                except asyncio.TimeoutError:
+                    raise RuntimeError("Query timeout") from None
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(f"Invalid response: {e}") from e
+
             raise RuntimeError("Loogle subprocess not ready")
-        try:
-            self.process.stdin.write(f"{q}\n".encode())
-            await self.process.stdin.drain()
-            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=30)
-            response = json.loads(line.decode())
-            if err := response.get("error"):
-                logger.warning(f"Query error: {err}")
-                return []
-            self._restart_count = 0
-            return [{"name": h.get("name", ""), "type": h.get("type", ""), "module": h.get("module", ""),
-                     "doc": h.get("doc")} for h in response.get("hits", [])[:num_results]]
-        except asyncio.TimeoutError:
-            raise RuntimeError("Query timeout")
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Invalid response: {e}") from e
 
     async def stop(self) -> None:
         if self.process:
@@ -209,8 +230,11 @@ class LoogleManager:
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except asyncio.TimeoutError:
                 self.process.kill()
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    pass
             except Exception:
                 pass
             self.process = None
             self._ready = False
-            self._restart_count = 0
