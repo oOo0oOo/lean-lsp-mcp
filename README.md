@@ -326,6 +326,7 @@ Search for Lean definitions and theorems using [loogle.lean-lang.org](https://lo
 
 - Supports queries by constant, lemma name, subexpression, type, or conclusion.
 - Example: `Real.sin`, `"differ"`, `_ * (_ ^ _)`, `(?a -> ?b) -> List ?a -> List ?b`, `|- tsum _ = _ * tsum _`
+- **Local mode available**: Use `--loogle-local` to run loogle locally (avoids rate limits, see [Local Loogle](#local-loogle) section)
 
 <details>
 <summary>Example output (`Real.sin`)</summary>
@@ -442,6 +443,8 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
+- `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
+- `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
@@ -496,6 +499,24 @@ uvx lean-lsp-mcp --transport streamable-http
 ```
 
 Clients should then include the token in the `Authorization` header.
+
+### Local Loogle
+
+Run loogle locally to avoid the remote API's rate limit (3 req/30s). First run takes ~5-10 minutes to build; subsequent runs start in seconds.
+
+```bash
+# Enable via CLI
+uvx lean-lsp-mcp --loogle-local
+
+# Or via environment variable
+export LEAN_LOOGLE_LOCAL=true
+```
+
+**Requirements:** `git`, `lake` ([elan](https://github.com/leanprover/elan)), ~2GB disk space.
+
+**Note:** Local loogle is currently only supported on Unix systems (Linux/macOS). Windows users should use WSL or the remote API.
+
+Falls back to remote API if local loogle fails.
 
 ## Notes on MCP Security
 
