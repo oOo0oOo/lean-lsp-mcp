@@ -141,6 +141,39 @@ class LoogleManager:
             pass
         return "unknown"
 
+    def _get_toolchain_version(self) -> str | None:
+        """Get the Lean toolchain version from lean-toolchain file."""
+        try:
+            return (self.repo_dir / "lean-toolchain").read_text().strip()
+        except Exception:
+            return None
+
+    def _check_toolchain_installed(self) -> tuple[bool, str]:
+        """Check if the required Lean toolchain is installed."""
+        tc = self._get_toolchain_version()
+        if not tc:
+            return True, ""  # Can't check without lean-toolchain file
+        # Convert lean-toolchain format to elan directory name
+        # e.g., "leanprover/lean4:v4.25.0-rc1" -> "leanprover--lean4---v4.25.0-rc1"
+        tc_dir_name = tc.replace("/", "--").replace(":", "---")
+        elan_home = Path(os.environ.get("ELAN_HOME", Path.home() / ".elan"))
+        tc_path = elan_home / "toolchains" / tc_dir_name
+        if not tc_path.exists():
+            return False, (
+                f"Toolchain '{tc}' not installed. "
+                f"Run: cd {self.repo_dir} && lake update"
+            )
+        return True, ""
+
+    def check_environment(self) -> tuple[bool, str]:
+        """Check if the loogle environment is valid. Returns (ok, error_msg)."""
+        if not self.is_installed:
+            return False, "Loogle binary not found"
+        ok, err = self._check_toolchain_installed()
+        if not ok:
+            return False, err
+        return True, ""
+
     def _get_index_path(self) -> Path:
         return self.index_dir / f"mathlib-{self._get_mathlib_version()}.idx"
 
@@ -190,7 +223,9 @@ class LoogleManager:
     async def start(self) -> bool:
         if self.process is not None and self.process.returncode is None:
             return self._ready
-        if not self.is_installed:
+        ok, err = self.check_environment()
+        if not ok:
+            logger.error(f"Loogle environment check failed: {err}")
             return False
         cmd = [str(self.binary_path), "--json", "--interactive"]
         if (idx := self._get_index_path()).exists():
@@ -201,14 +236,25 @@ class LoogleManager:
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=self.repo_dir,
             )
             line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
-            if self.READY_SIGNAL in line.decode():
+            decoded = line.decode()
+            if self.READY_SIGNAL in decoded:
                 self._ready = True
                 logger.info("Loogle ready")
                 return True
+            # Check stderr for error messages
+            try:
+                stderr_data = await asyncio.wait_for(
+                    self.process.stderr.read(), timeout=1
+                )
+                if stderr_data:
+                    logger.error(f"Loogle stderr: {stderr_data.decode().strip()}")
+            except asyncio.TimeoutError:
+                pass
+            logger.error(f"Loogle failed to start. stdout: {decoded.strip()}")
             return False
         except asyncio.TimeoutError:
             logger.error("Loogle startup timeout")

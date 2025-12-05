@@ -86,6 +86,49 @@ class TestLoogleManager:
         (mgr.repo_dir / "lake-manifest.json").unlink()
         assert mgr._get_mathlib_version() == "unknown"
 
+    def test_toolchain_version(self, mgr):
+        mgr.repo_dir.mkdir(parents=True)
+        (mgr.repo_dir / "lean-toolchain").write_text("leanprover/lean4:v4.25.0-rc1")
+        assert mgr._get_toolchain_version() == "leanprover/lean4:v4.25.0-rc1"
+        (mgr.repo_dir / "lean-toolchain").unlink()
+        assert mgr._get_toolchain_version() is None
+
+    def test_check_toolchain_installed(self, mgr, tmp_path, monkeypatch):
+        # No lean-toolchain file => OK
+        mgr.repo_dir.mkdir(parents=True)
+        ok, _ = mgr._check_toolchain_installed()
+        assert ok
+
+        # Create a toolchain file for a non-existent version
+        (mgr.repo_dir / "lean-toolchain").write_text("leanprover/lean4:v9.9.9")
+        # Point to fake elan home
+        monkeypatch.setenv("ELAN_HOME", str(tmp_path / "elan"))
+        ok, msg = mgr._check_toolchain_installed()
+        assert not ok
+        assert "v9.9.9" in msg
+
+        # Create the toolchain directory
+        tc_dir = tmp_path / "elan" / "toolchains" / "leanprover--lean4---v9.9.9"
+        tc_dir.mkdir(parents=True)
+        ok, _ = mgr._check_toolchain_installed()
+        assert ok
+
+    def test_check_environment(self, mgr, tmp_path, monkeypatch):
+        # No binary => not OK
+        ok, msg = mgr.check_environment()
+        assert not ok
+        assert "binary not found" in msg
+
+        # Create binary
+        mgr.binary_path.parent.mkdir(parents=True)
+        mgr.binary_path.touch()
+        mgr.repo_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("ELAN_HOME", str(tmp_path / "elan"))
+
+        # No toolchain file => OK
+        ok, _ = mgr.check_environment()
+        assert ok
+
     @pytest.mark.asyncio
     async def test_query_not_ready(self, mgr):
         # Without binary installed, start() fails, so query should fail after retry
