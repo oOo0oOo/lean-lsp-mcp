@@ -7,7 +7,7 @@ from typing import AsyncContextManager
 
 import pytest
 
-from tests.helpers.mcp_client import MCPClient, result_text
+from tests.helpers.mcp_client import MCPClient, MCPToolError, result_text
 
 
 @pytest.fixture(scope="module")
@@ -52,9 +52,10 @@ async def test_diagnostic_messages_line_filtering(
             {"file_path": str(diagnostic_file)},
         )
         diag_text = result_text(diagnostics)
-        # Should contain both errors
+        # Should contain both errors - now returns JSON with "severity" field
         assert "string" in diag_text.lower() or "error" in diag_text.lower()
-        assert diag_text.count("severity") >= 2
+        # Count occurrences of "severity" in JSON output (appears as field name)
+        assert diag_text.count('"severity"') >= 2
         all_diag_text = diag_text
 
         # Test 2: Get diagnostics starting from line 10
@@ -73,7 +74,8 @@ async def test_diagnostic_messages_line_filtering(
         # Test 3: Get diagnostics for specific line range
         import re
 
-        line_matches = re.findall(r"l(\d+)c", all_diag_text)
+        # Extract start_line from JSON format (e.g., "start_line": 7)
+        line_matches = re.findall(r'"start_line":\s*(\d+)', all_diag_text)
         if line_matches:
             first_error_line = int(line_matches[0])
             diagnostics = await client.call_tool(
@@ -98,11 +100,8 @@ async def test_diagnostic_messages_line_filtering(
             },
         )
         diag_text = result_text(diagnostics)
-        assert (
-            "no" in diag_text.lower()
-            or len(diag_text.strip()) == 0
-            or diag_text == "[]"
-        )
+        # Empty array or no diagnostics
+        assert diag_text.strip() == "[]" or len(diag_text.strip()) == 0
 
 
 @pytest.fixture(scope="module")
@@ -194,17 +193,16 @@ async def test_diagnostic_messages_declaration_edge_cases(
 ) -> None:
     """Test edge cases for declaration-based filtering."""
     async with mcp_client_factory() as client:
-        # Test 1: Non-existent declaration
-        result = await client.call_tool(
-            "lean_diagnostic_messages",
-            {
-                "file_path": str(declaration_diagnostic_file),
-                "declaration_name": "nonExistentTheorem",
-            },
-        )
-        result_str = result_text(result)
-        assert "not found" in result_str.lower()
-        assert "nonExistentTheorem" in result_str
+        # Test 1: Non-existent declaration - now raises MCPToolError
+        with pytest.raises(MCPToolError) as exc_info:
+            await client.call_tool(
+                "lean_diagnostic_messages",
+                {
+                    "file_path": str(declaration_diagnostic_file),
+                    "declaration_name": "nonExistentTheorem",
+                },
+            )
+        assert "not found" in str(exc_info.value).lower()
 
         # Test 2: declaration_name takes precedence over start_line/end_line
         diagnostics = await client.call_tool(

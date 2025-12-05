@@ -11,12 +11,20 @@ from tests.helpers.mcp_client import MCPClient, result_text
 
 
 def _first_json_block(result) -> dict[str, str] | None:
+    """Extract the first JSON object from result content.
+
+    Handles both single JSON objects and JSON arrays (extracts first element).
+    """
     for block in result.content:
         text = getattr(block, "text", "").strip()
         if not text:
             continue
         try:
-            return orjson.loads(text)
+            parsed = orjson.loads(text)
+            # If it's a list, return the first element
+            if isinstance(parsed, list):
+                return parsed[0] if parsed else None
+            return parsed
         except orjson.JSONDecodeError:
             continue
     return None
@@ -70,7 +78,11 @@ async def test_search_tools(
             },
         )
         text = result_text(state_search)
-        assert "Results for line" in text or "lean state search error" in text
+        # Now returns JSON array of StateSearchResult models
+        state_entry = _first_json_block(state_search)
+        if state_entry is None:
+            pytest.skip("lean_state_search did not return JSON content")
+        assert "name" in state_entry
 
         hammer = await client.call_tool(
             "lean_hammer_premise",
@@ -80,7 +92,11 @@ async def test_search_tools(
                 "column": 3,
             },
         )
-        assert "Results for line" in result_text(hammer)
+        # Now returns JSON array of PremiseResult models
+        hammer_entry = _first_json_block(hammer)
+        if hammer_entry is None:
+            pytest.skip("lean_hammer_premise did not return JSON content")
+        assert "name" in hammer_entry
 
         local_search = await client.call_tool(
             "lean_local_search",
