@@ -30,7 +30,6 @@ class LeanFinderResult(BaseModel):
 
 class StateSearchResult(BaseModel):
     name: str = Field(description="Theorem/lemma name")
-    score: Optional[float] = Field(None, description="Relevance score")
 
 
 class PremiseResult(BaseModel):
@@ -40,17 +39,13 @@ class PremiseResult(BaseModel):
 class DiagnosticMessage(BaseModel):
     severity: str = Field(description="error, warning, info, or hint")
     message: str = Field(description="Diagnostic message text")
-    start_line: int = Field(description="Start line (1-indexed)")
-    start_column: int = Field(description="Start column (1-indexed)")
-    end_line: int = Field(description="End line (1-indexed)")
-    end_column: int = Field(description="End column (1-indexed)")
+    line: int = Field(description="Line (1-indexed)")
+    column: int = Field(description="Column (1-indexed)")
 
 
 class GoalState(BaseModel):
     line_context: str = Field(description="Source line where goals were queried")
-    goals_before: Optional[str] = Field(None, description="Goal state at line start (before tactics)")
-    goals_after: Optional[str] = Field(None, description="Goal state at line end (after tactics)")
-    goals: Optional[str] = Field(None, description="Goal state at specific column")
+    goals: str = Field(description="Goal state (before→after if column omitted)")
 
 
 class CompletionItem(BaseModel):
@@ -102,6 +97,5 @@ class RunResult(BaseModel):
 
 
 class DeclarationInfo(BaseModel):
-    symbol: str = Field(description="Symbol that was looked up")
     file_path: str = Field(description="Path to declaration file")
     content: str = Field(description="File content")

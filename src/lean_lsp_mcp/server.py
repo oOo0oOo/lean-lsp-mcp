@@ -358,10 +358,8 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
         result.append(DiagnosticMessage(
             severity=DIAGNOSTIC_SEVERITY.get(severity_int, f"unknown({severity_int})"),
             message=diag.get("message", ""),
-            start_line=r["start"]["line"] + 1,
-            start_column=r["start"]["character"] + 1,
-            end_line=r["end"]["line"] + 1,
-            end_column=r["end"]["character"] + 1,
+            line=r["start"]["line"] + 1,
+            column=r["start"]["character"] + 1,
         ))
     return result
 
@@ -446,21 +444,13 @@ def goal(
         )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
-
-        return GoalState(
-            line_context=line_context,
-            goals_before=format_goal(goal_start, None),
-            goals_after=format_goal(goal_end, None),
-            goals=None,
-        )
+        before = format_goal(goal_start, None)
+        after = format_goal(goal_end, None)
+        goals = f"{before} → {after}" if before != after else after
+        return GoalState(line_context=line_context, goals=goals)
     else:
         goal_result = client.get_goal(rel_path, line - 1, column - 1)
-        return GoalState(
-            line_context=line_context,
-            goals_before=None,
-            goals_after=None,
-            goals=format_goal(goal_result, None),
-        )
+        return GoalState(line_context=line_context, goals=format_goal(goal_result, None))
 
 
 @mcp.tool("lean_term_goal", annotations=ToolAnnotations(
@@ -660,7 +650,7 @@ def declaration_file(
 
     file_content = get_file_contents(abs_path)
 
-    return DeclarationInfo(symbol=symbol, file_path=str(abs_path), content=file_content)
+    return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
 @mcp.tool("lean_multi_attempt", annotations=ToolAnnotations(
@@ -1000,7 +990,7 @@ def state_search(
         results = orjson.loads(response.read())
 
     items = [
-        StateSearchResult(name=r["name"], score=r.get("score"))
+        StateSearchResult(name=r["name"])
         for r in results
     ]
     return _to_json_array(items)
