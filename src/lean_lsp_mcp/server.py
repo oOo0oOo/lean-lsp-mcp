@@ -22,6 +22,7 @@ from lean_lsp_mcp.client_utils import (
     setup_client_for_file,
     startup_client,
     infer_project_path,
+    WidgetAwareLeanLSPClient,
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
@@ -246,8 +247,9 @@ async def lsp_build(
             raise Exception(f"Build failed with return code {process.returncode}")
 
         # Start LSP client (without initial build since we just did it)
+        # Use widget-aware client to enable base64 image extraction from #png etc.
         with OutputCapture():
-            client = LeanLSPClient(
+            client = WidgetAwareLeanLSPClient(
                 lean_project_path_obj, initial_build=False, prevent_cache_get=True
             )
 
@@ -1048,6 +1050,202 @@ def hammer_premise(
         return results
     except Exception as e:
         return f"lean hammer premise error:\n{str(e)}"
+
+
+# RPC session management for widgets
+_rpc_sessions: Dict[str, str] = {}  # uri -> sessionId
+
+
+def _get_rpc_session(client: LeanLSPClient, uri: str) -> str:
+    """Get or create an RPC session for a file URI."""
+    global _rpc_sessions
+    if uri in _rpc_sessions:
+        return _rpc_sessions[uri]
+
+    # Connect to RPC
+    connect_params = {"uri": uri}
+    result = client._send_request_sync("$/lean/rpc/connect", connect_params, timeout=10)
+    session_id = result.get("sessionId")
+    if not session_id:
+        raise RuntimeError(f"Failed to get RPC session for {uri}")
+    _rpc_sessions[uri] = session_id
+    return session_id
+
+
+def _rpc_call(client: LeanLSPClient, uri: str, method: str, params: dict) -> dict:
+    """Make an RPC call to the Lean server."""
+    session_id = _get_rpc_session(client, uri)
+    call_params = {
+        "textDocument": {"uri": uri},
+        "position": params.get("position", {"line": 0, "character": 0}),
+        "sessionId": session_id,
+        "method": method,
+        "params": params.get("params", params),
+    }
+    return client._send_request_sync("$/lean/rpc/call", call_params, timeout=15)
+
+
+def _extract_widgets_from_interactive_diag(diag: dict) -> List[dict]:
+    """Recursively extract widget instances from interactive diagnostic message data.
+
+    The interactive diagnostic message structure is:
+    {
+      "message": {
+        "tag": [
+          {
+            "widget": {
+              "wi": { "id": "...", "props": {...}, ... },
+              "alt": {...}
+            }
+          },
+          ...
+        ]
+      }
+    }
+    """
+    widgets = []
+
+    def extract_from_tagged_text(tt):
+        """Recursively search TaggedText structure for widget embeds."""
+        if isinstance(tt, dict):
+            # Check if this is a widget embed - structure is {"widget": {"wi": {...}, "alt": ...}}
+            if "widget" in tt:
+                widget_data = tt.get("widget", {})
+                if isinstance(widget_data, dict):
+                    # The actual widget instance is in "wi" field
+                    wi = widget_data.get("wi")
+                    if isinstance(wi, dict):
+                        widgets.append(wi)
+                    elif widget_data.get("id") or widget_data.get("props"):
+                        # Fallback: widget_data itself might be the widget instance
+                        widgets.append(widget_data)
+
+            # Check tag field which may contain list of embeds
+            tag = tt.get("tag")
+            if isinstance(tag, list):
+                for item in tag:
+                    extract_from_tagged_text(item)
+            elif isinstance(tag, dict):
+                extract_from_tagged_text(tag)
+
+            # Recurse into other fields
+            for key in ["text", "append", "children", "alt"]:
+                if key in tt:
+                    val = tt[key]
+                    if isinstance(val, list):
+                        for item in val:
+                            extract_from_tagged_text(item)
+                    elif isinstance(val, dict):
+                        extract_from_tagged_text(val)
+
+        elif isinstance(tt, list):
+            for item in tt:
+                extract_from_tagged_text(item)
+
+    message = diag.get("message")
+    if message:
+        extract_from_tagged_text(message)
+
+    return widgets
+
+
+@mcp.tool("lean_widgets")
+def widgets(ctx: Context, file_path: str, line: int) -> Dict | str:
+    """Get widgets embedded in diagnostics at a specific line in a Lean file.
+
+    Retrieves widget instances (including images from #png command) from interactive
+    diagnostics. Widget props may contain base64-encoded images or other data
+    displayed in the infoview.
+
+    VERY USEFUL for seeing what the infoview shows - images, interactive elements, etc.
+    For #png commands, extracts the base64-encoded PNG data.
+
+    Args:
+        file_path (str): Abs path to Lean file
+        line (int): Line number (1-indexed)
+
+    Returns:
+        Dict | str: Widget data including props (may contain base64 images) or error msg
+    """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "Invalid Lean file path: Unable to start LSP server or load file"
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Wait for diagnostics to ensure file is processed
+    client.get_diagnostics(rel_path, start_line=line - 1, end_line=line - 1)
+
+    # Get URI for the file
+    uri = client._local_to_uri(rel_path)
+
+    all_widgets = []
+
+    try:
+        # First try getWidgets RPC for panel widgets
+        try:
+            result = _rpc_call(
+                client,
+                uri,
+                "Lean.Widget.getWidgets",
+                {"line": line - 1, "character": 0},
+            )
+            panel_widgets = result.get("widgets", [])
+            for w in panel_widgets:
+                widget_info = {
+                    "source": "panel",
+                    "id": str(w.get("id", "unknown")),
+                    "javascriptHash": w.get("javascriptHash"),
+                    "range": w.get("range"),
+                    "name": w.get("name?"),
+                }
+                if "props" in w:
+                    widget_info["props"] = w["props"]
+                all_widgets.append(widget_info)
+        except Exception as e:
+            logger.debug(f"getWidgets failed (may be expected): {e}")
+
+        # Also try getInteractiveDiagnostics for embedded widgets (like #png)
+        try:
+            diag_result = _rpc_call(
+                client,
+                uri,
+                "Lean.Widget.getInteractiveDiagnostics",
+                {"lineRange": {"start": line - 1, "end": line}},
+            )
+
+            # diag_result is an array of interactive diagnostics
+            if isinstance(diag_result, list):
+                for diag in diag_result:
+                    diag_range = diag.get("range", {})
+                    diag_line = diag_range.get("start", {}).get("line", -1)
+
+                    # Only process diagnostics at our target line
+                    if diag_line == line - 1:
+                        embedded_widgets = _extract_widgets_from_interactive_diag(diag)
+                        for w in embedded_widgets:
+                            widget_info = {
+                                "source": "diagnostic",
+                                "id": str(w.get("id", "unknown")),
+                                "javascriptHash": w.get("javascriptHash"),
+                            }
+                            if "props" in w:
+                                widget_info["props"] = w["props"]
+                            all_widgets.append(widget_info)
+        except Exception as e:
+            logger.debug(f"getInteractiveDiagnostics failed: {e}")
+
+        if not all_widgets:
+            return f"No widgets found at line {line}"
+
+        return {
+            "line": line,
+            "widgets": all_widgets,
+            "count": len(all_widgets),
+        }
+    except Exception as e:
+        return f"lean widgets error:\n{str(e)}"
 
 
 if __name__ == "__main__":

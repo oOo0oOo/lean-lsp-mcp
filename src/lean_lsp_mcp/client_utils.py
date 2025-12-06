@@ -14,6 +14,104 @@ logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
 
 
+class WidgetAwareLeanLSPClient(LeanLSPClient):
+    """LeanLSPClient subclass that enables widget support in interactive diagnostics.
+
+    The standard LeanLSPClient doesn't send `hasWidgets: true` in initialization options,
+    which means interactive diagnostics won't include embedded widget data (like base64
+    images from #png). This subclass patches the initialization to enable widgets.
+    """
+
+    def __init__(self, project_path: str, initial_build: bool = False, prevent_cache_get: bool = False):
+        # Store parameters for potential re-initialization
+        self._init_project_path = project_path
+        self._init_initial_build = initial_build
+        self._init_prevent_cache_get = prevent_cache_get
+
+        # Don't call super().__init__ yet - we need to patch the init sequence
+        # First do the minimal setup from BaseLeanLSPClient
+        from pathlib import Path
+        import subprocess
+        import urllib.parse
+        import threading
+        import asyncio
+        import atexit
+        import orjson
+
+        from leanclient.utils import SemanticTokenProcessor, has_mathlib_dependency
+
+        self.project_path = Path(project_path).resolve()
+        self.request_id = 0
+        self.enable_history = os.getenv("ENABLE_LEANCLIENT_HISTORY", "false").lower() == "true"
+        self.history = []
+
+        if initial_build:
+            self.build_project(get_cache=not prevent_cache_get)
+        elif not prevent_cache_get and has_mathlib_dependency(self.project_path):
+            subprocess.run(
+                ["lake", "exe", "cache", "get"],
+                cwd=self.project_path,
+                check=False,
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+
+        # Start LSP subprocess
+        self.process = subprocess.Popen(
+            ["lake", "serve"],
+            cwd=self.project_path,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.stdin = self.process.stdin
+        self.stdout = self.process.stdout
+
+        # Asyncio infrastructure
+        self._loop = asyncio.new_event_loop()
+        self._futures = {}
+        self._notification_handlers = {}
+
+        self._loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
+        self._loop_thread.start()
+
+        self._stdout_thread_stop_event = threading.Event()
+        self._stdout_thread = threading.Thread(
+            target=self._read_stdout_loop,
+            args=(self._stdout_thread_stop_event,),
+            daemon=True,
+        )
+        self._stdout_thread.start()
+
+        # Initialize WITH hasWidgets: true
+        server_info = self._send_request_sync(
+            "initialize",
+            {
+                "processId": os.getpid(),
+                "rootUri": self._local_to_uri(self.project_path),
+                "initializationOptions": {
+                    "editDelay": 1,
+                    "hasWidgets": True,  # Enable widget support!
+                },
+            },
+        )
+
+        legend = server_info["capabilities"]["semanticTokensProvider"]["legend"]
+        self.token_processor = SemanticTokenProcessor(legend["tokenTypes"])
+
+        self._send_notification("initialized", {})
+
+        atexit.register(self.close)
+
+        # Initialize file manager (from LSPFileManager.__init__)
+        self.max_opened_files = 4
+        self.opened_files = {}
+        self._opened_files_lock = threading.Lock()
+        self._close_condition = threading.Condition(self._opened_files_lock)
+        self._recently_closed = set()
+        self._setup_global_handlers()
+
+
 def startup_client(ctx: Context):
     """Initialize the Lean LSP client if not already set up.
 
@@ -38,11 +136,12 @@ def startup_client(ctx: Context):
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
         prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
+        # Use WidgetAwareLeanLSPClient to enable widget support (for #png etc.)
         with OutputCapture() as output:
-            client = LeanLSPClient(
+            client = WidgetAwareLeanLSPClient(
                 lean_project_path, initial_build=False, prevent_cache_get=prevent_cache
             )
-            logger.info(f"Connected to Lean language server at {lean_project_path}")
+            logger.info(f"Connected to Lean language server at {lean_project_path} (widget-aware)")
         build_output = output.get_output()
         if build_output:
             logger.debug(f"Build output: {build_output}")
