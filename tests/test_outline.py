@@ -60,7 +60,9 @@ async def test_mathlib_outline_structure(
 ) -> None:
     """Test outline generation with a real Mathlib file."""
     async with mcp_client_factory() as client:
-        result = await client.call_tool("lean_file_outline", {"file_path": str(mathlib_nat_basic)})
+        result = await client.call_tool(
+            "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
+        )
         outline = _parse_outline(result)
 
         # Basic structure checks - now structured JSON
@@ -76,8 +78,11 @@ async def test_mathlib_outline_structure(
         assert "Nat" in decl_names or any("Ns" in k for k in decl_kinds)
 
         # Should have instance declarations
-        assert any("instLinearOrder" in d["name"] or "LinearOrder" in (d.get("type_signature") or "")
-                   for d in outline["declarations"])
+        assert any(
+            "instLinearOrder" in d["name"]
+            or "LinearOrder" in (d.get("type_signature") or "")
+            for d in outline["declarations"]
+        )
 
 
 @pytest.mark.asyncio
@@ -87,7 +92,9 @@ async def test_mathlib_outline_has_line_numbers(
 ) -> None:
     """Verify line numbers are present in outline."""
     async with mcp_client_factory() as client:
-        result = await client.call_tool("lean_file_outline", {"file_path": str(mathlib_nat_basic)})
+        result = await client.call_tool(
+            "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
+        )
         outline = _parse_outline(result)
 
         # All declarations should have start_line and end_line

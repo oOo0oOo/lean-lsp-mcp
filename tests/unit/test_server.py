@@ -141,6 +141,7 @@ def test_local_search_project_root_updates_context(
 
     # Result is now a JSON string with array of LocalSearchResult objects
     import orjson
+
     parsed = orjson.loads(result)
     assert len(parsed) == 1
     assert parsed[0]["name"] == "foo"
@@ -166,6 +167,6 @@ def test_local_search_requires_project_root_when_unset(
 
     # Now raises LocalSearchError instead of returning error string
     with pytest.raises(server.LocalSearchError) as exc_info:
-         server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
+        server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
