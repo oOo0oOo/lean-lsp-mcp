@@ -888,9 +888,17 @@ async def loogle(
     if app_ctx.loogle_local_available and app_ctx.loogle_manager:
         try:
             results = await app_ctx.loogle_manager.query(query, num_results)
-            for result in results:
-                result.pop("doc", None)
-            return results if results else "No results found."
+            if not results:
+                return "No results found."
+            items = [
+                LoogleResult(
+                    name=r.get("name", ""),
+                    type=r.get("type", ""),
+                    module=r.get("module", ""),
+                )
+                for r in results
+            ]
+            return _to_json_array(items)
         except Exception as e:
             logger.warning(f"Local loogle failed: {e}, falling back to remote")
 
@@ -902,7 +910,10 @@ async def loogle(
         return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
     rate_limit.append(now)
 
-    return loogle_remote(query, num_results)
+    result = loogle_remote(query, num_results)
+    if isinstance(result, str):
+        return result  # Error message
+    return _to_json_array(result)
 
 
 @mcp.tool("lean_leanfinder", annotations=ToolAnnotations(

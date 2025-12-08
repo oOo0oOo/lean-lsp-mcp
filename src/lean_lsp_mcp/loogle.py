@@ -15,6 +15,8 @@ from typing import Any
 
 import orjson
 
+from lean_lsp_mcp.models import LoogleResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,7 @@ def get_cache_dir() -> Path:
     return Path(xdg) / "lean-lsp-mcp" / "loogle"
 
 
-def loogle_remote(query: str, num_results: int) -> list[dict] | str:
+def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     """Query the remote loogle API."""
     try:
         req = urllib.request.Request(
@@ -36,10 +38,15 @@ def loogle_remote(query: str, num_results: int) -> list[dict] | str:
             results = orjson.loads(response.read())
         if "hits" not in results:
             return "No results found."
-        results = results["hits"][:num_results]
-        for r in results:
-            r.pop("doc", None)
-        return results
+        hits = results["hits"][:num_results]
+        return [
+            LoogleResult(
+                name=r.get("name", ""),
+                type=r.get("type", ""),
+                module=r.get("module", ""),
+            )
+            for r in hits
+        ]
     except Exception as e:
         return f"loogle error:\n{e}"
 

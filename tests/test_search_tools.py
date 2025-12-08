@@ -77,7 +77,6 @@ async def test_search_tools(
                 "column": 3,
             },
         )
-        text = result_text(state_search)
         # Now returns JSON array of StateSearchResult models
         state_entry = _first_json_block(state_search)
         if state_entry is None:
