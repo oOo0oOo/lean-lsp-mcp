@@ -9,7 +9,6 @@ from dataclasses import dataclass
 import urllib
 import orjson
 import functools
-import subprocess
 import uuid
 from pathlib import Path
 
@@ -196,7 +195,7 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
     annotations=ToolAnnotations(
         title="Build Project",
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=True,
         openWorldHint=False,
     ),
@@ -207,6 +206,9 @@ async def lsp_build(
         Optional[str], Field(description="Path to Lean project")
     ] = None,
     clean: Annotated[bool, Field(description="Run lake clean first (slow)")] = False,
+    output_lines: Annotated[
+        int, Field(description="Return last N lines of build log (0=none)")
+    ] = 20,
 ) -> BuildResult:
     """Build the Lean project and restart LSP. Use only if needed (e.g. new imports)."""
     if not lean_project_path:
@@ -220,7 +222,7 @@ async def lsp_build(
             "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
         )
 
-    output_lines: List[str] = []
+    log_lines: List[str] = []
     errors: List[str] = []
 
     try:
@@ -230,13 +232,21 @@ async def lsp_build(
             client.close()
 
         if clean:
-            subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
-            logger.info("Ran `lake clean`")
+            await ctx.report_progress(
+                progress=1, total=16, message="Running `lake clean`"
+            )
+            clean_proc = await asyncio.create_subprocess_exec(
+                "lake", "clean", cwd=lean_project_path_obj
+            )
+            await clean_proc.wait()
 
-        # Fetch cache
-        subprocess.run(
-            ["lake", "exe", "cache", "get"], cwd=lean_project_path_obj, check=False
+        await ctx.report_progress(
+            progress=2, total=16, message="Running `lake exe cache get`"
         )
+        cache_proc = await asyncio.create_subprocess_exec(
+            "lake", "exe", "cache", "get", cwd=lean_project_path_obj
+        )
+        await cache_proc.wait()
 
         # Run build with progress reporting
         process = await asyncio.create_subprocess_exec(
@@ -248,32 +258,24 @@ async def lsp_build(
             stderr=asyncio.subprocess.STDOUT,
         )
 
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-
+        while line := await process.stdout.readline():
             line_str = line.decode("utf-8", errors="replace").rstrip()
-            output_lines.append(line_str)
 
-            # Collect error lines
+            if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
+                continue
+
+            log_lines.append(line_str)
             if "error" in line_str.lower():
                 errors.append(line_str)
 
-            # Parse progress: look for pattern like "[2/8]" or "[10/100]"
-            match = re.search(r"\[(\d+)/(\d+)\]", line_str)
-            if match:
-                current_job = int(match.group(1))
-                total_jobs = int(match.group(2))
-
-                # Extract what's being built
-                desc_match = re.search(
-                    r"\[\d+/\d+\]\s+(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
-                )
-                description = desc_match.group(1) if desc_match else "Building"
-
+            # Parse progress: "[2/8] Building Foo (1.2s)" -> (2, 8, "Building Foo")
+            if m := re.search(
+                r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
+            ):
                 await ctx.report_progress(
-                    progress=current_job, total=total_jobs, message=description
+                    progress=int(m.group(1)),
+                    total=int(m.group(2)),
+                    message=m.group(3) or "Building",
                 )
 
         await process.wait()
@@ -281,7 +283,7 @@ async def lsp_build(
         if process.returncode != 0:
             return BuildResult(
                 success=False,
-                output="\n".join(output_lines),
+                output="\n".join(log_lines[-output_lines:]) if output_lines else "",
                 errors=errors
                 or [f"Build failed with return code {process.returncode}"],
             )
@@ -295,12 +297,16 @@ async def lsp_build(
         logger.info("Built project and re-started LSP client")
         ctx.request_context.lifespan_context.client = client
 
-        return BuildResult(success=True, output="\n".join(output_lines), errors=[])
+        return BuildResult(
+            success=True,
+            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+            errors=[],
+        )
 
     except Exception as e:
         return BuildResult(
             success=False,
-            output="\n".join(output_lines),
+            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
             errors=[str(e)],
         )
 
