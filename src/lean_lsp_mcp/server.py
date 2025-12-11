@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 import time
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -41,7 +41,11 @@ from lean_lsp_mcp.utils import (
     get_declaration_range,
     OptionalTokenVerifier,
 )
-from lean_lsp_mcp.render_utils import proofwidget_to_html, render_widget_to_base64
+from lean_lsp_mcp.render_utils import (
+    proofwidget_to_html,
+    render_widget_to_base64,
+    extract_images_from_props,
+)
 
 
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
@@ -1100,6 +1104,37 @@ def _rpc_call(client: LeanLSPClient, uri: str, method: str, params: dict, positi
     return client._send_request_sync("$/lean/rpc/call", call_params, timeout=15)
 
 
+def _extract_widget_images(props: dict) -> List[Tuple[str, str]]:
+    """Extract images from widget props using multiple strategies.
+
+    Order of extraction:
+    1. Direct base64/image props (fastest, no rendering needed)
+    2. Data URLs embedded in props
+    3. HTML rendering as fallback (requires headless browser)
+
+    Args:
+        props: Widget props dictionary
+
+    Returns:
+        List of (mime_type, base64_data) tuples
+    """
+    images = []
+
+    # First: try extracting pre-rendered images (fast path)
+    extracted = extract_images_from_props(props)
+    images.extend(extracted)
+
+    # Second: if no images found and html prop exists, render it
+    if not images and "html" in props:
+        html_data = props["html"]
+        if html_data:
+            img_b64 = render_widget_to_base64(html_data)
+            if img_b64:
+                images.append(("image/png", img_b64))
+
+    return images
+
+
 def _extract_widgets_from_interactive_diag(diag: dict) -> List[dict]:
     """Recursively extract widget instances from interactive diagnostic message data.
 
@@ -1378,19 +1413,10 @@ def infoview(
 
                     # Extract/render images if requested
                     if render_images:
-                        # Check for pre-rendered base64 image (e.g., #png command)
-                        base64_data = w["props"].get("base64")
-                        if base64_data and isinstance(base64_data, str):
-                            widget_info["rendered_image"] = base64_data
-                            widget_images.append(base64_data)
-                        else:
-                            # Render HTML if present
-                            html_data = w["props"].get("html")
-                            if html_data:
-                                img_b64 = render_widget_to_base64(html_data)
-                                if img_b64:
-                                    widget_info["rendered_image"] = img_b64
-                                    widget_images.append(img_b64)
+                        extracted = _extract_widget_images(w["props"])
+                        if extracted:
+                            widget_info["rendered_images"] = extracted
+                            widget_images.extend(extracted)
 
                 result["widgets"].append(widget_info)
         except Exception as e:
@@ -1423,19 +1449,10 @@ def infoview(
 
                                 # Extract/render images if requested
                                 if render_images:
-                                    # Check for pre-rendered base64 image (e.g., #png command)
-                                    base64_data = w["props"].get("base64")
-                                    if base64_data and isinstance(base64_data, str):
-                                        widget_info["rendered_image"] = base64_data
-                                        widget_images.append(base64_data)
-                                    else:
-                                        # Render HTML if present
-                                        html_data = w["props"].get("html")
-                                        if html_data:
-                                            img_b64 = render_widget_to_base64(html_data)
-                                            if img_b64:
-                                                widget_info["rendered_image"] = img_b64
-                                                widget_images.append(img_b64)
+                                    extracted = _extract_widget_images(w["props"])
+                                    if extracted:
+                                        widget_info["rendered_images"] = extracted
+                                        widget_images.extend(extracted)
 
                             result["widgets"].append(widget_info)
         except Exception as e:
@@ -1448,21 +1465,21 @@ def infoview(
     if widget_images and render_images:
         import json
 
-        # Remove rendered_image from result to avoid duplication
+        # Remove rendered_images from result to avoid duplication
         result_clean = result.copy()
         for w in result_clean.get("widgets", []):
-            w.pop("rendered_image", None)
+            w.pop("rendered_images", None)
 
         content_array = [
             {"type": "text", "text": json.dumps(result_clean, indent=2)}
         ]
 
-        # Add each rendered image
-        for img_b64 in widget_images:
+        # Add each rendered image (now tuples of (mime_type, base64_data))
+        for mime_type, img_b64 in widget_images:
             content_array.append({
                 "type": "image",
                 "data": img_b64,
-                "mimeType": "image/png",
+                "mimeType": mime_type,
             })
 
         return content_array
