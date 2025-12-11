@@ -1326,16 +1326,20 @@ def _extract_widgets_from_interactive_diag(diag: dict) -> List[dict]:
     return widgets
 
 
-@mcp.tool("lean_widgets")
+@mcp.tool(
+    "lean_widgets",
+    annotations=ToolAnnotations(
+        title="Widgets (Low-level)",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
 def widgets(ctx: Context, file_path: str, line: int) -> Dict | str:
-    """Get widgets embedded in diagnostics at a specific line in a Lean file.
+    """Low-level widget extraction. Prefer `lean_infoview` for full context.
 
-    Retrieves widget instances (including images from #png command) from interactive
-    diagnostics. Widget props may contain base64-encoded images or other data
-    displayed in the infoview.
-
-    VERY USEFUL for seeing what the infoview shows - images, interactive elements, etc.
-    For #png commands, extracts the base64-encoded PNG data.
+    Retrieves widget instances from panel and diagnostic messages.
+    For complete infoview data (goals, hover, diagnostics + widgets), use lean_infoview.
 
     Args:
         file_path (str): Abs path to Lean file
@@ -1425,7 +1429,15 @@ def widgets(ctx: Context, file_path: str, line: int) -> Dict | str:
         return f"lean widgets error:\n{str(e)}"
 
 
-@mcp.tool("lean_infoview")
+@mcp.tool(
+    "lean_infoview",
+    annotations=ToolAnnotations(
+        title="Infoview",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
 def infoview(
     ctx: Context,
     file_path: str,
