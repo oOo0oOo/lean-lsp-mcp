@@ -41,6 +41,7 @@ from lean_lsp_mcp.utils import (
     get_declaration_range,
     OptionalTokenVerifier,
 )
+from lean_lsp_mcp.render_utils import proofwidget_to_html, render_widget_to_base64
 
 
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
@@ -1246,6 +1247,199 @@ def widgets(ctx: Context, file_path: str, line: int) -> Dict | str:
         }
     except Exception as e:
         return f"lean widgets error:\n{str(e)}"
+
+
+@mcp.tool("lean_infoview")
+def infoview(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    column: int,
+    render_images: bool = True,
+) -> List[Dict] | Dict | str:
+    """Get everything the infoview shows at a cursor position.
+
+    Aggregates: goal state, term goal, hover info, line diagnostics, and widgets.
+    Returns what a human sees in VS Code/Cursor infoview - including rendered widget images.
+
+    When render_images=True (default), returns MCP content array with text and images.
+    This allows multimodal models to actually "see" widget visualizations.
+
+    Args:
+        file_path (str): Absolute path to Lean file
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed)
+        render_images (bool): If True, render widget HTML to PNG images (default: True)
+
+    Returns:
+        Combined infoview data with optional rendered images as MCP content array
+    """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "Invalid Lean file path: Unable to start LSP server or load file"
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    content = client.get_file_content(rel_path)
+    uri = client._local_to_uri(rel_path)
+
+    # Gather all infoview data
+    result = {
+        "position": {"line": line, "column": column},
+        "goal": None,
+        "term_goal": None,
+        "hover": None,
+        "diagnostics": [],
+        "widgets": [],
+    }
+
+    # 1. Get proof goal (tactic mode)
+    try:
+        goal_data = client.get_goal(rel_path, line - 1, column - 1)
+        if goal_data and goal_data.get("goals"):
+            result["goal"] = goal_data["goals"]
+    except Exception as e:
+        logger.debug(f"Failed to get goal: {e}")
+
+    # 2. Get term goal (expected type)
+    try:
+        term_goal_data = client.get_term_goal(rel_path, line - 1, column - 1)
+        if term_goal_data:
+            goal_str = term_goal_data.get("goal", "")
+            if goal_str:
+                # Clean up markdown formatting
+                goal_str = goal_str.replace("```lean\n", "").replace("\n```", "")
+                result["term_goal"] = {"goal": goal_str}
+    except Exception as e:
+        logger.debug(f"Failed to get term goal: {e}")
+
+    # 3. Get hover info
+    try:
+        hover_data = client.get_hover(rel_path, line - 1, column - 1)
+        if hover_data:
+            info = hover_data.get("contents", {}).get("value", "")
+            info = info.replace("```lean\n", "").replace("\n```", "").strip()
+            h_range = hover_data.get("range")
+            symbol = extract_range(content, h_range)
+            result["hover"] = {
+                "symbol": symbol,
+                "info": info,
+                "range": h_range,
+            }
+    except Exception as e:
+        logger.debug(f"Failed to get hover: {e}")
+
+    # 4. Get diagnostics for current line only
+    try:
+        diag_data = client.get_diagnostics(
+            rel_path, start_line=line - 1, end_line=line - 1
+        )
+        if diag_data:
+            result["diagnostics"] = format_diagnostics(diag_data)
+    except Exception as e:
+        logger.debug(f"Failed to get diagnostics: {e}")
+
+    # 5. Get widgets (panel + diagnostic embedded)
+    widget_images = []
+    try:
+        # Panel widgets via getWidgets RPC
+        try:
+            panel_result = _rpc_call(
+                client,
+                uri,
+                "Lean.Widget.getWidgets",
+                {"line": line - 1, "character": column - 1},
+            )
+            panel_widgets = panel_result.get("widgets", [])
+            for w in panel_widgets:
+                widget_info = {
+                    "source": "panel",
+                    "id": str(w.get("id", "unknown")),
+                    "javascriptHash": w.get("javascriptHash"),
+                    "range": w.get("range"),
+                    "name": w.get("name?"),
+                }
+                if "props" in w:
+                    widget_info["props"] = w["props"]
+
+                    # Render HTML if present and requested
+                    if render_images:
+                        html_data = w["props"].get("html")
+                        if html_data:
+                            img_b64 = render_widget_to_base64(html_data)
+                            if img_b64:
+                                widget_info["rendered_image"] = img_b64
+                                widget_images.append(img_b64)
+
+                result["widgets"].append(widget_info)
+        except Exception as e:
+            logger.debug(f"getWidgets failed: {e}")
+
+        # Diagnostic embedded widgets
+        try:
+            diag_result = _rpc_call(
+                client,
+                uri,
+                "Lean.Widget.getInteractiveDiagnostics",
+                {"lineRange": {"start": line - 1, "end": line}},
+            )
+
+            if isinstance(diag_result, list):
+                for diag in diag_result:
+                    diag_range = diag.get("range", {})
+                    diag_line = diag_range.get("start", {}).get("line", -1)
+
+                    if diag_line == line - 1:
+                        embedded = _extract_widgets_from_interactive_diag(diag)
+                        for w in embedded:
+                            widget_info = {
+                                "source": "diagnostic",
+                                "id": str(w.get("id", "unknown")),
+                                "javascriptHash": w.get("javascriptHash"),
+                            }
+                            if "props" in w:
+                                widget_info["props"] = w["props"]
+
+                                # Render HTML if present
+                                if render_images:
+                                    html_data = w["props"].get("html")
+                                    if html_data:
+                                        img_b64 = render_widget_to_base64(html_data)
+                                        if img_b64:
+                                            widget_info["rendered_image"] = img_b64
+                                            widget_images.append(img_b64)
+
+                            result["widgets"].append(widget_info)
+        except Exception as e:
+            logger.debug(f"getInteractiveDiagnostics failed: {e}")
+
+    except Exception as e:
+        logger.debug(f"Widget retrieval failed: {e}")
+
+    # If we have rendered images, return MCP content array
+    if widget_images and render_images:
+        import json
+
+        # Remove rendered_image from result to avoid duplication
+        result_clean = result.copy()
+        for w in result_clean.get("widgets", []):
+            w.pop("rendered_image", None)
+
+        content_array = [
+            {"type": "text", "text": json.dumps(result_clean, indent=2)}
+        ]
+
+        # Add each rendered image
+        for img_b64 in widget_images:
+            content_array.append({
+                "type": "image",
+                "data": img_b64,
+                "mimeType": "image/png",
+            })
+
+        return content_array
+
+    return result
 
 
 if __name__ == "__main__":

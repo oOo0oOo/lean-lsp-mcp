@@ -10,6 +10,7 @@ dependencies = [
     "leanclient==0.6.1",
     "mcp[cli]==1.23.1",
     "orjson>=3.11.1",
+    "html2image>=2.0.4.3",
 ]
 
 [project.urls]
