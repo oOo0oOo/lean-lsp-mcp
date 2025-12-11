@@ -11,3 +11,6 @@ tests/mathlib_project/
 
 # Local temp files
 .tmp/
+
+
+.github/copilot-instructions.md

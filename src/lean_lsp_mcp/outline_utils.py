@@ -3,6 +3,8 @@ from typing import Dict, List, Optional, Tuple
 from leanclient import LeanLSPClient
 from leanclient.utils import DocumentContentChange
 
+from lean_lsp_mcp.models import FileOutline, OutlineEntry
+
 
 METHOD_KIND = {6, "method"}
 KIND_TAGS = {"namespace": "Ns"}
@@ -179,6 +181,97 @@ def _format_symbol(sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int) ->
         result += f"\n{prefix}\t{fname} : {ftype}"
 
     return result + "\n"
+
+
+def _build_outline_entry(
+    sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int
+) -> Optional[OutlineEntry]:
+    """Build a structured outline entry for a symbol."""
+    name = sym["name"]
+    type_sig = sym.get("_type") or type_sigs.get(name, "")
+    fields = fields_map.get(name, [])
+
+    tag = _detect_tag(
+        name, sym.get("kind", ""), type_sig, bool(fields), sym.get("_keyword")
+    )
+    start = sym["range"]["start"]["line"] + 1
+    end = sym["range"]["end"]["line"] + 1
+
+    # Add fields as children for structs/classes
+    children = [
+        OutlineEntry(
+            name=fname,
+            kind="field",
+            start_line=start,
+            end_line=start,
+            type_signature=ftype,
+            children=[],
+        )
+        for fname, ftype in fields
+    ]
+
+    return OutlineEntry(
+        name=name,
+        kind=tag,
+        start_line=start,
+        end_line=end,
+        type_signature=type_sig if type_sig else None,
+        children=children,
+    )
+
+
+def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
+    """Generate structured outline data for a Lean file."""
+    client.open_file(path)
+    content = client.get_file_content(path)
+
+    # Extract imports
+    imports = [
+        line.strip()[7:]
+        for line in content.splitlines()
+        if line.strip().startswith("import ")
+    ]
+
+    symbols = client.get_document_symbols(path)
+    if not symbols and not imports:
+        return FileOutline(imports=[], declarations=[])
+
+    # Flatten symbol tree and extract namespace declarations
+    all_symbols = _flatten_symbols(symbols, content=content)
+
+    # Get info trees only for LSP symbols (not extracted declarations)
+    lsp_methods = [
+        s
+        for s, _ in all_symbols
+        if s.get("kind") in METHOD_KIND and "_keyword" not in s
+    ]
+    info_trees = _get_info_trees(client, path, lsp_methods)
+
+    # Extract type signatures and fields from info trees
+    type_sigs = {
+        name: sig
+        for name, info in info_trees.items()
+        if (sig := _extract_type(info, name))
+    }
+    fields_map = {
+        name: fields
+        for name, info in info_trees.items()
+        if (fields := _extract_fields(info, name))
+    }
+
+    # Build declarations list
+    declarations = []
+    for sym, indent in all_symbols:
+        if (
+            sym.get("kind") in METHOD_KIND
+            or sym.get("_keyword")
+            or sym.get("kind") == "namespace"
+        ):
+            entry = _build_outline_entry(sym, type_sigs, fields_map, indent)
+            if entry:
+                declarations.append(entry)
+
+    return FileOutline(imports=imports, declarations=declarations)
 
 
 def generate_outline(client: LeanLSPClient, path: str) -> str:

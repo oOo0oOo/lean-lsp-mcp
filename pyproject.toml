@@ -1,6 +1,6 @@
 [project]
 name = "lean-lsp-mcp"
-version = "0.15.0"
+version = "0.16.1"
 description = "Lean Theorem Prover MCP"
 authors = [{name="Oliver Dressler", email="hey@oli.show"}]
 readme = "README.md"
@@ -8,7 +8,7 @@ requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
     "leanclient==0.6.1",
-    "mcp[cli]==1.23.1",
+    "mcp[cli]==1.23.1", "mcp[cli]>=1.22.0",
     "orjson>=3.11.1",
     "html2image>=2.0.4.3",
 ]
