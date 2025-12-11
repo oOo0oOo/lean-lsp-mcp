@@ -1073,15 +1073,29 @@ def _get_rpc_session(client: LeanLSPClient, uri: str) -> str:
     return session_id
 
 
-def _rpc_call(client: LeanLSPClient, uri: str, method: str, params: dict) -> dict:
-    """Make an RPC call to the Lean server."""
+def _rpc_call(client: LeanLSPClient, uri: str, method: str, params: dict, position: dict = None) -> dict:
+    """Make an RPC call to the Lean server.
+
+    Args:
+        client: The LSP client
+        uri: File URI
+        method: RPC method name
+        params: Parameters to pass to the RPC method
+        position: Position for snapshot lookup (defaults to params if it has line/character)
+    """
     session_id = _get_rpc_session(client, uri)
+    # Use explicit position, or extract from params if it looks like a position
+    if position is None:
+        if "line" in params and "character" in params:
+            position = {"line": params["line"], "character": params["character"]}
+        else:
+            position = {"line": 0, "character": 0}
     call_params = {
         "textDocument": {"uri": uri},
-        "position": params.get("position", {"line": 0, "character": 0}),
+        "position": position,
         "sessionId": session_id,
         "method": method,
-        "params": params.get("params", params),
+        "params": params,
     }
     return client._send_request_sync("$/lean/rpc/call", call_params, timeout=15)
 
@@ -1362,14 +1376,21 @@ def infoview(
                 if "props" in w:
                     widget_info["props"] = w["props"]
 
-                    # Render HTML if present and requested
+                    # Extract/render images if requested
                     if render_images:
-                        html_data = w["props"].get("html")
-                        if html_data:
-                            img_b64 = render_widget_to_base64(html_data)
-                            if img_b64:
-                                widget_info["rendered_image"] = img_b64
-                                widget_images.append(img_b64)
+                        # Check for pre-rendered base64 image (e.g., #png command)
+                        base64_data = w["props"].get("base64")
+                        if base64_data and isinstance(base64_data, str):
+                            widget_info["rendered_image"] = base64_data
+                            widget_images.append(base64_data)
+                        else:
+                            # Render HTML if present
+                            html_data = w["props"].get("html")
+                            if html_data:
+                                img_b64 = render_widget_to_base64(html_data)
+                                if img_b64:
+                                    widget_info["rendered_image"] = img_b64
+                                    widget_images.append(img_b64)
 
                 result["widgets"].append(widget_info)
         except Exception as e:
@@ -1400,14 +1421,21 @@ def infoview(
                             if "props" in w:
                                 widget_info["props"] = w["props"]
 
-                                # Render HTML if present
+                                # Extract/render images if requested
                                 if render_images:
-                                    html_data = w["props"].get("html")
-                                    if html_data:
-                                        img_b64 = render_widget_to_base64(html_data)
-                                        if img_b64:
-                                            widget_info["rendered_image"] = img_b64
-                                            widget_images.append(img_b64)
+                                    # Check for pre-rendered base64 image (e.g., #png command)
+                                    base64_data = w["props"].get("base64")
+                                    if base64_data and isinstance(base64_data, str):
+                                        widget_info["rendered_image"] = base64_data
+                                        widget_images.append(base64_data)
+                                    else:
+                                        # Render HTML if present
+                                        html_data = w["props"].get("html")
+                                        if html_data:
+                                            img_b64 = render_widget_to_base64(html_data)
+                                            if img_b64:
+                                                widget_info["rendered_image"] = img_b64
+                                                widget_images.append(img_b64)
 
                             result["widgets"].append(widget_info)
         except Exception as e:
