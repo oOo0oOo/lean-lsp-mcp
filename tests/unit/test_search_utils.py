@@ -1,4 +1,5 @@
 import importlib
+import io
 import orjson
 from pathlib import Path
 
@@ -93,29 +94,52 @@ class _DummyCompletedProcess:
         self.args = []
 
 
+class _DummyPopen:
+    def __init__(self, stdout_lines, returncode=0, stderr_text=""):
+        self.stdout = io.StringIO("".join(f"{line}\n" for line in stdout_lines))
+        self.stderr = io.StringIO(stderr_text)
+        self.returncode = None
+        self._final_code = returncode
+
+    def wait(self, timeout=None):
+        self.returncode = self._final_code
+        return self._final_code
+
+    def terminate(self):
+        self.returncode = self._final_code
+
+    def kill(self):
+        self.returncode = self._final_code
+
+
 def _configure_env(
     monkeypatch, search_utils, stdout_events, returncode=0, expected_cwd=None
 ):
-    completed = _DummyCompletedProcess(stdout_events, returncode=returncode)
     lean_completed = _DummyCompletedProcess(["/nonexistent/lean"], returncode=0)
 
     def fake_check():
         return True, ""
 
     run_calls = []
+    create_calls = []
+
+    def fake_create(cmd, *, cwd):
+        create_calls.append((cmd, cwd))
+        if expected_cwd is not None and cmd and cmd[0] == "rg":
+            assert cwd == expected_cwd
+        return _DummyPopen(stdout_events, returncode=returncode)
 
     def fake_run(cmd, *, capture_output=False, text=False, cwd=None):
         run_calls.append((cmd, cwd))
-        if expected_cwd is not None and cmd and cmd[0] == "rg":
-            assert cwd == expected_cwd
         if cmd[:2] == ["lean", "--print-prefix"]:
             return lean_completed
-        return completed
+        raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
 
     monkeypatch.setattr(search_utils, "check_ripgrep_status", fake_check)
+    monkeypatch.setattr(search_utils, "_create_ripgrep_process", fake_create)
     monkeypatch.setattr(search_utils.subprocess, "run", fake_run)
 
-    return completed, run_calls
+    return create_calls, run_calls
 
 
 def test_lean_search_returns_matching_results(monkeypatch, reload_search_utils):

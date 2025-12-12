@@ -27,6 +27,23 @@ _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
 }
 
 
+def _create_ripgrep_process(
+    command: list[str], *, cwd: str
+) -> subprocess.Popen[str]:
+    """Spawn ripgrep and return a process with line-streaming stdout.
+
+    Separated for test monkeypatching and to allow early termination once we
+    have enough matches.
+    """
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+    )
+
+
 def check_ripgrep_status() -> tuple[bool, str]:
     """Check whether ``rg`` is available on PATH and return status + message."""
 
@@ -84,38 +101,68 @@ def lean_local_search(
     if lean_src := _get_lean_src_search_path():
         command.append(lean_src)
 
-    result = subprocess.run(command, capture_output=True, text=True, cwd=str(root))
+    process = _create_ripgrep_process(command, cwd=str(root))
 
-    matches = []
-    for line in result.stdout.splitlines():
-        if not line or (event := _json_loads(line)).get("type") != "match":
-            continue
+    matches: list[dict[str, str]] = []
+    stderr_text = ""
 
-        data = event["data"]
-        parts = data["lines"]["text"].lstrip().split(maxsplit=2)
-        if len(parts) < 2:
-            continue
+    try:
+        stdout = process.stdout
+        if stdout is None:
+            raise RuntimeError("ripgrep did not provide stdout pipe")
 
-        decl_kind, decl_name = parts[0], parts[1].rstrip(":")
-        file_path = Path(data["path"]["text"])
-        abs_path = (
-            file_path if file_path.is_absolute() else (root / file_path).resolve()
-        )
+        for line in stdout:
+            if not line or (event := _json_loads(line)).get("type") != "match":
+                continue
+
+            data = event["data"]
+            parts = data["lines"]["text"].lstrip().split(maxsplit=2)
+            if len(parts) < 2:
+                continue
+
+            decl_kind, decl_name = parts[0], parts[1].rstrip(":")
+            file_path = Path(data["path"]["text"])
+            abs_path = (
+                file_path if file_path.is_absolute() else (root / file_path).resolve()
+            )
+
+            try:
+                display_path = str(abs_path.relative_to(root))
+            except ValueError:
+                display_path = str(file_path)
+
+            matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
+
+            if len(matches) >= limit:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                break
 
         try:
-            display_path = str(abs_path.relative_to(root))
-        except ValueError:
-            display_path = str(file_path)
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
 
-        matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
+        if process.stderr is not None:
+            try:
+                stderr_text = process.stderr.read()
+            except Exception:
+                stderr_text = ""
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
-        if len(matches) >= limit:
-            break
+    returncode = process.returncode if process.returncode is not None else 0
 
-    if result.returncode not in (0, 1) and not matches:
-        error_msg = f"ripgrep exited with code {result.returncode}"
-        if result.stderr:
-            error_msg += f"\n{result.stderr}"
+    if returncode not in (0, 1) and not matches:
+        error_msg = f"ripgrep exited with code {returncode}"
+        if stderr_text:
+            error_msg += f"\n{stderr_text}"
         raise RuntimeError(error_msg)
 
     return matches
