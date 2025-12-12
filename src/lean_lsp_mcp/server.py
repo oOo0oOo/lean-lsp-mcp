@@ -44,6 +44,11 @@ configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
 
 
+def _to_json_array(items: list) -> str:
+    """Serialize list as single JSON array string to avoid FastMCP flattening."""
+    return orjson.dumps(items, option=orjson.OPT_INDENT_2).decode()
+
+
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 
 
@@ -277,7 +282,7 @@ def diagnostic_messages(
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
     declaration_name: Optional[str] = None,
-) -> List[str] | str:
+) -> str:
     """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
 
     "no goals to be solved" means code may need removal.
@@ -291,7 +296,7 @@ def diagnostic_messages(
             Takes precedence over start_line/end_line.
 
     Returns:
-        List[str] | str: Diagnostic msgs or error msg
+        str: JSON array of diagnostic msgs, or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -317,7 +322,7 @@ def diagnostic_messages(
         inactivity_timeout=8.0,
     )
 
-    return format_diagnostics(diagnostics)
+    return _to_json_array(format_diagnostics(diagnostics))
 
 
 @mcp.tool("lean_goal")
@@ -568,7 +573,7 @@ def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
 @mcp.tool("lean_multi_attempt")
 def multi_attempt(
     ctx: Context, file_path: str, line: int, snippets: List[str]
-) -> List[str] | str:
+) -> str:
     """Try multiple Lean code snippets at a line and get the goal state and diagnostics for each.
 
     Use to compare tactics or approaches.
@@ -585,7 +590,7 @@ def multi_attempt(
         snippets (List[str]): List of snippets (3+ are recommended)
 
     Returns:
-        List[str] | str: Diagnostics and goal states or error msg
+        str: JSON array of diagnostics and goal states, or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -617,7 +622,7 @@ def multi_attempt(
             formatted_goal = format_goal(goal, "Missing goal")
             results.append(f"{snippet_str}:\n {formatted_goal}\n\n{formatted_diag}")
 
-        return results
+        return _to_json_array(results)
     finally:
         try:
             client.close_files([rel_path])
@@ -628,7 +633,7 @@ def multi_attempt(
 
 
 @mcp.tool("lean_run_code")
-def run_code(ctx: Context, code: str) -> List[str] | str:
+def run_code(ctx: Context, code: str) -> str:
     """Run a complete, self-contained code snippet and return diagnostics.
 
     Has to include all imports and definitions!
@@ -638,7 +643,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         code (str): Code snippet
 
     Returns:
-        List[str] | str: Diagnostics msgs or error msg
+        str: JSON array of diagnostics msgs, or error msg
     """
     lifespan_context = ctx.request_context.lifespan_context
     lean_project_path = lifespan_context.lean_project_path
@@ -656,7 +661,7 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         return f"Error writing code snippet to file `{abs_path}`:\n{str(e)}"
 
     client: LeanLSPClient | None = lifespan_context.client
-    diagnostics: List[str] | str = []
+    diagnostics: List[str] = []
     close_error: str | None = None
     remove_error: str | None = None
     opened_file = False
@@ -696,17 +701,16 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
     if close_error:
         return f"Error closing temporary Lean document `{rel_path}`:\n{close_error}"
 
-    return (
-        diagnostics
-        if diagnostics
-        else "No diagnostics found for the code snippet (compiled successfully)."
-    )
+    if diagnostics:
+        return _to_json_array(diagnostics)
+    else:
+        return "No diagnostics found for the code snippet (compiled successfully)."
 
 
 @mcp.tool("lean_local_search")
 def local_search(
     ctx: Context, query: str, limit: int = 10
-) -> List[Dict[str, str]] | str:
+) -> str:
     """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
 
     VERY USEFUL AND FAST!
@@ -718,7 +722,7 @@ def local_search(
         limit (int): Max matches to return (default 10).
 
     Returns:
-        List[Dict[str, str]] | str: Matches as ``{"name", "kind", "file"}`` or error message.
+        str: JSON array of matches as ``{"name", "kind", "file"}``, or error message.
     """
     if not _RG_AVAILABLE:
         return _RG_MESSAGE
@@ -727,12 +731,13 @@ def local_search(
     if stored_root is None:
         return "Lean project path not set. Call a file-based tool (like lean_file_contents) first to set the project path."
 
-    return lean_local_search(query=query.strip(), limit=limit, project_root=stored_root)
+    results = lean_local_search(query=query.strip(), limit=limit, project_root=stored_root)
+    return _to_json_array(results)
 
 
 @mcp.tool("lean_leansearch")
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
+def leansearch(ctx: Context, query: str, num_results: int = 5) -> str:
     """Search for Lean theorems, definitions, and tactics using leansearch.net.
 
     Query patterns:
@@ -747,7 +752,7 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[Dict] | str: Search results or error msg
+        str: JSON array of search results, or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
@@ -773,14 +778,14 @@ def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
             result["module_name"] = ".".join(result["module_name"])
             result["name"] = ".".join(result["name"])
 
-        return results
+        return _to_json_array(results)
     except Exception as e:
         return f"leansearch error:\n{str(e)}"
 
 
 @mcp.tool("lean_loogle")
 @rate_limited("loogle", max_requests=3, per_seconds=30)
-def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
+def loogle(ctx: Context, query: str, num_results: int = 8) -> str:
     """Search for definitions and theorems using loogle.
 
     Query patterns:
@@ -797,7 +802,7 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
         num_results (int, optional): Max results. Defaults to 8.
 
     Returns:
-        List[dict] | str: Search results or error msg
+        str: JSON array of search results, or error msg
     """
     try:
         req = urllib.request.Request(
@@ -815,14 +820,14 @@ def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
         results = results["hits"][:num_results]
         for result in results:
             result.pop("doc", None)
-        return results
+        return _to_json_array(results)
     except Exception as e:
         return f"loogle error:\n{str(e)}"
 
 
 @mcp.tool("lean_leanfinder")
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
-def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
+def leanfinder(ctx: Context, query: str, num_results: int = 5) -> str:
     """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
 
     Effective query types:
@@ -838,7 +843,7 @@ def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List[Dict] | str: List of Lean statement objects (full name, formal statement, informal statement) or error msg
+        str: JSON array of Lean statement objects (full name, formal statement, informal statement), or error msg
     """
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
@@ -867,7 +872,7 @@ def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
                 }
                 results.append(obj)
 
-        return results if results else "Lean Finder: No results parsed"
+        return _to_json_array(results) if results else "Lean Finder: No results parsed"
     except Exception as e:
         return f"Lean Finder Error:\n{str(e)}"
 
@@ -876,7 +881,7 @@ def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | s
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 def state_search(
     ctx: Context, file_path: str, line: int, column: int, num_results: int = 5
-) -> List | str:
+) -> str:
     """Search for theorems based on proof state using premise-search.com.
 
     Only uses first goal if multiple.
@@ -888,7 +893,7 @@ def state_search(
         num_results (int, optional): Max results. Defaults to 5.
 
     Returns:
-        List | str: Search results or error msg
+        str: JSON array of search results, or error msg
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -920,7 +925,7 @@ def state_search(
             result.pop("rev")
         # Very dirty type mix
         results.insert(0, f"Results for line:\n{f_line}")
-        return results
+        return _to_json_array(results)
     except Exception as e:
         return f"lean state search error:\n{str(e)}"
 
@@ -929,7 +934,7 @@ def state_search(
 @rate_limited("hammer_premise", max_requests=3, per_seconds=30)
 def hammer_premise(
     ctx: Context, file_path: str, line: int, column: int, num_results: int = 32
-) -> List[str] | str:
+) -> str:
     """Search for premises based on proof state using the lean hammer premise search.
 
     Args:
@@ -939,7 +944,7 @@ def hammer_premise(
         num_results (int, optional): Max results. Defaults to 32.
 
     Returns:
-        List[str] | str: List of relevant premises or error message
+        str: JSON array of relevant premises, or error message
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -977,7 +982,7 @@ def hammer_premise(
 
         results = [result["name"] for result in results]
         results.insert(0, f"Results for line:\n{f_line}")
-        return results
+        return _to_json_array(results)
     except Exception as e:
         return f"lean hammer premise error:\n{str(e)}"
 
