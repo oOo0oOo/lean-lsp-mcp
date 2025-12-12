@@ -172,3 +172,42 @@ def test_local_search_requires_project_root_when_unset(
         server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+def test_multi_attempt_resyncs_when_file_already_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.open_calls: list[tuple[str, bool]] = []
+
+        def open_file(
+            self,
+            path: str,
+            dependency_build_mode: str = "never",
+            force_reopen: bool = False,
+        ) -> None:
+            _ = dependency_build_mode
+            self.open_calls.append((path, force_reopen))
+
+        def update_file(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def get_diagnostics(self, *args, **kwargs) -> list[dict]:  # type: ignore[no-untyped-def]
+            return []
+
+        def get_goal(self, *args, **kwargs) -> dict:  # type: ignore[no-untyped-def]
+            return {}
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _fp: "Foo.lean")
+    monkeypatch.setattr(server, "ensure_open_file", lambda _ctx, _rp: False)
+
+    result = server.multi_attempt(
+        ctx=ctx, file_path="/abs/Foo.lean", line=1, snippets=[]
+    )
+    assert result.strip() == "[]"
+    assert fake_client.open_calls == [("Foo.lean", True)]

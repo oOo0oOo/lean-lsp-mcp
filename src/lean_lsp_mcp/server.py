@@ -799,6 +799,19 @@ def multi_attempt(
                 logger.warning(
                     "Failed to close `%s` after multi_attempt: %s", rel_path, exc
                 )
+        else:
+            # We modified the open document via update_file. If we didn't open it in this
+            # scope, leave it open but resync its contents from disk to avoid leaking
+            # edits into other tools.
+            try:
+                with CLIENT_LOCK:
+                    # Force a reopen so the client reloads disk contents even if the
+                    # document was already open.
+                    client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:  # pragma: no cover - resync failures only logged
+                logger.warning(
+                    "Failed to resync `%s` after multi_attempt: %s", rel_path, exc
+                )
 
 
 @mcp.tool(
