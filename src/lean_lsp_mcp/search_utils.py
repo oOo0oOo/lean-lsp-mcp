@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 from orjson import loads as _json_loads
 from pathlib import Path
 
@@ -106,6 +107,32 @@ def lean_local_search(
     matches: list[dict[str, str]] = []
     stderr_text = ""
     terminated_early = False
+    stderr_chunks: list[str] = []
+    stderr_chars = 0
+    stderr_truncated = False
+    max_stderr_chars = 100_000
+
+    def _drain_stderr(pipe) -> None:
+        nonlocal stderr_chars, stderr_truncated
+        try:
+            for err_line in pipe:
+                if stderr_chars < max_stderr_chars:
+                    stderr_chunks.append(err_line)
+                    stderr_chars += len(err_line)
+                else:
+                    stderr_truncated = True
+        except Exception:
+            return
+
+    stderr_thread: threading.Thread | None = None
+    if process.stderr is not None:
+        stderr_thread = threading.Thread(
+            target=_drain_stderr,
+            args=(process.stderr,),
+            name="lean-local-search-rg-stderr",
+            daemon=True,
+        )
+        stderr_thread.start()
 
     try:
         stdout = process.stdout
@@ -150,17 +177,34 @@ def lean_local_search(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-
-        if process.stderr is not None:
-            try:
-                stderr_text = process.stderr.read()
-            except Exception:
-                stderr_text = ""
     finally:
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=1)
         if process.stdout is not None:
             process.stdout.close()
         if process.stderr is not None:
             process.stderr.close()
+
+    if stderr_chunks:
+        stderr_text = "".join(stderr_chunks)
+        if stderr_truncated:
+            stderr_text += "\n[stderr truncated]"
 
     returncode = process.returncode if process.returncode is not None else 0
 

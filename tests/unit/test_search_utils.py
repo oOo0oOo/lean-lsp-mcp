@@ -263,6 +263,45 @@ def test_lean_search_wait_timeout_only_on_early_termination(
     assert waits == [5]
 
 
+def test_lean_search_reaps_process_on_parse_error(monkeypatch, reload_search_utils):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [_make_match("src/Foo/Bar.lean", "def ok : Nat := 0")]
+
+    calls: dict[str, int] = {"terminate": 0, "kill": 0, "wait": 0}
+
+    class _RecordingPopen(_DummyPopen):
+        def wait(self, timeout=None):
+            calls["wait"] += 1
+            return super().wait(timeout=timeout)
+
+        def terminate(self):
+            calls["terminate"] += 1
+            return super().terminate()
+
+        def kill(self):
+            calls["kill"] += 1
+            return super().kill()
+
+    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils,
+        "_create_ripgrep_process",
+        lambda cmd, *, cwd: _RecordingPopen(events),
+    )
+
+    def _raise_on_load(_: str):
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(search_utils, "_json_loads", _raise_on_load)
+
+    with pytest.raises(ValueError):
+        search_utils.lean_local_search("ok", project_root=project_root)
+
+    assert calls["wait"] >= 1
+    assert calls["terminate"] + calls["kill"] >= 1
+
+
 def test_lean_search_returns_relative_paths(monkeypatch, reload_search_utils):
     search_utils = reload_search_utils
     project_root = Path("/proj")
@@ -431,7 +470,7 @@ def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
     )
 
     assert len(results) == 1
-    assert results[0]["name"].startswith("add_comm")
+    assert results[0]["name"].split(".")[-1].startswith("add_comm")
 
 
 def test_lean_search_integration_stdlib_definitions(reload_search_utils):
