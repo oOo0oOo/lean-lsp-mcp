@@ -140,8 +140,13 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     return get_relative_file_path(project_path, file_path)
 
 
-def ensure_open_file(ctx: Context, rel_path: str) -> None:
-    """Open a Lean file in the LSP client only if not already open."""
+def ensure_open_file(ctx: Context, rel_path: str) -> bool:
+    """Open a Lean file in the LSP client only if not already open.
+
+    Returns True if this call opened the file, False if it was already open.
+    Callers that intend to close the file afterwards should only do so when
+    this function returns True.
+    """
     lifespan = ctx.request_context.lifespan_context
     client: LeanLSPClient | None = lifespan.client
     if client is None:
@@ -150,25 +155,28 @@ def ensure_open_file(ctx: Context, rel_path: str) -> None:
         if client is None:
             raise ValueError("Lean client not initialized.")
 
-    open_files: set[str]
-    if not hasattr(lifespan, "open_files"):
-        open_files = set()
-        lifespan.open_files = open_files
-    else:
-        open_files = lifespan.open_files
+    with CLIENT_LOCK:
+        open_files: set[str]
+        if not hasattr(lifespan, "open_files"):
+            open_files = set()
+            lifespan.open_files = open_files
+        else:
+            open_files = lifespan.open_files
 
-    if rel_path in open_files:
-        return
+        if rel_path in open_files:
+            return False
 
-    client.open_file(rel_path)
-    open_files.add(rel_path)
+        client.open_file(rel_path)
+        open_files.add(rel_path)
+        return True
 
 
 def mark_files_closed(ctx: Context, rel_paths: list[str]) -> None:
     """Remove files from the open-files cache after closing."""
     lifespan = ctx.request_context.lifespan_context
-    open_files: set[str] | None = getattr(lifespan, "open_files", None)
-    if not open_files:
-        return
-    for rel_path in rel_paths:
-        open_files.discard(rel_path)
+    with CLIENT_LOCK:
+        open_files: set[str] | None = getattr(lifespan, "open_files", None)
+        if not open_files:
+            return
+        for rel_path in rel_paths:
+            open_files.discard(rel_path)

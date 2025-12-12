@@ -20,6 +20,7 @@ from mcp.types import ToolAnnotations
 from leanclient import LeanLSPClient, DocumentContentChange
 
 from lean_lsp_mcp.client_utils import (
+    CLIENT_LOCK,
     setup_client_for_file,
     startup_client,
     infer_project_path,
@@ -232,8 +233,9 @@ async def lsp_build(
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
-            ctx.request_context.lifespan_context.client = None
-            ctx.request_context.lifespan_context.open_files = set()
+            with CLIENT_LOCK:
+                ctx.request_context.lifespan_context.client = None
+                ctx.request_context.lifespan_context.open_files = set()
             client.close()
 
         if clean:
@@ -300,8 +302,9 @@ async def lsp_build(
             )
 
         logger.info("Built project and re-started LSP client")
-        ctx.request_context.lifespan_context.client = client
-        ctx.request_context.lifespan_context.open_files = set()
+        with CLIENT_LOCK:
+            ctx.request_context.lifespan_context.client = client
+            ctx.request_context.lifespan_context.open_files = set()
 
         return BuildResult(
             success=True,
@@ -377,7 +380,7 @@ def file_outline(
 
     ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path)
+    return generate_outline_data(client, rel_path, open_file=False)
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
@@ -756,7 +759,7 @@ def multi_attempt(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
-    ensure_open_file(ctx, rel_path)
+    opened_here = ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
 
     try:
@@ -788,13 +791,14 @@ def multi_attempt(
 
         return _to_json_array(results)
     finally:
-        try:
-            client.close_files([rel_path])
-            mark_files_closed(ctx, [rel_path])
-        except Exception as exc:  # pragma: no cover - close failures only logged
-            logger.warning(
-                "Failed to close `%s` after multi_attempt: %s", rel_path, exc
-            )
+        if opened_here:
+            try:
+                client.close_files([rel_path])
+                mark_files_closed(ctx, [rel_path])
+            except Exception as exc:  # pragma: no cover - close failures only logged
+                logger.warning(
+                    "Failed to close `%s` after multi_attempt: %s", rel_path, exc
+                )
 
 
 @mcp.tool(
@@ -840,8 +844,7 @@ def run_code(
                 raise LeanToolError("Failed to initialize Lean client for run_code.")
 
         assert client is not None
-        ensure_open_file(ctx, rel_path)
-        opened_file = True
+        opened_file = ensure_open_file(ctx, rel_path)
         raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
     finally:
         if opened_file:
