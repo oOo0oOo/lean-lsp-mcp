@@ -222,7 +222,6 @@ def _build_outline_entry(
 
 def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
     """Generate structured outline data for a Lean file."""
-    client.open_file(path)
     content = client.get_file_content(path)
 
     # Extract imports
@@ -276,7 +275,6 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
 
 def generate_outline(client: LeanLSPClient, path: str) -> str:
     """Generate a concise outline of a Lean file showing structure and signatures."""
-    client.open_file(path)
     content = client.get_file_content(path)
 
     # Extract imports

@@ -22,6 +22,7 @@ def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNam
         client=None,
         rate_limit=rate_limit or {"test": []},
         lean_search_available=True,
+        open_files=set(),
     )
     request_context = types.SimpleNamespace(lifespan_context=context)
     return types.SimpleNamespace(request_context=request_context)
@@ -42,6 +43,7 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
             "lean_state_search": [],
             "hammer_premise": [],
         }
+        assert context.open_files == set()
 
 
 @pytest.mark.asyncio

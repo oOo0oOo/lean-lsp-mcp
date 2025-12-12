@@ -21,12 +21,13 @@ def startup_client(ctx: Context):
         ctx (Context): Context object.
     """
     with CLIENT_LOCK:
-        lean_project_path = ctx.request_context.lifespan_context.lean_project_path
+        lifespan = ctx.request_context.lifespan_context
+        lean_project_path = lifespan.lean_project_path
         if lean_project_path is None:
             raise ValueError("lean project path is not set.")
 
         # Check if already correct client
-        client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
+        client: LeanLSPClient | None = lifespan.client
 
         if client is not None:
             # Both are Path objects now, direct comparison works
@@ -34,6 +35,7 @@ def startup_client(ctx: Context):
                 return  # Client already set up correctly - reuse it!
             # Different project path - close old client
             client.close()
+            lifespan.open_files = set()
 
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
@@ -46,7 +48,9 @@ def startup_client(ctx: Context):
         build_output = output.get_output()
         if build_output:
             logger.debug(f"Build output: {build_output}")
-        ctx.request_context.lifespan_context.client = client
+        lifespan.client = client
+        if not hasattr(lifespan, "open_files"):
+            lifespan.open_files = set()
 
 
 def valid_lean_project_path(path: Path | str) -> bool:
@@ -134,3 +138,37 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
 
     startup_client(ctx)
     return get_relative_file_path(project_path, file_path)
+
+
+def ensure_open_file(ctx: Context, rel_path: str) -> None:
+    """Open a Lean file in the LSP client only if not already open."""
+    lifespan = ctx.request_context.lifespan_context
+    client: LeanLSPClient | None = lifespan.client
+    if client is None:
+        startup_client(ctx)
+        client = lifespan.client
+        if client is None:
+            raise ValueError("Lean client not initialized.")
+
+    open_files: set[str]
+    if not hasattr(lifespan, "open_files"):
+        open_files = set()
+        lifespan.open_files = open_files
+    else:
+        open_files = lifespan.open_files
+
+    if rel_path in open_files:
+        return
+
+    client.open_file(rel_path)
+    open_files.add(rel_path)
+
+
+def mark_files_closed(ctx: Context, rel_paths: list[str]) -> None:
+    """Remove files from the open-files cache after closing."""
+    lifespan = ctx.request_context.lifespan_context
+    open_files: set[str] | None = getattr(lifespan, "open_files", None)
+    if not open_files:
+        return
+    for rel_path in rel_paths:
+        open_files.discard(rel_path)
