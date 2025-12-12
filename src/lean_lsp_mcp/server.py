@@ -4,6 +4,7 @@ import re
 import time
 from typing import Annotated, List, Optional, Dict
 from contextlib import asynccontextmanager
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import urllib
@@ -89,7 +90,7 @@ _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 class AppContext:
     lean_project_path: Path | None
     client: LeanLSPClient | None
-    rate_limit: Dict[str, List[int]]
+    rate_limit: Dict[str, deque[int]]
     lean_search_available: bool
     open_files: set[str]
     loogle_manager: LoogleManager | None = None
@@ -125,11 +126,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path=lean_project_path,
             client=None,
             rate_limit={
-                "leansearch": [],
-                "loogle": [],
-                "leanfinder": [],
-                "lean_state_search": [],
-                "hammer_premise": [],
+                "leansearch": deque(),
+                "loogle": deque(),
+                "leanfinder": deque(),
+                "lean_state_search": deque(),
+                "hammer_premise": deque(),
             },
             lean_search_available=_RG_AVAILABLE,
             open_files=set(),
@@ -179,14 +180,13 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
                 ctx = args[0]
             rate_limit = ctx.request_context.lifespan_context.rate_limit
             current_time = int(time.time())
-            rate_limit[category] = [
-                timestamp
-                for timestamp in rate_limit[category]
-                if timestamp > current_time - per_seconds
-            ]
-            if len(rate_limit[category]) >= max_requests:
+            timestamps = rate_limit.setdefault(category, deque())
+            cutoff = current_time - per_seconds
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            if len(timestamps) >= max_requests:
                 return f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later."
-            rate_limit[category].append(current_time)
+            timestamps.append(current_time)
             return func(*args, **kwargs)
 
         wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. " + wrapper.__doc__
@@ -1031,7 +1031,8 @@ async def loogle(
     # Fall back to remote (with rate limiting)
     rate_limit = app_ctx.rate_limit["loogle"]
     now = int(time.time())
-    rate_limit[:] = [t for t in rate_limit if now - t < 30]
+    while rate_limit and now - rate_limit[0] >= 30:
+        rate_limit.popleft()
     if len(rate_limit) >= 3:
         return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
     rate_limit.append(now)

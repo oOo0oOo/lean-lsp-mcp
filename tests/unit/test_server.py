@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -16,11 +17,11 @@ class DummyClient:
         self.closed_calls += 1
 
 
-def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
+def _make_ctx(rate_limit: dict[str, deque[int]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
         client=None,
-        rate_limit=rate_limit or {"test": []},
+        rate_limit=rate_limit or {"test": deque()},
         lean_search_available=True,
         open_files=set(),
     )
@@ -37,11 +38,11 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         assert context.lean_project_path is None
         assert context.client is None
         assert context.rate_limit == {
-            "leansearch": [],
-            "loogle": [],
-            "leanfinder": [],
-            "lean_state_search": [],
-            "hammer_premise": [],
+            "leansearch": deque(),
+            "loogle": deque(),
+            "leanfinder": deque(),
+            "lean_state_search": deque(),
+            "hammer_premise": deque(),
         }
         assert context.open_files == set()
 
@@ -105,7 +106,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
 
-    rate_limit = {"test": [80, 81]}
+    rate_limit = {"test": deque([80, 81])}
     ctx = _make_ctx(rate_limit=rate_limit)
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
@@ -114,7 +115,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
         return "ok"
 
     assert wrapped(ctx=ctx) == "ok"
-    assert rate_limit["test"] == [100]
+    assert rate_limit["test"] == deque([100])
 
 
 def test_local_search_project_root_updates_context(
