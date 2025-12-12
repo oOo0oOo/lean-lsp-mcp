@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 import orjson
 from leanclient import DocumentContentChange, LeanLSPClient
@@ -75,6 +75,20 @@ from lean_lsp_mcp.utils import (
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
 
+async def _urlopen_bytes(req: urllib.request.Request, timeout: float) -> bytes:
+    """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
+
+    def _do_request() -> bytes:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read()
+
+    return await asyncio.to_thread(_do_request)
+
+
+async def _urlopen_json(req: urllib.request.Request, timeout: float) -> Any:
+    """Fetch JSON via urllib in a thread and decode with orjson."""
+    raw = await _urlopen_bytes(req, timeout=timeout)
+    return orjson.loads(raw)
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
 configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
@@ -164,8 +178,7 @@ mcp = FastMCP(**mcp_kwargs)
 
 def rate_limited(category: str, max_requests: int, per_seconds: int):
     def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def _apply_rate_limit(args, kwargs):
             ctx = kwargs.get("ctx")
             if ctx is None:
                 if not args:
@@ -181,11 +194,33 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
                 if timestamp > current_time - per_seconds
             ]
             if len(rate_limit[category]) >= max_requests:
-                return f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later."
+                return (
+                    False,
+                    f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later.",
+                )
             rate_limit[category].append(current_time)
-            return func(*args, **kwargs)
+            return True, None
 
-        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. " + wrapper.__doc__
+        if asyncio.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                allowed, msg = _apply_rate_limit(args, kwargs)
+                if not allowed:
+                    return msg
+                return await func(*args, **kwargs)
+
+        else:
+
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                allowed, msg = _apply_rate_limit(args, kwargs)
+                if not allowed:
+                    return msg
+                return func(*args, **kwargs)
+
+        doc = wrapper.__doc__ or ""
+        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. {doc}"
         return wrapper
 
     return decorator
@@ -934,7 +969,7 @@ def local_search(
     ),
 )
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(
+async def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -954,8 +989,7 @@ def leansearch(
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=10) as response:
-        results = orjson.loads(response.read())
+    results = await _urlopen_json(req, timeout=10)
 
     if not results or not results[0]:
         return LeanSearchResults(items=[])
@@ -1029,7 +1063,7 @@ async def loogle(
         )
     rate_limit.append(now)
 
-    result = loogle_remote(query, num_results)
+    result = await asyncio.to_thread(loogle_remote, query, num_results)
     if isinstance(result, str):
         raise LeanToolError(result)  # Error message from remote
     return LoogleResults(items=result)
@@ -1045,7 +1079,7 @@ async def loogle(
     ),
 )
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
-def leanfinder(
+async def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept or proof state")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -1063,23 +1097,22 @@ def leanfinder(
     )
 
     results: List[LeanFinderResult] = []
-    with urllib.request.urlopen(req, timeout=10) as response:
-        data = orjson.loads(response.read())
-        for result in data["results"]:
-            if (
-                "https://leanprover-community.github.io/mathlib4_docs"
-                not in result["url"]
-            ):  # Only include mathlib4 results
-                continue
-            match = re.search(r"pattern=(.*?)#doc", result["url"])
-            if match:
-                results.append(
-                    LeanFinderResult(
-                        full_name=match.group(1),
-                        formal_statement=result["formal_statement"],
-                        informal_statement=result["informal_statement"],
-                    )
+    data = await _urlopen_json(req, timeout=10)
+    for result in data["results"]:
+        if (
+            "https://leanprover-community.github.io/mathlib4_docs"
+            not in result["url"]
+        ):  # Only include mathlib4 results
+            continue
+        match = re.search(r"pattern=(.*?)#doc", result["url"])
+        if match:
+            results.append(
+                LeanFinderResult(
+                    full_name=match.group(1),
+                    formal_statement=result["formal_statement"],
+                    informal_statement=result["informal_statement"],
                 )
+            )
 
     return LeanFinderResults(items=results)
 
@@ -1094,7 +1127,7 @@ def leanfinder(
     ),
 )
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
-def state_search(
+async def state_search(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
@@ -1126,8 +1159,7 @@ def state_search(
         method="GET",
     )
 
-    with urllib.request.urlopen(req, timeout=10) as response:
-        results = orjson.loads(response.read())
+    results = await _urlopen_json(req, timeout=10)
 
     items = [StateSearchResult(name=r["name"]) for r in results]
     return StateSearchResults(items=items)
@@ -1143,7 +1175,7 @@ def state_search(
     ),
 )
 @rate_limited("hammer_premise", max_requests=3, per_seconds=30)
-def hammer_premise(
+async def hammer_premise(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
@@ -1186,8 +1218,7 @@ def hammer_premise(
         data=orjson.dumps(data),
     )
 
-    with urllib.request.urlopen(req, timeout=10) as response:
-        results = orjson.loads(response.read())
+    results = await _urlopen_json(req, timeout=10)
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
