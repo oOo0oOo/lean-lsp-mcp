@@ -225,6 +225,44 @@ def test_lean_search_respects_limit(monkeypatch, reload_search_utils):
     assert len(results) == 2
 
 
+def test_lean_search_wait_timeout_only_on_early_termination(
+    monkeypatch, reload_search_utils
+):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("src/Foo/Bar.lean", "def my : Nat := 0"),
+        _make_match("src/Foo/Baz.lean", "def my : Nat := 1"),
+    ]
+
+    waits: list[float | None] = []
+    terminate_calls: list[None] = []
+
+    class _RecordingPopen(_DummyPopen):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return super().wait(timeout=timeout)
+
+        def terminate(self):
+            terminate_calls.append(None)
+            return super().terminate()
+
+    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils,
+        "_create_ripgrep_process",
+        lambda cmd, *, cwd: _RecordingPopen(events),
+    )
+
+    search_utils.lean_local_search("my", limit=10, project_root=project_root)
+    assert waits == [None]
+
+    waits.clear()
+    search_utils.lean_local_search("my", limit=1, project_root=project_root)
+    assert terminate_calls
+    assert waits == [5]
+
+
 def test_lean_search_returns_relative_paths(monkeypatch, reload_search_utils):
     search_utils = reload_search_utils
     project_root = Path("/proj")

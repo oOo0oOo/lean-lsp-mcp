@@ -105,6 +105,7 @@ def lean_local_search(
 
     matches: list[dict[str, str]] = []
     stderr_text = ""
+    terminated_early = False
 
     try:
         stdout = process.stdout
@@ -134,6 +135,7 @@ def lean_local_search(
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
 
             if len(matches) >= limit:
+                terminated_early = True
                 try:
                     process.terminate()
                 except Exception:
@@ -141,10 +143,13 @@ def lean_local_search(
                 break
 
         try:
-            process.wait(timeout=1)
+            if terminated_early:
+                process.wait(timeout=5)
+            else:
+                process.wait()
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait(timeout=1)
+            process.wait()
 
         if process.stderr is not None:
             try:
