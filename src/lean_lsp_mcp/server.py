@@ -753,8 +753,6 @@ def multi_attempt(
     client.open_file(rel_path)
 
     try:
-        client.open_file(rel_path)
-
         results: List[AttemptResult] = []
         # Avoid mutating caller-provided snippets; normalize locally per attempt
         for snippet in snippets:

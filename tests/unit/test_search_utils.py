@@ -1,4 +1,5 @@
 import importlib
+import io
 import orjson
 from pathlib import Path
 
@@ -93,29 +94,52 @@ class _DummyCompletedProcess:
         self.args = []
 
 
+class _DummyPopen:
+    def __init__(self, stdout_lines, returncode=0, stderr_text=""):
+        self.stdout = io.StringIO("".join(f"{line}\n" for line in stdout_lines))
+        self.stderr = io.StringIO(stderr_text)
+        self.returncode = None
+        self._final_code = returncode
+
+    def wait(self, timeout=None):
+        self.returncode = self._final_code
+        return self._final_code
+
+    def terminate(self):
+        self.returncode = self._final_code
+
+    def kill(self):
+        self.returncode = self._final_code
+
+
 def _configure_env(
     monkeypatch, search_utils, stdout_events, returncode=0, expected_cwd=None
 ):
-    completed = _DummyCompletedProcess(stdout_events, returncode=returncode)
     lean_completed = _DummyCompletedProcess(["/nonexistent/lean"], returncode=0)
 
     def fake_check():
         return True, ""
 
     run_calls = []
+    create_calls = []
+
+    def fake_create(cmd, *, cwd):
+        create_calls.append((cmd, cwd))
+        if expected_cwd is not None and cmd and cmd[0] == "rg":
+            assert cwd == expected_cwd
+        return _DummyPopen(stdout_events, returncode=returncode)
 
     def fake_run(cmd, *, capture_output=False, text=False, cwd=None):
         run_calls.append((cmd, cwd))
-        if expected_cwd is not None and cmd and cmd[0] == "rg":
-            assert cwd == expected_cwd
         if cmd[:2] == ["lean", "--print-prefix"]:
             return lean_completed
-        return completed
+        raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
 
     monkeypatch.setattr(search_utils, "check_ripgrep_status", fake_check)
+    monkeypatch.setattr(search_utils, "_create_ripgrep_process", fake_create)
     monkeypatch.setattr(search_utils.subprocess, "run", fake_run)
 
-    return completed, run_calls
+    return create_calls, run_calls
 
 
 def test_lean_search_returns_matching_results(monkeypatch, reload_search_utils):
@@ -199,6 +223,83 @@ def test_lean_search_respects_limit(monkeypatch, reload_search_utils):
     results = search_utils.lean_local_search("dup", limit=2, project_root=project_root)
 
     assert len(results) == 2
+
+
+def test_lean_search_wait_timeout_only_on_early_termination(
+    monkeypatch, reload_search_utils
+):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("src/Foo/Bar.lean", "def my : Nat := 0"),
+        _make_match("src/Foo/Baz.lean", "def my : Nat := 1"),
+    ]
+
+    waits: list[float | None] = []
+    terminate_calls: list[None] = []
+
+    class _RecordingPopen(_DummyPopen):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return super().wait(timeout=timeout)
+
+        def terminate(self):
+            terminate_calls.append(None)
+            return super().terminate()
+
+    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils,
+        "_create_ripgrep_process",
+        lambda cmd, *, cwd: _RecordingPopen(events),
+    )
+
+    search_utils.lean_local_search("my", limit=10, project_root=project_root)
+    assert waits == [None]
+
+    waits.clear()
+    search_utils.lean_local_search("my", limit=1, project_root=project_root)
+    assert terminate_calls
+    assert waits == [5]
+
+
+def test_lean_search_reaps_process_on_parse_error(monkeypatch, reload_search_utils):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [_make_match("src/Foo/Bar.lean", "def ok : Nat := 0")]
+
+    calls: dict[str, int] = {"terminate": 0, "kill": 0, "wait": 0}
+
+    class _RecordingPopen(_DummyPopen):
+        def wait(self, timeout=None):
+            calls["wait"] += 1
+            return super().wait(timeout=timeout)
+
+        def terminate(self):
+            calls["terminate"] += 1
+            return super().terminate()
+
+        def kill(self):
+            calls["kill"] += 1
+            return super().kill()
+
+    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils,
+        "_create_ripgrep_process",
+        lambda cmd, *, cwd: _RecordingPopen(events),
+    )
+
+    def _raise_on_load(_: str):
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(search_utils, "_json_loads", _raise_on_load)
+
+    with pytest.raises(ValueError):
+        search_utils.lean_local_search("ok", project_root=project_root)
+
+    assert calls["wait"] >= 1
+    assert calls["terminate"] + calls["kill"] >= 1
 
 
 def test_lean_search_returns_relative_paths(monkeypatch, reload_search_utils):
@@ -369,7 +470,7 @@ def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
     )
 
     assert len(results) == 1
-    assert results[0]["name"].startswith("add_comm")
+    assert results[0]["name"].split(".")[-1].startswith("add_comm")
 
 
 def test_lean_search_integration_stdlib_definitions(reload_search_utils):
