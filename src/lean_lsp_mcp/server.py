@@ -46,6 +46,16 @@ from lean_lsp_mcp.models import (
     BuildResult,
     RunResult,
     DeclarationInfo,
+    # Wrapper models for list-returning tools
+    DiagnosticsResult,
+    CompletionsResult,
+    MultiAttemptResult,
+    LocalSearchResults,
+    LeanSearchResults,
+    LoogleResults,
+    LeanFinderResults,
+    StateSearchResults,
+    PremiseResults,
 )
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -65,13 +75,6 @@ DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "
 
 class LeanToolError(Exception):
     pass
-
-
-def _to_json_array(items: List[BaseModel]) -> str:
-    """Serialize list of models as JSON array (avoids FastMCP list flattening)."""
-    return orjson.dumps(
-        [item.model_dump() for item in items], option=orjson.OPT_INDENT_2
-    ).decode()
 
 
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
@@ -414,7 +417,7 @@ def diagnostic_messages(
     declaration_name: Annotated[
         Optional[str], Field(description="Filter to declaration (slow)")
     ] = None,
-) -> str:
+) -> DiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -443,7 +446,7 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return _to_json_array(_to_diagnostic_messages(diagnostics))
+    return DiagnosticsResult(items=_to_diagnostic_messages(diagnostics))
 
 
 @mcp.tool(
@@ -610,7 +613,7 @@ def completions(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     max_completions: Annotated[int, Field(description="Max completions", ge=1)] = 32,
-) -> str:
+) -> CompletionsResult:
     """Get IDE autocompletions. Use on INCOMPLETE code (after `.` or partial name)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -639,7 +642,7 @@ def completions(
         )
 
     if not items:
-        return "[]"
+        return CompletionsResult(items=[])
 
     # Find the sort term: The last word/identifier before the cursor
     lines = content.splitlines()
@@ -666,7 +669,7 @@ def completions(
         items.sort(key=lambda x: x.label.lower())
 
     # Truncate if too many results
-    return _to_json_array(items[:max_completions])
+    return CompletionsResult(items=items[:max_completions])
 
 
 @mcp.tool(
@@ -741,7 +744,7 @@ def multi_attempt(
     snippets: Annotated[
         List[str], Field(description="Tactics to try (3+ recommended)")
     ],
-) -> str:
+) -> MultiAttemptResult:
     """Try multiple tactics without modifying file. Returns goal state for each."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -779,7 +782,7 @@ def multi_attempt(
                 )
             )
 
-        return _to_json_array(results)
+        return MultiAttemptResult(items=results)
     finally:
         try:
             client.close_files([rel_path])
@@ -876,7 +879,7 @@ def local_search(
     project_root: Annotated[
         Optional[str], Field(description="Project root (inferred if omitted)")
     ] = None,
-) -> str:
+) -> LocalSearchResults:
     """Fast local search to verify declarations exist. Use BEFORE trying a lemma name."""
     if not _RG_AVAILABLE:
         raise LocalSearchError(_RG_MESSAGE)
@@ -908,7 +911,7 @@ def local_search(
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
             for r in raw_results
         ]
-        return _to_json_array(results)
+        return LocalSearchResults(items=results)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
 
@@ -927,7 +930,7 @@ def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
-) -> str:
+) -> LeanSearchResults:
     """Search Mathlib via leansearch.net using natural language.
 
     Examples: "sum of two even numbers is even", "Cauchy-Schwarz inequality",
@@ -947,7 +950,7 @@ def leansearch(
         results = orjson.loads(response.read())
 
     if not results or not results[0]:
-        return "[]"
+        return LeanSearchResults(items=[])
 
     raw_results = [r["result"] for r in results[0][:num_results]]
     items = [
@@ -959,7 +962,7 @@ def leansearch(
         )
         for r in raw_results
     ]
-    return _to_json_array(items)
+    return LeanSearchResults(items=items)
 
 
 @mcp.tool(
@@ -977,7 +980,7 @@ async def loogle(
         str, Field(description="Type pattern, constant, or name substring")
     ],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 8,
-) -> str:
+) -> LoogleResults:
     """Search Mathlib by type signature via loogle.lean-lang.org.
 
     Examples: `Real.sin`, `"comm"`, `(?a → ?b) → List ?a → List ?b`,
@@ -990,7 +993,7 @@ async def loogle(
         try:
             results = await app_ctx.loogle_manager.query(query, num_results)
             if not results:
-                return "No results found."
+                return LoogleResults(items=[])
             items = [
                 LoogleResult(
                     name=r.get("name", ""),
@@ -999,7 +1002,7 @@ async def loogle(
                 )
                 for r in results
             ]
-            return _to_json_array(items)
+            return LoogleResults(items=items)
         except Exception as e:
             logger.warning(f"Local loogle failed: {e}, falling back to remote")
 
@@ -1008,13 +1011,15 @@ async def loogle(
     now = int(time.time())
     rate_limit[:] = [t for t in rate_limit if now - t < 30]
     if len(rate_limit) >= 3:
-        return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+        raise LeanToolError(
+            "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+        )
     rate_limit.append(now)
 
     result = loogle_remote(query, num_results)
     if isinstance(result, str):
-        return result  # Error message
-    return _to_json_array(result)
+        raise LeanToolError(result)  # Error message from remote
+    return LoogleResults(items=result)
 
 
 @mcp.tool(
@@ -1031,7 +1036,7 @@ def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept or proof state")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
-) -> str:
+) -> LeanFinderResults:
     """Semantic search by mathematical meaning via Lean Finder.
 
     Examples: "commutativity of addition on natural numbers",
@@ -1063,7 +1068,7 @@ def leanfinder(
                     )
                 )
 
-    return _to_json_array(results)
+    return LeanFinderResults(items=results)
 
 
 @mcp.tool(
@@ -1082,7 +1087,7 @@ def state_search(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
-) -> str:
+) -> StateSearchResults:
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -1112,7 +1117,7 @@ def state_search(
         results = orjson.loads(response.read())
 
     items = [StateSearchResult(name=r["name"]) for r in results]
-    return _to_json_array(items)
+    return StateSearchResults(items=items)
 
 
 @mcp.tool(
@@ -1131,7 +1136,7 @@ def hammer_premise(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 32,
-) -> str:
+) -> PremiseResults:
     """Get premise suggestions for automation tactics at a goal position.
 
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
@@ -1172,7 +1177,7 @@ def hammer_premise(
         results = orjson.loads(response.read())
 
     items = [PremiseResult(name=r["name"]) for r in results]
-    return _to_json_array(items)
+    return PremiseResults(items=items)
 
 
 if __name__ == "__main__":

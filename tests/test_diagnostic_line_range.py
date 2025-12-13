@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -8,6 +9,21 @@ from typing import AsyncContextManager
 import pytest
 
 from tests.helpers.mcp_client import MCPClient, MCPToolError, result_text
+
+
+def parse_diagnostics_result(result) -> list[dict]:
+    """Parse diagnostics result, handling both structured and text formats."""
+    if result.structuredContent is not None:
+        return result.structuredContent.get("items", [])
+    # Fallback to parsing text output
+    text = result_text(result).strip()
+    if not text or text == "[]":
+        return []
+    try:
+        parsed = json.loads(text)
+        return parsed.get("items", parsed) if isinstance(parsed, dict) else parsed
+    except json.JSONDecodeError:
+        return []
 
 
 @pytest.fixture(scope="module")
@@ -51,12 +67,14 @@ async def test_diagnostic_messages_line_filtering(
             "lean_diagnostic_messages",
             {"file_path": str(diagnostic_file)},
         )
-        diag_text = result_text(diagnostics)
-        # Should contain both errors - now returns JSON with "severity" field
-        assert "string" in diag_text.lower() or "error" in diag_text.lower()
-        # Count occurrences of "severity" in JSON output (appears as field name)
-        assert diag_text.count('"severity"') >= 2
-        all_diag_text = diag_text
+        all_items = parse_diagnostics_result(diagnostics)
+        # Should contain at least 2 errors
+        assert len(all_items) >= 2, f"Expected at least 2 diagnostics, got {len(all_items)}"
+        # Verify items have expected structure
+        for item in all_items:
+            assert "severity" in item
+            assert "message" in item
+            assert "line" in item
 
         # Test 2: Get diagnostics starting from line 10
         diagnostics = await client.call_tool(
@@ -66,18 +84,13 @@ async def test_diagnostic_messages_line_filtering(
                 "start_line": 10,
             },
         )
-        diag_text = result_text(diagnostics)
-        # Should contain the second error (line 13: anotherError)
-        assert "123" in diag_text or "error" in diag_text.lower()
-        assert len(diag_text) < len(all_diag_text)
+        filtered_items = parse_diagnostics_result(diagnostics)
+        # Should have fewer diagnostics than unfiltered
+        assert len(filtered_items) < len(all_items)
 
         # Test 3: Get diagnostics for specific line range
-        import re
-
-        # Extract start_line from JSON format (e.g., "start_line": 7)
-        line_matches = re.findall(r'"start_line":\s*(\d+)', all_diag_text)
-        if line_matches:
-            first_error_line = int(line_matches[0])
+        if all_items:
+            first_error_line = all_items[0]["line"]
             diagnostics = await client.call_tool(
                 "lean_diagnostic_messages",
                 {
@@ -86,9 +99,9 @@ async def test_diagnostic_messages_line_filtering(
                     "end_line": first_error_line,
                 },
             )
-            diag_text = result_text(diagnostics)
-            assert "string" in diag_text.lower() or len(diag_text) > 0
-            assert len(diag_text) < len(all_diag_text)
+            range_items = parse_diagnostics_result(diagnostics)
+            assert len(range_items) >= 1
+            assert len(range_items) < len(all_items)
 
         # Test 4: Get diagnostics for range with no errors (lines 14-17)
         diagnostics = await client.call_tool(
@@ -99,9 +112,9 @@ async def test_diagnostic_messages_line_filtering(
                 "end_line": 17,
             },
         )
-        diag_text = result_text(diagnostics)
-        # Empty array or no diagnostics
-        assert diag_text.strip() == "[]" or len(diag_text.strip()) == 0
+        empty_items = parse_diagnostics_result(diagnostics)
+        # Should be empty
+        assert len(empty_items) == 0, f"Expected no diagnostics, got {len(empty_items)}"
 
 
 @pytest.fixture(scope="module")
@@ -142,9 +155,8 @@ async def test_diagnostic_messages_declaration_filtering(
             "lean_diagnostic_messages",
             {"file_path": str(declaration_diagnostic_file)},
         )
-        all_diag_text = result_text(all_diagnostics)
-        assert len(all_diag_text) > 0
-        assert "string" in all_diag_text.lower() or "type" in all_diag_text.lower()
+        all_items = parse_diagnostics_result(all_diagnostics)
+        assert len(all_items) > 0, "Expected diagnostics in file with errors"
 
         # Test 2: Get diagnostics for firstTheorem only
         diagnostics = await client.call_tool(
@@ -154,9 +166,9 @@ async def test_diagnostic_messages_declaration_filtering(
                 "declaration_name": "firstTheorem",
             },
         )
-        diag_text = result_text(diagnostics)
-        assert len(diag_text) > 0
-        assert len(diag_text) <= len(all_diag_text)
+        first_items = parse_diagnostics_result(diagnostics)
+        assert len(first_items) > 0
+        assert len(first_items) <= len(all_items)
 
         # Test 3: Get diagnostics for secondTheorem (has type error in statement)
         diagnostics = await client.call_tool(
@@ -166,9 +178,8 @@ async def test_diagnostic_messages_declaration_filtering(
                 "declaration_name": "secondTheorem",
             },
         )
-        diag_text = result_text(diagnostics)
-        assert len(diag_text) > 0
-        assert isinstance(diag_text, str)
+        second_items = parse_diagnostics_result(diagnostics)
+        assert len(second_items) > 0
 
         # Test 4: Get diagnostics for validFunction (no errors)
         diagnostics = await client.call_tool(
@@ -178,12 +189,8 @@ async def test_diagnostic_messages_declaration_filtering(
                 "declaration_name": "validFunction",
             },
         )
-        diag_text = result_text(diagnostics)
-        assert (
-            "no" in diag_text.lower()
-            or len(diag_text.strip()) == 0
-            or diag_text == "[]"
-        )
+        valid_items = parse_diagnostics_result(diagnostics)
+        assert len(valid_items) == 0, f"Expected no diagnostics for valid function, got {len(valid_items)}"
 
 
 @pytest.mark.asyncio
@@ -250,9 +257,12 @@ async def test_diagnostic_messages_detects_kernel_errors(
             "lean_diagnostic_messages",
             {"file_path": str(kernel_error_file)},
         )
-        diag_text = result_text(diagnostics)
+        items = parse_diagnostics_result(diagnostics)
 
-        # Detect kernel error and regular error
-        assert "kernel" in diag_text.lower() or "unsafe" in diag_text.lower()
-        assert "rfl" in diag_text.lower() or "failed" in diag_text.lower()
-        assert diag_text.count("severity") >= 2
+        # Should have at least 2 diagnostics
+        assert len(items) >= 2, f"Expected at least 2 diagnostics, got {len(items)}"
+
+        # Check for kernel error and regular error in message content
+        all_messages = " ".join(item.get("message", "").lower() for item in items)
+        assert "kernel" in all_messages or "unsafe" in all_messages
+        assert "rfl" in all_messages or "failed" in all_messages
