@@ -107,7 +107,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         # Initialize local loogle if enabled via env var or CLI
         if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
             logger.info("Local loogle enabled, initializing...")
-            loogle_manager = LoogleManager()
+            loogle_manager = LoogleManager(project_path=lean_project_path)
             if loogle_manager.ensure_installed():
                 if await loogle_manager.start():
                     loogle_local_available = True
@@ -987,6 +987,11 @@ async def loogle(
 
     # Try local loogle first if available (no rate limiting)
     if app_ctx.loogle_local_available and app_ctx.loogle_manager:
+        # Update project path if it changed (adds new library paths)
+        if app_ctx.lean_project_path != app_ctx.loogle_manager.project_path:
+            if app_ctx.loogle_manager.set_project_path(app_ctx.lean_project_path):
+                # Restart to pick up new paths
+                await app_ctx.loogle_manager.stop()
         try:
             results = await app_ctx.loogle_manager.query(query, num_results)
             if not results:

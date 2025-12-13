@@ -235,6 +235,57 @@ class TestLoogleManager:
         assert len(remaining) == 1
         assert remaining[0] == current
 
+    def test_discover_project_paths_no_project(self, mgr):
+        assert mgr._discover_project_paths() == []
+
+    def test_discover_project_paths(self, tmp_path):
+        # Create a fake project with packages
+        project = tmp_path / "project"
+        pkg1_lib = project / ".lake" / "packages" / "pkg1" / ".lake" / "build" / "lib" / "lean"
+        pkg2_lib = project / ".lake" / "packages" / "pkg2" / ".lake" / "build" / "lib" / "lean"
+        project_lib = project / ".lake" / "build" / "lib" / "lean"
+        pkg1_lib.mkdir(parents=True)
+        pkg2_lib.mkdir(parents=True)
+        project_lib.mkdir(parents=True)
+
+        mgr = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
+        paths = mgr._discover_project_paths()
+
+        assert len(paths) == 3
+        assert pkg1_lib in paths
+        assert pkg2_lib in paths
+        assert project_lib in paths
+
+    def test_index_path_with_project(self, tmp_path):
+        # Without project - base index name
+        mgr1 = LoogleManager(cache_dir=tmp_path / "cache1")
+        path1 = mgr1._get_index_path()
+        assert "mathlib-" in path1.name
+        assert path1.name.count("-") == 1  # Just mathlib-<version>.idx
+
+        # With extra paths - includes hash
+        mgr2 = LoogleManager(cache_dir=tmp_path / "cache2")
+        mgr2._extra_paths = [Path("/some/path")]
+        path2 = mgr2._get_index_path()
+        assert path2.name.count("-") == 2  # mathlib-<version>-<hash>.idx
+
+    def test_set_project_path(self, tmp_path):
+        project = tmp_path / "project"
+        lib = project / ".lake" / "build" / "lib" / "lean"
+        lib.mkdir(parents=True)
+
+        mgr = LoogleManager(cache_dir=tmp_path / "cache")
+        assert mgr._extra_paths == []
+
+        # Setting project path discovers paths
+        changed = mgr.set_project_path(project)
+        assert changed
+        assert len(mgr._extra_paths) == 1
+
+        # Setting same path again - no change
+        changed = mgr.set_project_path(project)
+        assert not changed
+
 
 @pytest.mark.slow
 class TestLoogleIntegration:
