@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 import time
-from typing import Annotated, List, Optional, Dict
+from typing import Annotated, List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -57,6 +57,11 @@ from lean_lsp_mcp.utils import (
     format_goal,
     get_declaration_range,
     OptionalTokenVerifier,
+)
+from lean_lsp_mcp.render_utils import (
+    proofwidget_to_html,
+    render_widget_to_base64,
+    extract_images_from_props,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
@@ -289,8 +294,9 @@ async def lsp_build(
             )
 
         # Start LSP client (without initial build since we just did it)
+        # Use widget-aware client to enable base64 image extraction from #png etc.
         with OutputCapture():
-            client = LeanLSPClient(
+            client = WidgetAwareLeanLSPClient(
                 lean_project_path_obj, initial_build=False, prevent_cache_get=True
             )
 
@@ -1173,6 +1179,217 @@ def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return _to_json_array(items)
+
+
+def _extract_widget_images(props: dict) -> List[Tuple[str, str]]:
+    """Extract images from widget props using multiple strategies.
+
+    Order of extraction:
+    1. Direct base64/image props (fastest, no rendering needed)
+    2. Data URLs embedded in props
+    3. HTML rendering as fallback (requires headless browser)
+
+    Args:
+        props: Widget props dictionary
+
+    Returns:
+        List of (mime_type, base64_data) tuples
+    """
+    images = []
+
+    # First: try extracting pre-rendered images (fast path)
+    extracted = extract_images_from_props(props)
+    images.extend(extracted)
+
+    # Second: if no images found and html prop exists, render it
+    if not images and "html" in props:
+        html_data = props["html"]
+        if html_data:
+            img_b64 = render_widget_to_base64(html_data)
+            if img_b64:
+                images.append(("image/png", img_b64))
+
+    return images
+
+
+@mcp.tool(
+    "lean_infoview",
+    annotations=ToolAnnotations(
+        title="Infoview",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def infoview(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    column: int,
+    render_images: bool = True,
+) -> List[Dict] | Dict | str:
+    """Get everything the infoview shows at a cursor position.
+
+    Aggregates: goal state, term goal, hover info, line diagnostics, and widgets.
+    Returns what a human sees in VS Code/Cursor infoview - including rendered widget images.
+
+    When render_images=True (default), returns MCP content array with text and images.
+    This allows multimodal models to actually "see" widget visualizations.
+
+    Args:
+        file_path (str): Absolute path to Lean file
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed)
+        render_images (bool): If True, render widget HTML to PNG images (default: True)
+
+    Returns:
+        Combined infoview data with optional rendered images as MCP content array
+    """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "Invalid Lean file path: Unable to start LSP server or load file"
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    content = client.get_file_content(rel_path)
+
+    # Gather all infoview data
+    result = {
+        "position": {"line": line, "column": column},
+        "goal": None,
+        "term_goal": None,
+        "hover": None,
+        "diagnostics": [],
+        "widgets": [],
+    }
+
+    # 1. Get proof goal (tactic mode)
+    try:
+        goal_data = client.get_goal(rel_path, line - 1, column - 1)
+        if goal_data and goal_data.get("goals"):
+            result["goal"] = goal_data["goals"]
+    except Exception as e:
+        logger.debug(f"Failed to get goal: {e}")
+
+    # 2. Get term goal (expected type)
+    try:
+        term_goal_data = client.get_term_goal(rel_path, line - 1, column - 1)
+        if term_goal_data:
+            goal_str = term_goal_data.get("goal", "")
+            if goal_str:
+                # Clean up markdown formatting
+                goal_str = goal_str.replace("```lean\n", "").replace("\n```", "")
+                result["term_goal"] = {"goal": goal_str}
+    except Exception as e:
+        logger.debug(f"Failed to get term goal: {e}")
+
+    # 3. Get hover info
+    try:
+        hover_data = client.get_hover(rel_path, line - 1, column - 1)
+        if hover_data:
+            info = hover_data.get("contents", {}).get("value", "")
+            info = info.replace("```lean\n", "").replace("\n```", "").strip()
+            h_range = hover_data.get("range")
+            symbol = extract_range(content, h_range)
+            result["hover"] = {
+                "symbol": symbol,
+                "info": info,
+                "range": h_range,
+            }
+    except Exception as e:
+        logger.debug(f"Failed to get hover: {e}")
+
+    # 4. Get diagnostics for current line only
+    try:
+        diag_data = client.get_diagnostics(
+            rel_path, start_line=line - 1, end_line=line - 1
+        )
+        if diag_data:
+            result["diagnostics"] = [
+                    {"severity": d.severity, "message": d.message, "line": d.line, "column": d.column}
+                    for d in _to_diagnostic_messages(diag_data)
+                ]
+    except Exception as e:
+        logger.debug(f"Failed to get diagnostics: {e}")
+
+    # 5. Get widgets (panel + diagnostic embedded) using leanclient's widget support
+    widget_images = []
+    try:
+        # Panel widgets via leanclient's get_widgets method
+        try:
+            panel_widgets = client.get_widgets(rel_path, line - 1, column - 1)
+            for w in panel_widgets:
+                widget_info = {
+                    "source": "panel",
+                    "id": str(w.get("id", "unknown")),
+                    "javascriptHash": w.get("javascriptHash"),
+                    "range": w.get("range"),
+                    "name": w.get("name?"),
+                }
+                if "props" in w:
+                    widget_info["props"] = w["props"]
+
+                    # Extract/render images if requested
+                    if render_images:
+                        extracted = _extract_widget_images(w["props"])
+                        if extracted:
+                            widget_info["rendered_images"] = extracted
+                            widget_images.extend(extracted)
+
+                result["widgets"].append(widget_info)
+        except Exception as e:
+            logger.debug(f"get_widgets failed: {e}")
+
+        # Diagnostic embedded widgets via leanclient's get_diagnostic_widgets method
+        try:
+            embedded_widgets = client.get_diagnostic_widgets(rel_path, line - 1, line)
+            for w in embedded_widgets:
+                widget_info = {
+                    "source": "diagnostic",
+                    "id": str(w.get("id", "unknown")),
+                    "javascriptHash": w.get("javascriptHash"),
+                }
+                if "props" in w:
+                    widget_info["props"] = w["props"]
+
+                    # Extract/render images if requested
+                    if render_images:
+                        extracted = _extract_widget_images(w["props"])
+                        if extracted:
+                            widget_info["rendered_images"] = extracted
+                            widget_images.extend(extracted)
+
+                result["widgets"].append(widget_info)
+        except Exception as e:
+            logger.debug(f"get_diagnostic_widgets failed: {e}")
+
+    except Exception as e:
+        logger.debug(f"Widget retrieval failed: {e}")
+
+    # If we have rendered images, return MCP content array
+    if widget_images and render_images:
+        import json
+
+        # Remove rendered_images from result to avoid duplication
+        result_clean = result.copy()
+        for w in result_clean.get("widgets", []):
+            w.pop("rendered_images", None)
+
+        content_array = [
+            {"type": "text", "text": json.dumps(result_clean, indent=2)}
+        ]
+
+        # Add each rendered image (now tuples of (mime_type, base64_data))
+        for mime_type, img_b64 in widget_images:
+            content_array.append({
+                "type": "image",
+                "data": img_b64,
+                "mimeType": mime_type,
+            })
+
+        return content_array
+
+    return result
 
 
 if __name__ == "__main__":

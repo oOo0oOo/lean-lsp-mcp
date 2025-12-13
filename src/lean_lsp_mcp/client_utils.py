@@ -38,6 +38,7 @@ def startup_client(ctx: Context):
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
         prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
+        # LeanLSPClient now enables widget support (hasWidgets: true) by default
         with OutputCapture() as output:
             client = LeanLSPClient(
                 lean_project_path, initial_build=False, prevent_cache_get=prevent_cache
