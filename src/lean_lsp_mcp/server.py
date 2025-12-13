@@ -23,7 +23,6 @@ from lean_lsp_mcp.client_utils import (
     setup_client_for_file,
     startup_client,
     infer_project_path,
-    WidgetAwareLeanLSPClient,
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
@@ -1184,53 +1183,6 @@ def hammer_premise(
     return _to_json_array(items)
 
 
-# RPC session management for widgets
-_rpc_sessions: Dict[str, str] = {}  # uri -> sessionId
-
-
-def _get_rpc_session(client: LeanLSPClient, uri: str) -> str:
-    """Get or create an RPC session for a file URI."""
-    global _rpc_sessions
-    if uri in _rpc_sessions:
-        return _rpc_sessions[uri]
-
-    # Connect to RPC
-    connect_params = {"uri": uri}
-    result = client._send_request_sync("$/lean/rpc/connect", connect_params, timeout=10)
-    session_id = result.get("sessionId")
-    if not session_id:
-        raise RuntimeError(f"Failed to get RPC session for {uri}")
-    _rpc_sessions[uri] = session_id
-    return session_id
-
-
-def _rpc_call(client: LeanLSPClient, uri: str, method: str, params: dict, position: dict = None) -> dict:
-    """Make an RPC call to the Lean server.
-
-    Args:
-        client: The LSP client
-        uri: File URI
-        method: RPC method name
-        params: Parameters to pass to the RPC method
-        position: Position for snapshot lookup (defaults to params if it has line/character)
-    """
-    session_id = _get_rpc_session(client, uri)
-    # Use explicit position, or extract from params if it looks like a position
-    if position is None:
-        if "line" in params and "character" in params:
-            position = {"line": params["line"], "character": params["character"]}
-        else:
-            position = {"line": 0, "character": 0}
-    call_params = {
-        "textDocument": {"uri": uri},
-        "position": position,
-        "sessionId": session_id,
-        "method": method,
-        "params": params,
-    }
-    return client._send_request_sync("$/lean/rpc/call", call_params, timeout=15)
-
-
 def _extract_widget_images(props: dict) -> List[Tuple[str, str]]:
     """Extract images from widget props using multiple strategies.
 
@@ -1260,70 +1212,6 @@ def _extract_widget_images(props: dict) -> List[Tuple[str, str]]:
                 images.append(("image/png", img_b64))
 
     return images
-
-
-def _extract_widgets_from_interactive_diag(diag: dict) -> List[dict]:
-    """Recursively extract widget instances from interactive diagnostic message data.
-
-    The interactive diagnostic message structure is:
-    {
-      "message": {
-        "tag": [
-          {
-            "widget": {
-              "wi": { "id": "...", "props": {...}, ... },
-              "alt": {...}
-            }
-          },
-          ...
-        ]
-      }
-    }
-    """
-    widgets = []
-
-    def extract_from_tagged_text(tt):
-        """Recursively search TaggedText structure for widget embeds."""
-        if isinstance(tt, dict):
-            # Check if this is a widget embed - structure is {"widget": {"wi": {...}, "alt": ...}}
-            if "widget" in tt:
-                widget_data = tt.get("widget", {})
-                if isinstance(widget_data, dict):
-                    # The actual widget instance is in "wi" field
-                    wi = widget_data.get("wi")
-                    if isinstance(wi, dict):
-                        widgets.append(wi)
-                    elif widget_data.get("id") or widget_data.get("props"):
-                        # Fallback: widget_data itself might be the widget instance
-                        widgets.append(widget_data)
-
-            # Check tag field which may contain list of embeds
-            tag = tt.get("tag")
-            if isinstance(tag, list):
-                for item in tag:
-                    extract_from_tagged_text(item)
-            elif isinstance(tag, dict):
-                extract_from_tagged_text(tag)
-
-            # Recurse into other fields
-            for key in ["text", "append", "children", "alt"]:
-                if key in tt:
-                    val = tt[key]
-                    if isinstance(val, list):
-                        for item in val:
-                            extract_from_tagged_text(item)
-                    elif isinstance(val, dict):
-                        extract_from_tagged_text(val)
-
-        elif isinstance(tt, list):
-            for item in tt:
-                extract_from_tagged_text(item)
-
-    message = diag.get("message")
-    if message:
-        extract_from_tagged_text(message)
-
-    return widgets
 
 
 @mcp.tool(
@@ -1366,7 +1254,6 @@ def infoview(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
-    uri = client._local_to_uri(rel_path)
 
     # Gather all infoview data
     result = {
@@ -1427,18 +1314,12 @@ def infoview(
     except Exception as e:
         logger.debug(f"Failed to get diagnostics: {e}")
 
-    # 5. Get widgets (panel + diagnostic embedded)
+    # 5. Get widgets (panel + diagnostic embedded) using leanclient's widget support
     widget_images = []
     try:
-        # Panel widgets via getWidgets RPC
+        # Panel widgets via leanclient's get_widgets method
         try:
-            panel_result = _rpc_call(
-                client,
-                uri,
-                "Lean.Widget.getWidgets",
-                {"line": line - 1, "character": column - 1},
-            )
-            panel_widgets = panel_result.get("widgets", [])
+            panel_widgets = client.get_widgets(rel_path, line - 1, column - 1)
             for w in panel_widgets:
                 widget_info = {
                     "source": "panel",
@@ -1459,43 +1340,30 @@ def infoview(
 
                 result["widgets"].append(widget_info)
         except Exception as e:
-            logger.debug(f"getWidgets failed: {e}")
+            logger.debug(f"get_widgets failed: {e}")
 
-        # Diagnostic embedded widgets
+        # Diagnostic embedded widgets via leanclient's get_diagnostic_widgets method
         try:
-            diag_result = _rpc_call(
-                client,
-                uri,
-                "Lean.Widget.getInteractiveDiagnostics",
-                {"lineRange": {"start": line - 1, "end": line}},
-            )
+            embedded_widgets = client.get_diagnostic_widgets(rel_path, line - 1, line)
+            for w in embedded_widgets:
+                widget_info = {
+                    "source": "diagnostic",
+                    "id": str(w.get("id", "unknown")),
+                    "javascriptHash": w.get("javascriptHash"),
+                }
+                if "props" in w:
+                    widget_info["props"] = w["props"]
 
-            if isinstance(diag_result, list):
-                for diag in diag_result:
-                    diag_range = diag.get("range", {})
-                    diag_line = diag_range.get("start", {}).get("line", -1)
+                    # Extract/render images if requested
+                    if render_images:
+                        extracted = _extract_widget_images(w["props"])
+                        if extracted:
+                            widget_info["rendered_images"] = extracted
+                            widget_images.extend(extracted)
 
-                    if diag_line == line - 1:
-                        embedded = _extract_widgets_from_interactive_diag(diag)
-                        for w in embedded:
-                            widget_info = {
-                                "source": "diagnostic",
-                                "id": str(w.get("id", "unknown")),
-                                "javascriptHash": w.get("javascriptHash"),
-                            }
-                            if "props" in w:
-                                widget_info["props"] = w["props"]
-
-                                # Extract/render images if requested
-                                if render_images:
-                                    extracted = _extract_widget_images(w["props"])
-                                    if extracted:
-                                        widget_info["rendered_images"] = extracted
-                                        widget_images.extend(extracted)
-
-                            result["widgets"].append(widget_info)
+                result["widgets"].append(widget_info)
         except Exception as e:
-            logger.debug(f"getInteractiveDiagnostics failed: {e}")
+            logger.debug(f"get_diagnostic_widgets failed: {e}")
 
     except Exception as e:
         logger.debug(f"Widget retrieval failed: {e}")
