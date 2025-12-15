@@ -34,12 +34,15 @@ Embedding providers for local leansearch:
 - `LEAN_EMBEDDING_MODEL=<model>`: Override default model
 
 ## Search Decision Tree
-1. "Does X exist locally?" → lean_local_search
-2. "I need a lemma that says X" → lean_leansearch
-3. "Find lemma with type pattern" → lean_loogle
-4. "What's the Lean name for concept X?" → lean_leanfinder
-5. "What closes this goal?" → lean_state_search
-6. "What to feed simp?" → lean_hammer_premise
+**Default: Use lean_leansearch first** - it handles natural language, type patterns, and concept queries.
+Only use specialized tools when leansearch doesn't find what you need.
+
+1. **lean_leansearch** (DEFAULT) - Natural language, concepts, type patterns. Start here!
+2. lean_local_search - Verify a specific declaration exists by exact name
+3. lean_loogle - Type signature patterns when leansearch misses (e.g., `(_ → _) → List _ → List _`)
+4. lean_leanfinder - Conceptual/semantic search as backup
+5. lean_state_search - Find lemmas to close current goal
+6. lean_hammer_premise - Get premises for simp/aesop
 
 After finding a name: lean_local_search to verify, lean_hover_info for signature.
 
