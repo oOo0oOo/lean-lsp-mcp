@@ -1,13 +1,11 @@
 """Tests for local leansearch functionality."""
 
-import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lean_lsp_mcp.leansearch import (
-    LeanDeclaration,
     LeanSearchManager,
     _compute_project_hash,
     _extract_declarations_from_file,
@@ -225,7 +223,7 @@ class TestLeanSearchManager:
 
         files = mgr._collect_lean_files()
         assert len(files) >= 1
-        assert any("Main.lean" in str(f) for f, _ in files)
+        assert any("Main.lean" in str(f) for f, _, _ in files)
 
     def test_collect_files_with_lake_packages(self, mgr):
         # Create project with fake dependency
@@ -235,7 +233,7 @@ class TestLeanSearchManager:
         (pkg_dir / "Std.lean").write_text("def stdFunc : Nat := 0")
 
         files = mgr._collect_lean_files()
-        assert any("Std.lean" in str(f) for f, _ in files)
+        assert any("Std.lean" in str(f) for f, _, _ in files)
 
 
 @pytest.mark.skipif(

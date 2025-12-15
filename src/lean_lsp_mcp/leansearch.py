@@ -17,9 +17,10 @@ import hashlib
 import logging
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,18 @@ class LeanDeclaration:
     docstring: str | None
     file_path: str
     line: int
+
+
+@dataclass
+class IndexStats:
+    """Statistics about the indexed project."""
+
+    total_declarations: int = 0
+    total_files: int = 0
+    declarations_by_kind: dict[str, int] = field(default_factory=dict)
+    index_time_seconds: float = 0.0
+    project_name: str = ""
+    embedding_provider: str = ""
 
 
 def get_cache_dir() -> Path:
@@ -61,16 +74,57 @@ def _compute_project_hash(project_root: Path) -> str:
             hasher.update(lf.read_bytes())
             break
 
+    # Include project name for uniqueness
+    hasher.update(project_root.name.encode())
+
     return hasher.hexdigest()[:16]
 
 
+def _infer_module_name(file_path: Path, base_path: Path | None = None) -> str:
+    """Infer module name from file path.
+
+    Handles common Lean project structures:
+    - Mathlib/Algebra/Group/Basic.lean -> Mathlib.Algebra.Group.Basic
+    - src/MyLib/Foo.lean -> MyLib.Foo
+    - Basic.lean -> Basic
+    """
+    parts = file_path.parts
+
+    # Try to find a recognizable root
+    roots = {"Mathlib", "Std", "Init", "Lean", "Batteries", "Aesop", "ProofWidgets"}
+
+    for i, part in enumerate(parts):
+        if part in roots:
+            # Found a known library root
+            rel_parts = parts[i:]
+            if rel_parts[-1].endswith(".lean"):
+                rel_parts = rel_parts[:-1] + (rel_parts[-1][:-5],)
+            return ".".join(rel_parts)
+
+    # Try relative to base_path if provided
+    if base_path:
+        try:
+            rel = file_path.relative_to(base_path)
+            rel_parts = rel.parts
+            if rel_parts[-1].endswith(".lean"):
+                rel_parts = rel_parts[:-1] + (rel_parts[-1][:-5],)
+            # Skip "src" directory
+            if rel_parts and rel_parts[0] == "src":
+                rel_parts = rel_parts[1:]
+            return ".".join(rel_parts)
+        except ValueError:
+            pass
+
+    # Fallback: just use stem
+    return file_path.stem
+
+
 def _extract_declarations_from_file(
-    file_path: Path, module_prefix: str = ""
+    file_path: Path, module_prefix: str = "", base_path: Path | None = None
 ) -> list[LeanDeclaration]:
     """Extract declarations from a single Lean file.
 
-    This is a simplified extractor that uses regex patterns.
-    For more complete extraction, jixia could be used.
+    Uses regex patterns optimized for common Lean 4 declaration styles.
     """
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -80,36 +134,53 @@ def _extract_declarations_from_file(
 
     declarations: list[LeanDeclaration] = []
 
-    # Compute module name from file path
-    module_name = module_prefix
-    if not module_name:
-        # Try to infer from file path relative to common patterns
-        parts = file_path.parts
-        for i, part in enumerate(parts):
-            if part in ("src", "Mathlib", "Std", "Init", "Lean"):
-                rel_parts = parts[i:]
-                module_name = ".".join(rel_parts)[:-5] if rel_parts else ""  # strip .lean
-                break
-        if not module_name:
-            module_name = file_path.stem
+    # Determine module name
+    module_name = module_prefix or _infer_module_name(file_path, base_path)
 
-    # Pattern to capture declaration header with optional docstring and signature
+    # Track current namespace for qualified names
+    namespace_stack: list[str] = []
+
+    # Find namespace declarations
+    namespace_pattern = re.compile(r"^namespace\s+([\w\.]+)", re.MULTILINE)
+    end_pattern = re.compile(r"^end\s+([\w\.]+)?", re.MULTILINE)
+
+    # Build namespace context map (line -> active namespace)
+    lines = content.split("\n")
+    namespace_at_line: dict[int, str] = {}
+    current_ns = ""
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if ns_match := namespace_pattern.match(stripped):
+            namespace_stack.append(ns_match.group(1))
+            current_ns = ".".join(namespace_stack)
+        elif end_pattern.match(stripped):
+            if namespace_stack:
+                namespace_stack.pop()
+                current_ns = ".".join(namespace_stack)
+        namespace_at_line[i] = current_ns
+
+    # Pattern to capture declarations with docstrings and signatures
+    # Handles multi-line signatures by matching until := or where or |
     decl_pattern = re.compile(
-        r"^(?P<docstring>/--[\s\S]*?-/\s*)?"
-        r"(?:@\[[\w\s,]+\]\s*)*"
+        r"(?P<docstring>/--[\s\S]*?-/\s*)?"
+        r"(?:@\[[\w\s,\(\)=\"\'\.]+\]\s*)*"  # attributes
         r"(?:private\s+|protected\s+|scoped\s+)?"
         r"(?:noncomputable\s+|unsafe\s+|partial\s+|nonrec\s+)*"
         r"(?P<kind>theorem|lemma|def|abbrev|class|structure|inductive|instance|axiom|opaque)\s+"
-        r"(?P<name>[\w'\.]+)"
-        r"(?:\s*(?P<sig>[^:=]*:[^:=\n]+))?",
+        r"(?P<name>[\w']+)"  # Just the base name, not qualified
+        r"(?P<params>(?:\s*[\[\(\{][\s\S]*?[\]\)\}])*)"  # Parameters
+        r"(?:\s*:\s*(?P<type>[^:=\n]+?))?"  # Optional type annotation
+        r"(?=\s*(?::=|where|:|\||$))",  # Look ahead for definition start
         re.MULTILINE,
     )
 
     for match in decl_pattern.finditer(content):
         kind = match.group("kind")
-        name = match.group("name")
+        base_name = match.group("name")
         docstring = match.group("docstring")
-        sig = match.group("sig") or ""
+        params = match.group("params") or ""
+        type_ann = match.group("type") or ""
 
         # Clean up docstring
         if docstring:
@@ -118,28 +189,39 @@ def _extract_declarations_from_file(
                 docstring = docstring[3:]
             if docstring.endswith("-/"):
                 docstring = docstring[:-2]
-            docstring = docstring.strip()
+            docstring = " ".join(docstring.split())  # Normalize whitespace
 
-        # Clean up signature
-        sig = sig.strip()
-        if sig.startswith(":"):
-            sig = sig[1:].strip()
+        # Build signature from params and type
+        sig_parts = []
+        if params:
+            sig_parts.append(params.strip())
+        if type_ann:
+            sig_parts.append(f": {type_ann.strip()}")
+        signature = " ".join(sig_parts)
 
         # Calculate line number
         line_num = content[: match.start()].count("\n") + 1
 
         # Skip private/internal names
-        if name.startswith("_"):
+        if base_name.startswith("_"):
             continue
 
-        full_name = f"{module_name}.{name}" if module_name else name
+        # Get namespace at this line
+        ns = namespace_at_line.get(line_num - 1, "")
+
+        # Build fully qualified name
+        name_parts = [module_name]
+        if ns:
+            name_parts.append(ns)
+        name_parts.append(base_name)
+        full_name = ".".join(filter(None, name_parts))
 
         declarations.append(
             LeanDeclaration(
                 name=full_name,
                 kind=kind,
                 module=module_name,
-                signature=sig[:500] if sig else "",  # Truncate long signatures
+                signature=signature[:500] if signature else "",
                 docstring=docstring[:1000] if docstring else None,
                 file_path=str(file_path),
                 line=line_num,
@@ -149,16 +231,29 @@ def _extract_declarations_from_file(
     return declarations
 
 
-def _find_lean_files(root: Path, exclude_build: bool = True) -> list[Path]:
+def _find_lean_files(
+    root: Path, exclude_build: bool = True, max_files: int | None = None
+) -> list[Path]:
     """Find all .lean files under root, excluding build directories."""
     files = []
-    exclude_patterns = {".lake/build", ".lake/packages/.lake", "__pycache__"}
+    exclude_patterns = {
+        ".lake/build",
+        ".lake/packages/.lake",
+        "__pycache__",
+        ".git",
+        "lake-packages",  # Old lake format
+    }
 
-    for lean_file in root.rglob("*.lean"):
-        path_str = str(lean_file)
-        if exclude_build and any(ex in path_str for ex in exclude_patterns):
-            continue
-        files.append(lean_file)
+    try:
+        for lean_file in root.rglob("*.lean"):
+            path_str = str(lean_file)
+            if exclude_build and any(ex in path_str for ex in exclude_patterns):
+                continue
+            files.append(lean_file)
+            if max_files and len(files) >= max_files:
+                break
+    except PermissionError:
+        logger.warning(f"Permission denied accessing {root}")
 
     return files
 
@@ -169,7 +264,7 @@ def _get_embedding_function(
     """Get the appropriate embedding function based on provider.
 
     Args:
-        provider: One of 'default', 'openai', 'voyage', 'anthropic'
+        provider: One of 'default', 'openai', 'voyage'
         model: Model name override
 
     Returns:
@@ -187,14 +282,15 @@ def _get_embedding_function(
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set for OpenAI embeddings")
         model_name = model or "text-embedding-3-small"
+        logger.info(f"Using OpenAI embeddings: {model_name}")
         return ef.OpenAIEmbeddingFunction(api_key=api_key, model_name=model_name)
 
     elif provider == "voyage":
         api_key = os.environ.get("VOYAGE_API_KEY")
         if not api_key:
             raise RuntimeError("VOYAGE_API_KEY not set for Voyage embeddings")
-        # Voyage is OpenAI-compatible
         model_name = model or "voyage-code-2"
+        logger.info(f"Using Voyage embeddings: {model_name}")
         return ef.OpenAIEmbeddingFunction(
             api_key=api_key,
             model_name=model_name,
@@ -204,6 +300,7 @@ def _get_embedding_function(
     else:
         # Default: use sentence-transformers (local, no API key)
         model_name = model or "all-MiniLM-L6-v2"
+        logger.info(f"Using local sentence-transformers: {model_name}")
         return ef.SentenceTransformerEmbeddingFunction(model_name=model_name)
 
 
@@ -215,6 +312,7 @@ class LeanSearchManager:
     - Uses vector embeddings for semantic search
     - Supports multiple embedding backends (local or API-based)
     - Caches indices per project version
+    - No rate limits!
     """
 
     def __init__(
@@ -233,10 +331,15 @@ class LeanSearchManager:
         self._collection = None
         self._ready = False
         self._lock = asyncio.Lock()
+        self._stats: IndexStats | None = None
 
     @property
     def is_ready(self) -> bool:
         return self._ready
+
+    @property
+    def stats(self) -> IndexStats | None:
+        return self._stats
 
     def _get_chroma_client(self):
         """Get or create ChromaDB client."""
@@ -283,55 +386,66 @@ class LeanSearchManager:
 
         return self._collection
 
-    def _collect_lean_files(self) -> list[tuple[Path, str]]:
-        """Collect all Lean files to index with their module prefixes."""
-        files: list[tuple[Path, str]] = []
+    def _collect_lean_files(
+        self, progress_callback: Callable[[str, int, int], None] | None = None
+    ) -> list[tuple[Path, str, Path]]:
+        """Collect all Lean files to index with their module prefixes and base paths.
+
+        Returns list of (file_path, module_prefix, base_path) tuples.
+        """
+        files: list[tuple[Path, str, Path]] = []
 
         if not self.project_root:
             return files
 
+        if progress_callback:
+            progress_callback("Scanning project files...", 0, 1)
+
         # Project source files
         for src_dir in [".", "src", self.project_root.name]:
             src_path = self.project_root / src_dir
-            if src_path.exists():
-                for f in _find_lean_files(src_path):
-                    # Compute module prefix from relative path
-                    try:
-                        rel = f.relative_to(src_path)
-                        module = ".".join(rel.parts[:-1] + (rel.stem,))
-                    except ValueError:
-                        module = f.stem
-                    files.append((f, module))
+            if src_path.exists() and src_path.is_dir():
+                lean_files = _find_lean_files(src_path)
+                for f in lean_files:
+                    files.append((f, "", src_path))
+                if lean_files:
+                    logger.info(f"Found {len(lean_files)} files in {src_path}")
 
         # .lake/packages dependencies
         lake_packages = self.project_root / ".lake" / "packages"
         if lake_packages.exists():
-            for pkg_dir in lake_packages.iterdir():
-                if not pkg_dir.is_dir():
-                    continue
+            pkg_dirs = [d for d in lake_packages.iterdir() if d.is_dir()]
+            for idx, pkg_dir in enumerate(pkg_dirs):
+                if progress_callback:
+                    progress_callback(
+                        f"Scanning {pkg_dir.name}...", idx, len(pkg_dirs)
+                    )
+
                 # Look for source files in common locations
                 for subdir in [".", "src", pkg_dir.name]:
                     sub_path = pkg_dir / subdir
-                    if sub_path.exists():
-                        for f in _find_lean_files(sub_path):
-                            try:
-                                rel = f.relative_to(sub_path)
-                                module = ".".join(rel.parts[:-1] + (rel.stem,))
-                            except ValueError:
-                                module = f.stem
-                            files.append((f, module))
+                    if sub_path.exists() and sub_path.is_dir():
+                        pkg_files = _find_lean_files(sub_path)
+                        for f in pkg_files:
+                            files.append((f, "", sub_path))
 
         return files
 
-    def index_project(self, force: bool = False) -> int:
+    def index_project(
+        self,
+        force: bool = False,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> int:
         """Index the project and dependencies.
 
         Args:
             force: If True, reindex even if cache exists
+            progress_callback: Optional callback(message, current, total) for progress
 
         Returns:
             Number of declarations indexed
         """
+        start_time = time.monotonic()
         collection = self._get_or_create_collection()
 
         # Check if already indexed (and not forcing)
@@ -342,21 +456,63 @@ class LeanSearchManager:
             self._ready = True
             return collection.count()
 
+        # Clear existing data if forcing reindex
+        if force and collection.count() > 0:
+            logger.info("Forcing reindex, clearing existing data...")
+            try:
+                client = self._get_chroma_client()
+                client.delete_collection(self._get_collection_name())
+                self._collection = None
+                collection = self._get_or_create_collection()
+            except Exception as e:
+                logger.warning(f"Could not clear collection: {e}")
+
+        if progress_callback:
+            progress_callback("Starting indexing...", 0, 100)
+
         logger.info("Starting project indexing...")
-        files = self._collect_lean_files()
-        logger.info(f"Found {len(files)} Lean files to index")
+        files = self._collect_lean_files(progress_callback)
+        total_files = len(files)
+        logger.info(f"Found {total_files} Lean files to index")
+
+        if progress_callback:
+            progress_callback(f"Extracting from {total_files} files...", 0, total_files)
 
         all_declarations: list[LeanDeclaration] = []
-        for file_path, module in files:
-            decls = _extract_declarations_from_file(file_path, module)
+        kind_counts: dict[str, int] = {}
+
+        for idx, (file_path, module, base_path) in enumerate(files):
+            decls = _extract_declarations_from_file(file_path, module, base_path)
+            for d in decls:
+                kind_counts[d.kind] = kind_counts.get(d.kind, 0) + 1
             all_declarations.extend(decls)
+
+            if progress_callback and idx % 100 == 0:
+                progress_callback(
+                    f"Extracted {len(all_declarations)} declarations...",
+                    idx,
+                    total_files,
+                )
 
         if not all_declarations:
             logger.warning("No declarations found to index")
             self._ready = True
+            self._stats = IndexStats(
+                total_declarations=0,
+                total_files=total_files,
+                project_name=self.project_root.name if self.project_root else "",
+                embedding_provider=self.embedding_provider,
+            )
             return 0
 
         logger.info(f"Extracted {len(all_declarations)} declarations")
+
+        if progress_callback:
+            progress_callback(
+                f"Building embeddings for {len(all_declarations)} declarations...",
+                0,
+                len(all_declarations),
+            )
 
         # Prepare documents for ChromaDB
         documents: list[str] = []
@@ -364,8 +520,11 @@ class LeanSearchManager:
         ids: list[str] = []
 
         for i, decl in enumerate(all_declarations):
-            # Create searchable document text
-            doc_parts = [decl.name, decl.kind]
+            # Create searchable document text - include all relevant info
+            doc_parts = [
+                decl.name.replace(".", " "),  # Split qualified name
+                decl.kind,
+            ]
             if decl.signature:
                 doc_parts.append(decl.signature)
             if decl.docstring:
@@ -387,8 +546,12 @@ class LeanSearchManager:
 
         # Add to collection in batches
         batch_size = 500
-        for i in range(0, len(documents), batch_size):
+        total_batches = (len(documents) + batch_size - 1) // batch_size
+
+        for batch_idx in range(total_batches):
+            i = batch_idx * batch_size
             batch_end = min(i + batch_size, len(documents))
+
             try:
                 collection.add(
                     documents=documents[i:batch_end],
@@ -396,19 +559,34 @@ class LeanSearchManager:
                     ids=ids[i:batch_end],
                 )
             except Exception as e:
-                logger.error(f"Failed to add batch {i}-{batch_end}: {e}")
-                # Continue with other batches
+                logger.error(f"Failed to add batch {batch_idx}: {e}")
 
-            if (i // batch_size) % 10 == 0:
+            if progress_callback:
+                progress_callback(
+                    f"Indexed {batch_end}/{len(documents)}...",
+                    batch_end,
+                    len(documents),
+                )
+            elif batch_idx % 10 == 0:
                 logger.info(f"Indexed {batch_end}/{len(documents)} declarations")
 
+        elapsed = time.monotonic() - start_time
         self._ready = True
-        logger.info(f"Indexing complete: {collection.count()} declarations")
+        self._stats = IndexStats(
+            total_declarations=collection.count(),
+            total_files=total_files,
+            declarations_by_kind=kind_counts,
+            index_time_seconds=elapsed,
+            project_name=self.project_root.name if self.project_root else "",
+            embedding_provider=self.embedding_provider,
+        )
+
+        logger.info(
+            f"Indexing complete: {collection.count()} declarations in {elapsed:.1f}s"
+        )
         return collection.count()
 
-    def search(
-        self, query: str, num_results: int = 5
-    ) -> list[dict[str, Any]]:
+    def search(self, query: str, num_results: int = 5) -> list[dict[str, Any]]:
         """Search for declarations matching a natural language query.
 
         Args:
@@ -416,7 +594,7 @@ class LeanSearchManager:
             num_results: Maximum number of results
 
         Returns:
-            List of matching declarations with metadata
+            List of matching declarations with metadata and similarity scores
         """
         if not self._ready:
             raise RuntimeError("Index not ready. Call index_project() first.")
@@ -437,10 +615,11 @@ class LeanSearchManager:
             return []
 
         output = []
-        for meta, dist in zip(
-            results["metadatas"][0],
-            results["distances"][0] if results["distances"] else [0] * len(results["metadatas"][0]),
-        ):
+        distances = results.get("distances", [[]])
+        if not distances or not distances[0]:
+            distances = [[0.0] * len(results["metadatas"][0])]
+
+        for meta, dist in zip(results["metadatas"][0], distances[0]):
             output.append(
                 {
                     "name": meta.get("name", ""),
@@ -448,6 +627,8 @@ class LeanSearchManager:
                     "kind": meta.get("kind"),
                     "signature": meta.get("signature"),
                     "distance": dist,
+                    "file_path": meta.get("file_path"),
+                    "line": meta.get("line"),
                 }
             )
 
@@ -457,6 +638,7 @@ class LeanSearchManager:
         """Ensure the project is indexed, indexing if necessary.
 
         This is the main entry point for lazy initialization.
+        Thread-safe via asyncio lock.
         """
         async with self._lock:
             if project_root and project_root != self.project_root:
@@ -475,6 +657,12 @@ class LeanSearchManager:
                 logger.error(f"Indexing failed: {e}")
                 return False
 
+    def reindex(
+        self, progress_callback: Callable[[str, int, int], None] | None = None
+    ) -> int:
+        """Force reindex the project."""
+        return self.index_project(force=True, progress_callback=progress_callback)
+
     def clear_cache(self) -> None:
         """Clear the cached index."""
         if self._collection is not None:
@@ -485,6 +673,7 @@ class LeanSearchManager:
                 pass
             self._collection = None
             self._ready = False
+            self._stats = None
 
 
 def check_leansearch_available() -> tuple[bool, str]:
