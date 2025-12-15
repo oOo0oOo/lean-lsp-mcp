@@ -44,6 +44,8 @@ def patch_build():
     """Context manager to patch all build dependencies."""
     with (
         patch("lean_lsp_mcp.server.asyncio.create_subprocess_exec") as mock_exec,
+        # lsp_build uses WidgetAwareLeanLSPClient in PR73; patch both for safety.
+        patch("lean_lsp_mcp.server.WidgetAwareLeanLSPClient"),
         patch("lean_lsp_mcp.server.LeanLSPClient"),
         patch("lean_lsp_mcp.server.OutputCapture"),
     ):

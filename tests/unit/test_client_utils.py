@@ -53,6 +53,9 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
         created.append(client)
         return client
 
+    # PR73 introduces WidgetAwareLeanLSPClient as the default constructor.
+    # Patch both names so tests stay robust if the implementation switches.
+    monkeypatch.setattr("lean_lsp_mcp.client_utils.WidgetAwareLeanLSPClient", _constructor)
     monkeypatch.setattr("lean_lsp_mcp.client_utils.LeanLSPClient", _constructor)
     return created
 

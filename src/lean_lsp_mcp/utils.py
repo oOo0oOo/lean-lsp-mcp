@@ -300,7 +300,7 @@ def get_declaration_range(
 
     try:
         # Ensure file is opened (LSP needs this to analyze the file)
-        client.open_file(file_path)
+        client.open_file(file_path, dependency_build_mode="once")
 
         # Get document symbols from LSP
         symbols = client.get_document_symbols(file_path)

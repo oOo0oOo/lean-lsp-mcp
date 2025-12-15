@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
+from collections import deque
 
 import pytest
 
@@ -16,11 +17,11 @@ class DummyClient:
         self.closed_calls += 1
 
 
-def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
+def _make_ctx(rate_limit: dict[str, deque[float]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
         client=None,
-        rate_limit=rate_limit or {"test": []},
+        rate_limit=rate_limit or {"test": deque()},
         lean_search_available=True,
     )
     request_context = types.SimpleNamespace(lifespan_context=context)
@@ -36,11 +37,11 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         assert context.lean_project_path is None
         assert context.client is None
         assert context.rate_limit == {
-            "leansearch": [],
-            "loogle": [],
-            "leanfinder": [],
-            "lean_state_search": [],
-            "hammer_premise": [],
+            "leansearch": deque(),
+            "loogle": deque(),
+            "leanfinder": deque(),
+            "lean_state_search": deque(),
+            "hammer_premise": deque(),
         }
 
 
@@ -70,8 +71,8 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    times = iter([100, 101])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    times = iter([100.0, 101.0])
+    monkeypatch.setattr(server.time, "monotonic", lambda: next(times))
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
     def wrapped(*, ctx: types.SimpleNamespace) -> str:
@@ -84,8 +85,8 @@ def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_rate_limited_blocks_excess(monkeypatch: pytest.MonkeyPatch) -> None:
-    times = iter([100, 101, 102])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    times = iter([100.0, 101.0, 102.0])
+    monkeypatch.setattr(server.time, "monotonic", lambda: next(times))
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
     def wrapped(*, ctx: types.SimpleNamespace) -> str:
@@ -100,10 +101,10 @@ def test_rate_limited_blocks_excess(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
-    times = iter([100])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    times = iter([100.0])
+    monkeypatch.setattr(server.time, "monotonic", lambda: next(times))
 
-    rate_limit = {"test": [80, 81]}
+    rate_limit = {"test": deque([80.0, 81.0])}
     ctx = _make_ctx(rate_limit=rate_limit)
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
@@ -112,7 +113,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
         return "ok"
 
     assert wrapped(ctx=ctx) == "ok"
-    assert rate_limit["test"] == [100]
+    assert rate_limit["test"] == deque([100.0])
 
 
 def test_local_search_project_root_updates_context(

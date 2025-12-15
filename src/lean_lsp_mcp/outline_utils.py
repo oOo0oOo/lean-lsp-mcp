@@ -25,7 +25,7 @@ def _get_info_trees(
         changes.append(DocumentContentChange("#info_trees in\n", [line, 0], [line, 0]))
 
     client.update_file(path, changes)
-    diagnostics = client.get_diagnostics(path)
+    diagnostics = client.get_diagnostics(path) or []
 
     info_trees = {
         symbol_by_line[diag["range"]["start"]["line"]]: diag["message"]
@@ -222,7 +222,7 @@ def _build_outline_entry(
 
 def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
     """Generate structured outline data for a Lean file."""
-    client.open_file(path)
+    client.open_file(path, dependency_build_mode="once")
     content = client.get_file_content(path)
 
     # Extract imports
@@ -276,7 +276,7 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
 
 def generate_outline(client: LeanLSPClient, path: str) -> str:
     """Generate a concise outline of a Lean file showing structure and signatures."""
-    client.open_file(path)
+    client.open_file(path, dependency_build_mode="once")
     content = client.get_file_content(path)
 
     # Extract imports
