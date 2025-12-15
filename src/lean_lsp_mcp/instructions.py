@@ -21,6 +21,17 @@ INSTRUCTIONS = """## General Rules
 - **lean_state_search** (3/30s): Goal → closing lemmas
 - **lean_hammer_premise** (3/30s): Goal → premises for simp/aesop
 
+## Local Search (unlimited, no rate limits)
+Set env vars for local search without rate limits:
+- `LEAN_LEANSEARCH_LOCAL=1`: Semantic search via embeddings (requires chromadb)
+- `LEAN_LOOGLE_LOCAL=1`: Type pattern search via local loogle binary
+
+Embedding providers for local leansearch:
+- `LEAN_EMBEDDING_PROVIDER=default`: sentence-transformers (no API key)
+- `LEAN_EMBEDDING_PROVIDER=openai`: OpenAI (needs OPENAI_API_KEY)
+- `LEAN_EMBEDDING_PROVIDER=voyage`: Voyage AI (needs VOYAGE_API_KEY, excellent for code)
+- `LEAN_EMBEDDING_MODEL=<model>`: Override default model
+
 ## Search Decision Tree
 1. "Does X exist locally?" → lean_local_search
 2. "I need a lemma that says X" → lean_leansearch

@@ -4,6 +4,7 @@ import re
 import time
 from typing import Annotated, List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import urllib
@@ -29,6 +30,7 @@ from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
+from lean_lsp_mcp.leansearch import LeanSearchManager, check_leansearch_available
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.models import (
     LocalSearchResult,
@@ -86,22 +88,28 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+_LEANSEARCH_AVAILABLE, _LEANSEARCH_MESSAGE = check_leansearch_available()
 
 
 @dataclass
 class AppContext:
     lean_project_path: Path | None
     client: LeanLSPClient | None
-    rate_limit: Dict[str, List[int]]
+    # rate_limit buckets store monotonic timestamps (float seconds)
+    rate_limit: Dict[str, deque[float]]
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    leansearch_manager: LeanSearchManager | None = None
+    leansearch_local_available: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
+    leansearch_manager: LeanSearchManager | None = None
+    leansearch_local_available = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -123,19 +131,39 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
+        # Initialize local leansearch if enabled via env var
+        if os.environ.get("LEAN_LEANSEARCH_LOCAL", "").lower() in ("1", "true", "yes"):
+            if _LEANSEARCH_AVAILABLE:
+                logger.info("Local leansearch enabled, initializing...")
+                # Determine embedding provider from env
+                embedding_provider = os.environ.get("LEAN_EMBEDDING_PROVIDER", "default")
+                embedding_model = os.environ.get("LEAN_EMBEDDING_MODEL")
+                leansearch_manager = LeanSearchManager(
+                    project_root=lean_project_path,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model,
+                )
+                # Lazy indexing - will happen on first search
+                leansearch_local_available = True
+                logger.info("Local leansearch initialized (will index on first use)")
+            else:
+                logger.warning(f"Local leansearch unavailable: {_LEANSEARCH_MESSAGE}")
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
             rate_limit={
-                "leansearch": [],
-                "loogle": [],
-                "leanfinder": [],
-                "lean_state_search": [],
-                "hammer_premise": [],
+                "leansearch": deque(),
+                "loogle": deque(),
+                "leanfinder": deque(),
+                "lean_state_search": deque(),
+                "hammer_premise": deque(),
             },
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            leansearch_manager=leansearch_manager,
+            leansearch_local_available=leansearch_local_available,
         )
         yield context
     finally:
@@ -179,15 +207,30 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
                     )
                 ctx = args[0]
             rate_limit = ctx.request_context.lifespan_context.rate_limit
-            current_time = int(time.time())
-            rate_limit[category] = [
-                timestamp
-                for timestamp in rate_limit[category]
-                if timestamp > current_time - per_seconds
-            ]
-            if len(rate_limit[category]) >= max_requests:
+
+            # Use monotonic clock for elapsed-time windows (robust to wall-clock jumps).
+            now = time.monotonic()
+
+            bucket = rate_limit.get(category)
+            if bucket is None:
+                bucket = rate_limit[category] = deque()
+            elif not isinstance(bucket, deque):
+                # Backward compatibility if a list slips through.
+                bucket = rate_limit[category] = deque(bucket)
+
+            # If the bucket contains timestamps from a different clock
+            # (e.g., pre-upgrade wall-clock seconds), reset it.
+            if bucket and bucket[0] > now:
+                bucket.clear()
+
+            # Trim expired timestamps from the left.
+            while bucket and now - bucket[0] > per_seconds:
+                bucket.popleft()
+
+            if len(bucket) >= max_requests:
                 return f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later."
-            rate_limit[category].append(current_time)
+
+            bucket.append(now)
             return func(*args, **kwargs)
 
         wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. " + wrapper.__doc__
@@ -242,7 +285,11 @@ async def lsp_build(
                 progress=1, total=16, message="Running `lake clean`"
             )
             clean_proc = await asyncio.create_subprocess_exec(
-                "lake", "clean", cwd=lean_project_path_obj
+                "lake",
+                "clean",
+                cwd=lean_project_path_obj,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             await clean_proc.wait()
 
@@ -250,7 +297,13 @@ async def lsp_build(
             progress=2, total=16, message="Running `lake exe cache get`"
         )
         cache_proc = await asyncio.create_subprocess_exec(
-            "lake", "exe", "cache", "get", cwd=lean_project_path_obj
+            "lake",
+            "exe",
+            "cache",
+            "get",
+            cwd=lean_project_path_obj,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         await cache_proc.wait()
 
@@ -430,7 +483,8 @@ def diagnostic_messages(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    # Open with dependency build enabled once to ensure imports are ready.
+    client.open_file(rel_path, dependency_build_mode="once")
 
     # If declaration_name is provided, get its range and use that for filtering
     if declaration_name:
@@ -443,14 +497,36 @@ def diagnostic_messages(
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
-    diagnostics = client.get_diagnostics(
+    use_range = start_line_0 is not None or end_line_0 is not None
+    inactivity_timeout = 15.0 if use_range else 60.0
+    raw_diagnostics = client.get_diagnostics(
         rel_path,
         start_line=start_line_0,
         end_line=end_line_0,
-        inactivity_timeout=15.0,
-    )
+        inactivity_timeout=inactivity_timeout,
+    ) or []
 
-    return _to_json_array(_to_diagnostic_messages(diagnostics))
+    messages = _to_diagnostic_messages(raw_diagnostics)
+
+    # If we only got a fatal/stale-imports marker (no ranged diagnostics),
+    # retry once with a stronger dependency build mode.
+    if not messages and raw_diagnostics:
+        try:
+            client.open_file(
+                rel_path, dependency_build_mode="always", force_reopen=True
+            )
+            retry_timeout = max(inactivity_timeout, 120.0)
+            raw_diagnostics = client.get_diagnostics(
+                rel_path,
+                start_line=start_line_0,
+                end_line=end_line_0,
+                inactivity_timeout=retry_timeout,
+            ) or []
+            messages = _to_diagnostic_messages(raw_diagnostics)
+        except Exception as exc:
+            logger.debug("Diagnostics retry failed: %s", exc)
+
+    return _to_json_array(messages)
 
 
 @mcp.tool(
@@ -483,7 +559,12 @@ def goal(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
+    # Wait briefly for the file to be processed so goal requests don't hit stale imports.
+    try:
+        client.get_diagnostics(rel_path, inactivity_timeout=60.0)
+    except Exception:
+        pass
     content = client.get_file_content(rel_path)
     lines = content.splitlines()
 
@@ -535,7 +616,7 @@ def term_goal(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     content = client.get_file_content(rel_path)
     lines = content.splitlines()
 
@@ -579,7 +660,7 @@ def hover(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     if hover_info is None:
@@ -592,7 +673,7 @@ def hover(
     info = info.replace("```lean\n", "").replace("\n```", "").strip()
 
     # Add diagnostics if available
-    diagnostics = client.get_diagnostics(rel_path)
+    diagnostics = client.get_diagnostics(rel_path) or []
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
     return HoverInfo(
@@ -626,7 +707,7 @@ def completions(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     content = client.get_file_content(rel_path)
     raw_completions = client.get_completions(rel_path, line - 1, column - 1)
 
@@ -700,7 +781,7 @@ def declaration_file(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     orig_file_content = client.get_file_content(rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file
@@ -757,10 +838,10 @@ def multi_attempt(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
 
     try:
-        client.open_file(rel_path)
+        client.open_file(rel_path, dependency_build_mode="once")
 
         results: List[AttemptResult] = []
         # Avoid mutating caller-provided snippets; normalize locally per attempt
@@ -775,7 +856,7 @@ def multi_attempt(
             )
             # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
-            diag = client.get_diagnostics(rel_path)
+            diag = client.get_diagnostics(rel_path) or []
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
@@ -841,9 +922,9 @@ def run_code(
                 raise LeanToolError("Failed to initialize Lean client for run_code.")
 
         assert client is not None
-        client.open_file(rel_path)
+        client.open_file(rel_path, dependency_build_mode="once")
         opened_file = True
-        raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
+        raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=60.0) or []
     finally:
         if opened_file:
             try:
@@ -922,6 +1003,39 @@ def local_search(
         raise LocalSearchError(f"Search failed: {exc}")
 
 
+def _leansearch_remote(query: str, num_results: int) -> list[LeanSearchResult] | str:
+    """Query the remote leansearch.net API."""
+    try:
+        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+        payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
+
+        req = urllib.request.Request(
+            "https://leansearch.net/search",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = orjson.loads(response.read())
+
+        if not results or not results[0]:
+            return []
+
+        raw_results = [r["result"] for r in results[0][:num_results]]
+        return [
+            LeanSearchResult(
+                name=".".join(r["name"]),
+                module_name=".".join(r["module_name"]),
+                kind=r.get("kind"),
+                type=r.get("type"),
+            )
+            for r in raw_results
+        ]
+    except Exception as e:
+        return f"leansearch error: {e}"
+
+
 @mcp.tool(
     "lean_leansearch",
     annotations=ToolAnnotations(
@@ -931,8 +1045,7 @@ def local_search(
         openWorldHint=True,
     ),
 )
-@rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(
+async def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -942,33 +1055,50 @@ def leansearch(
     Examples: "sum of two even numbers is even", "Cauchy-Schwarz inequality",
     "{f : A → B} (hf : Injective f) : ∃ g, LeftInverse g f"
     """
-    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-    payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
+    app_ctx: AppContext = ctx.request_context.lifespan_context
 
-    req = urllib.request.Request(
-        "https://leansearch.net/search",
-        data=payload,
-        headers=headers,
-        method="POST",
-    )
+    # Try local leansearch first if available (no rate limiting)
+    if app_ctx.leansearch_local_available and app_ctx.leansearch_manager:
+        try:
+            # Ensure indexed (lazy initialization)
+            project_root = app_ctx.lean_project_path
+            if await app_ctx.leansearch_manager.ensure_indexed(project_root):
+                results = app_ctx.leansearch_manager.search(query, num_results)
+                if results:
+                    items = [
+                        LeanSearchResult(
+                            name=r.get("name", ""),
+                            module_name=r.get("module", ""),
+                            kind=r.get("kind"),
+                            type=r.get("signature"),
+                        )
+                        for r in results
+                    ]
+                    return _to_json_array(items)
+        except Exception as e:
+            logger.warning(f"Local leansearch failed: {e}, falling back to remote")
 
-    with urllib.request.urlopen(req, timeout=20) as response:
-        results = orjson.loads(response.read())
+    # Fall back to remote (with rate limiting)
+    bucket = app_ctx.rate_limit.get("leansearch")
+    if bucket is None:
+        bucket = app_ctx.rate_limit["leansearch"] = deque()
+    elif not isinstance(bucket, deque):
+        bucket = app_ctx.rate_limit["leansearch"] = deque(bucket)
 
-    if not results or not results[0]:
-        return "[]"
+    now = time.monotonic()
+    if bucket and bucket[0] > now:
+        bucket.clear()
+    while bucket and now - bucket[0] > 30:
+        bucket.popleft()
 
-    raw_results = [r["result"] for r in results[0][:num_results]]
-    items = [
-        LeanSearchResult(
-            name=".".join(r["name"]),
-            module_name=".".join(r["module_name"]),
-            kind=r.get("kind"),
-            type=r.get("type"),
-        )
-        for r in raw_results
-    ]
-    return _to_json_array(items)
+    if len(bucket) >= 3:
+        return "Rate limit exceeded: 3 requests per 30s. Set LEAN_LEANSEARCH_LOCAL=1 to avoid limits."
+    bucket.append(now)
+
+    result = _leansearch_remote(query, num_results)
+    if isinstance(result, str):
+        return result  # Error message
+    return _to_json_array(result)
 
 
 @mcp.tool(
@@ -1013,12 +1143,21 @@ async def loogle(
             logger.warning(f"Local loogle failed: {e}, falling back to remote")
 
     # Fall back to remote (with rate limiting)
-    rate_limit = app_ctx.rate_limit["loogle"]
-    now = int(time.time())
-    rate_limit[:] = [t for t in rate_limit if now - t < 30]
-    if len(rate_limit) >= 3:
+    bucket = app_ctx.rate_limit.get("loogle")
+    if bucket is None:
+        bucket = app_ctx.rate_limit["loogle"] = deque()
+    elif not isinstance(bucket, deque):
+        bucket = app_ctx.rate_limit["loogle"] = deque(bucket)
+
+    now = time.monotonic()
+    if bucket and bucket[0] > now:
+        bucket.clear()
+    while bucket and now - bucket[0] > 30:
+        bucket.popleft()
+
+    if len(bucket) >= 3:
         return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
-    rate_limit.append(now)
+    bucket.append(now)
 
     result = loogle_remote(query, num_results)
     if isinstance(result, str):
@@ -1100,7 +1239,7 @@ def state_search(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
@@ -1117,8 +1256,12 @@ def state_search(
         method="GET",
     )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
-        results = orjson.loads(response.read())
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = orjson.loads(response.read())
+    except Exception as exc:
+        logger.warning("lean_state_search failed: %s", exc)
+        return f"State search unavailable: {exc}"
 
     items = [StateSearchResult(name=r["name"]) for r in results]
     return _to_json_array(items)
@@ -1152,7 +1295,7 @@ def hammer_premise(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
@@ -1177,8 +1320,12 @@ def hammer_premise(
         data=orjson.dumps(data),
     )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
-        results = orjson.loads(response.read())
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            results = orjson.loads(response.read())
+    except Exception as exc:
+        logger.warning("lean_hammer_premise failed: %s", exc)
+        return f"Hammer premise unavailable: {exc}"
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return _to_json_array(items)
@@ -1364,7 +1511,7 @@ def infoview(
         return "Invalid Lean file path: Unable to start LSP server or load file"
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client.open_file(rel_path, dependency_build_mode="once")
     content = client.get_file_content(rel_path)
     uri = client._local_to_uri(rel_path)
 

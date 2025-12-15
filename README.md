@@ -445,6 +445,10 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
+- `LEAN_LEANSEARCH_LOCAL`: Set to `true`, `1`, or `yes` to enable local semantic search (see [Local LeanSearch](#local-leansearch) section).
+- `LEAN_LEANSEARCH_CACHE_DIR`: Override the cache directory for local leansearch (default: `~/.cache/lean-lsp-mcp/leansearch`).
+- `LEAN_EMBEDDING_PROVIDER`: Embedding provider for local leansearch: `default` (sentence-transformers), `openai`, or `voyage`.
+- `LEAN_EMBEDDING_MODEL`: Override the default embedding model name.
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
@@ -517,6 +521,48 @@ export LEAN_LOOGLE_LOCAL=true
 **Note:** Local loogle is currently only supported on Unix systems (Linux/macOS). Windows users should use WSL or the remote API.
 
 Falls back to remote API if local loogle fails.
+
+### Local LeanSearch
+
+Run semantic search locally to avoid the remote API's rate limit (3 req/30s). This indexes your project's declarations and dependencies using vector embeddings for natural language search.
+
+**Installation:**
+
+```bash
+# Install the optional dependencies
+pip install lean-lsp-mcp[local-search]
+# Or with uv
+uv pip install chromadb sentence-transformers
+```
+
+**Usage:**
+
+```bash
+# Enable via environment variable
+export LEAN_LEANSEARCH_LOCAL=true
+uvx lean-lsp-mcp
+```
+
+**Embedding Providers:**
+
+| Provider | Env Var | Default Model | Notes |
+|----------|---------|---------------|-------|
+| `default` | (none needed) | `all-MiniLM-L6-v2` | Local, no API key required |
+| `openai` | `OPENAI_API_KEY` | `text-embedding-3-small` | Fast, accurate, low cost |
+| `voyage` | `VOYAGE_API_KEY` | `voyage-code-2` | Excellent for code |
+
+Example with OpenAI embeddings:
+```bash
+export LEAN_LEANSEARCH_LOCAL=true
+export LEAN_EMBEDDING_PROVIDER=openai
+export OPENAI_API_KEY=your-api-key
+uvx lean-lsp-mcp
+```
+
+**Features:**
+- Indexes your project source files and `.lake/packages` dependencies
+- Lazy indexing on first search (caches per project version)
+- Falls back to remote API if local search fails
 
 ## Notes on MCP Security
 
