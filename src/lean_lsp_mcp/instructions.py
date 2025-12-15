@@ -27,9 +27,10 @@ Set env vars for local search without rate limits:
 - `LEAN_LOOGLE_LOCAL=1`: Type pattern search via local loogle binary
 
 Embedding providers for local leansearch:
-- `LEAN_EMBEDDING_PROVIDER=default`: sentence-transformers (no API key)
-- `LEAN_EMBEDDING_PROVIDER=openai`: OpenAI (needs OPENAI_API_KEY)
-- `LEAN_EMBEDDING_PROVIDER=voyage`: Voyage AI (needs VOYAGE_API_KEY, excellent for code)
+- `LEAN_EMBEDDING_PROVIDER=default`: sentence-transformers (no API key, local)
+- `LEAN_EMBEDDING_PROVIDER=openai`: OpenAI text-embedding-3-large (best quality)
+- `LEAN_EMBEDDING_PROVIDER=gemini`: Google text-embedding-004 (GOOGLE_API_KEY, free tier)
+- `LEAN_EMBEDDING_PROVIDER=voyage`: Voyage voyage-code-2 (optimized for code)
 - `LEAN_EMBEDDING_MODEL=<model>`: Override default model
 
 ## Search Decision Tree

@@ -545,13 +545,14 @@ uvx lean-lsp-mcp
 
 **Embedding Providers:**
 
-| Provider | Env Var | Default Model | Notes |
-|----------|---------|---------------|-------|
-| `default` | (none needed) | `all-MiniLM-L6-v2` | Local, no API key required |
-| `openai` | `OPENAI_API_KEY` | `text-embedding-3-small` | Fast, accurate, low cost |
-| `voyage` | `VOYAGE_API_KEY` | `voyage-code-2` | Excellent for code |
+| Provider | Env Var | Default Model | Dimensions | Notes |
+|----------|---------|---------------|------------|-------|
+| `default` | (none needed) | `all-MiniLM-L6-v2` | 384 | Local, no API key, fast |
+| `openai` | `OPENAI_API_KEY` | `text-embedding-3-large` | 3072 | Best quality (recommended) |
+| `gemini` | `GOOGLE_API_KEY` | `text-embedding-004` | 768 | Good quality, free tier |
+| `voyage` | `VOYAGE_API_KEY` | `voyage-code-2` | 1024 | Optimized for code |
 
-Example with OpenAI embeddings:
+Example with OpenAI embeddings (recommended):
 ```bash
 export LEAN_LEANSEARCH_LOCAL=true
 export LEAN_EMBEDDING_PROVIDER=openai

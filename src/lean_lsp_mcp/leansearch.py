@@ -264,8 +264,14 @@ def _get_embedding_function(
     """Get the appropriate embedding function based on provider.
 
     Args:
-        provider: One of 'default', 'openai', 'voyage'
+        provider: One of 'default', 'openai', 'gemini', 'voyage'
         model: Model name override
+
+    Providers and default models:
+        - default: all-MiniLM-L6-v2 (384 dims, local, fast, ~18KB/decl)
+        - openai: text-embedding-3-large (3072 dims, best quality, ~50KB/decl)
+        - gemini: text-embedding-004 (768 dims, good quality, ~25KB/decl)
+        - voyage: voyage-code-2 (1024 dims, code-optimized, ~35KB/decl)
 
     Returns:
         A ChromaDB-compatible embedding function
@@ -281,9 +287,22 @@ def _get_embedding_function(
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set for OpenAI embeddings")
-        model_name = model or "text-embedding-3-small"
+        # Use large model by default for best quality
+        model_name = model or "text-embedding-3-large"
         logger.info(f"Using OpenAI embeddings: {model_name}")
         return ef.OpenAIEmbeddingFunction(api_key=api_key, model_name=model_name)
+
+    elif provider == "gemini":
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GOOGLE_API_KEY or GEMINI_API_KEY not set for Gemini embeddings"
+            )
+        model_name = model or "models/text-embedding-004"
+        logger.info(f"Using Gemini embeddings: {model_name}")
+        return ef.GoogleGenerativeAiEmbeddingFunction(
+            api_key=api_key, model_name=model_name
+        )
 
     elif provider == "voyage":
         api_key = os.environ.get("VOYAGE_API_KEY")
