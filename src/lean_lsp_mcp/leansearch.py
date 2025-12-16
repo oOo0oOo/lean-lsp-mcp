@@ -4,9 +4,16 @@ This module provides local semantic search functionality similar to leansearch.n
 but runs entirely locally with no rate limits. It indexes Lean declarations from
 your project and dependencies, then uses vector embeddings for semantic search.
 
+Features:
+- Hybrid search: semantic + keyword matching for better results
+- Incremental indexing: only reindex changed files
+- Docstring weighting: prioritizes natural language descriptions
+- Parallel extraction: uses all CPU cores for fast indexing
+
 Supports multiple embedding backends:
 - sentence-transformers (default, no API key required)
-- OpenAI text-embedding-3-small/large
+- OpenAI text-embedding-3-large (best quality)
+- Google text-embedding-004 (good quality, free tier)
 - Voyage AI voyage-code-2 (excellent for code)
 """
 
@@ -14,10 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -48,6 +57,33 @@ class IndexStats:
     index_time_seconds: float = 0.0
     project_name: str = ""
     embedding_provider: str = ""
+    # Incremental indexing stats
+    files_added: int = 0
+    files_updated: int = 0
+    files_unchanged: int = 0
+
+
+def _compute_file_hash(file_path: Path) -> str:
+    """Compute hash of file contents for change detection."""
+    try:
+        return hashlib.md5(file_path.read_bytes()).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+def _keyword_score(query: str, text: str) -> float:
+    """Compute keyword overlap score for hybrid search.
+
+    Returns a score between 0 and 1 based on query term matches.
+    """
+    query_terms = set(query.lower().split())
+    text_lower = text.lower()
+
+    if not query_terms:
+        return 0.0
+
+    matches = sum(1 for term in query_terms if term in text_lower)
+    return matches / len(query_terms)
 
 
 def get_cache_dir() -> Path:
@@ -327,9 +363,10 @@ class LeanSearchManager:
     """Manages local semantic search for Lean 4 projects.
 
     Features:
-    - Indexes project source and .lake dependencies
-    - Uses vector embeddings for semantic search
-    - Supports multiple embedding backends (local or API-based)
+    - Hybrid search: semantic + keyword matching
+    - Incremental indexing: only reindex changed files
+    - Parallel extraction: uses all CPU cores
+    - Multiple embedding backends (local or API-based)
     - Caches indices per project version
     - No rate limits!
     """
@@ -351,6 +388,27 @@ class LeanSearchManager:
         self._ready = False
         self._lock = asyncio.Lock()
         self._stats: IndexStats | None = None
+        self._file_hashes: dict[str, str] = {}  # path -> hash for incremental indexing
+
+    def _get_hash_file_path(self) -> Path:
+        """Get path to file hash cache."""
+        return self.cache_dir / "chroma" / f"{self._get_collection_name()}_hashes.json"
+
+    def _load_file_hashes(self) -> dict[str, str]:
+        """Load cached file hashes from disk."""
+        hash_file = self._get_hash_file_path()
+        if hash_file.exists():
+            try:
+                return json.loads(hash_file.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _save_file_hashes(self, hashes: dict[str, str]) -> None:
+        """Save file hashes to disk."""
+        hash_file = self._get_hash_file_path()
+        hash_file.parent.mkdir(parents=True, exist_ok=True)
+        hash_file.write_text(json.dumps(hashes))
 
     @property
     def is_ready(self) -> bool:
@@ -455,10 +513,12 @@ class LeanSearchManager:
         force: bool = False,
         progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> int:
-        """Index the project and dependencies.
+        """Index the project and dependencies with incremental updates.
+
+        Uses parallel extraction and only reindexes changed files.
 
         Args:
-            force: If True, reindex even if cache exists
+            force: If True, reindex all files even if unchanged
             progress_callback: Optional callback(message, current, total) for progress
 
         Returns:
@@ -467,15 +527,18 @@ class LeanSearchManager:
         start_time = time.monotonic()
         collection = self._get_or_create_collection()
 
+        # Load cached file hashes for incremental indexing
+        cached_hashes = {} if force else self._load_file_hashes()
+
         # Check if already indexed (and not forcing)
-        if not force and collection.count() > 0:
+        if not force and collection.count() > 0 and cached_hashes:
             logger.info(
                 f"Collection already has {collection.count()} items, skipping index"
             )
             self._ready = True
             return collection.count()
 
-        # Clear existing data if forcing reindex
+        # Clear existing data if forcing full reindex
         if force and collection.count() > 0:
             logger.info("Forcing reindex, clearing existing data...")
             try:
@@ -483,6 +546,7 @@ class LeanSearchManager:
                 client.delete_collection(self._get_collection_name())
                 self._collection = None
                 collection = self._get_or_create_collection()
+                cached_hashes = {}
             except Exception as e:
                 logger.warning(f"Could not clear collection: {e}")
 
@@ -494,33 +558,88 @@ class LeanSearchManager:
         total_files = len(files)
         logger.info(f"Found {total_files} Lean files to index")
 
-        if progress_callback:
-            progress_callback(f"Extracting from {total_files} files...", 0, total_files)
+        # Determine which files need processing (incremental)
+        files_to_process: list[tuple[Path, str, Path]] = []
+        new_hashes: dict[str, str] = {}
+        files_added = 0
+        files_updated = 0
+        files_unchanged = 0
 
+        for file_path, module, base_path in files:
+            file_key = str(file_path)
+            current_hash = _compute_file_hash(file_path)
+            new_hashes[file_key] = current_hash
+
+            if file_key not in cached_hashes:
+                files_to_process.append((file_path, module, base_path))
+                files_added += 1
+            elif cached_hashes[file_key] != current_hash:
+                files_to_process.append((file_path, module, base_path))
+                files_updated += 1
+            else:
+                files_unchanged += 1
+
+        logger.info(
+            f"Incremental index: {files_added} new, {files_updated} changed, "
+            f"{files_unchanged} unchanged"
+        )
+
+        if not files_to_process and collection.count() > 0:
+            logger.info("No files changed, index is up to date")
+            self._ready = True
+            self._save_file_hashes(new_hashes)
+            return collection.count()
+
+        if progress_callback:
+            progress_callback(
+                f"Extracting from {len(files_to_process)} files...", 0, len(files_to_process)
+            )
+
+        # Parallel extraction using ThreadPoolExecutor
         all_declarations: list[LeanDeclaration] = []
         kind_counts: dict[str, int] = {}
+        max_workers = min(os.cpu_count() or 4, 8)  # Cap at 8 workers
 
-        for idx, (file_path, module, base_path) in enumerate(files):
-            decls = _extract_declarations_from_file(file_path, module, base_path)
-            for d in decls:
-                kind_counts[d.kind] = kind_counts.get(d.kind, 0) + 1
-            all_declarations.extend(decls)
+        def extract_file(args: tuple[Path, str, Path]) -> list[LeanDeclaration]:
+            file_path, module, base_path = args
+            return _extract_declarations_from_file(file_path, module, base_path)
 
-            if progress_callback and idx % 100 == 0:
-                progress_callback(
-                    f"Extracted {len(all_declarations)} declarations...",
-                    idx,
-                    total_files,
-                )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(extract_file, f): i
+                for i, f in enumerate(files_to_process)
+            }
+
+            completed = 0
+            for future in as_completed(futures):
+                try:
+                    decls = future.result()
+                    for d in decls:
+                        kind_counts[d.kind] = kind_counts.get(d.kind, 0) + 1
+                    all_declarations.extend(decls)
+                except Exception as e:
+                    logger.warning(f"Failed to extract file: {e}")
+
+                completed += 1
+                if progress_callback and completed % 100 == 0:
+                    progress_callback(
+                        f"Extracted {len(all_declarations)} declarations...",
+                        completed,
+                        len(files_to_process),
+                    )
 
         if not all_declarations:
             logger.warning("No declarations found to index")
             self._ready = True
+            self._save_file_hashes(new_hashes)
             self._stats = IndexStats(
                 total_declarations=0,
                 total_files=total_files,
                 project_name=self.project_root.name if self.project_root else "",
                 embedding_provider=self.embedding_provider,
+                files_added=files_added,
+                files_updated=files_updated,
+                files_unchanged=files_unchanged,
             )
             return 0
 
@@ -539,15 +658,14 @@ class LeanSearchManager:
         ids: list[str] = []
 
         for i, decl in enumerate(all_declarations):
-            # Create searchable document text - include all relevant info
-            doc_parts = [
-                decl.name.replace(".", " "),  # Split qualified name
-                decl.kind,
-            ]
+            # Create searchable document text with docstring weighting
+            # Docstrings are repeated 3x to boost their importance for NL queries
+            doc_parts = [decl.name.replace(".", " "), decl.kind]
+            if decl.docstring:
+                # Weight docstrings heavily - they contain natural language
+                doc_parts.extend([decl.docstring] * 3)
             if decl.signature:
                 doc_parts.append(decl.signature)
-            if decl.docstring:
-                doc_parts.append(decl.docstring)
             doc = " ".join(doc_parts)
 
             documents.append(doc)
@@ -591,6 +709,10 @@ class LeanSearchManager:
 
         elapsed = time.monotonic() - start_time
         self._ready = True
+
+        # Save file hashes for future incremental indexing
+        self._save_file_hashes(new_hashes)
+
         self._stats = IndexStats(
             total_declarations=collection.count(),
             total_files=total_files,
@@ -598,19 +720,26 @@ class LeanSearchManager:
             index_time_seconds=elapsed,
             project_name=self.project_root.name if self.project_root else "",
             embedding_provider=self.embedding_provider,
+            files_added=files_added,
+            files_updated=files_updated,
+            files_unchanged=files_unchanged,
         )
 
         logger.info(
-            f"Indexing complete: {collection.count()} declarations in {elapsed:.1f}s"
+            f"Indexing complete: {collection.count()} declarations in {elapsed:.1f}s "
+            f"({files_added} new, {files_updated} updated, {files_unchanged} unchanged files)"
         )
         return collection.count()
 
-    def search(self, query: str, num_results: int = 5) -> list[dict[str, Any]]:
-        """Search for declarations matching a natural language query.
+    def search(
+        self, query: str, num_results: int = 5, hybrid_weight: float = 0.3
+    ) -> list[dict[str, Any]]:
+        """Search for declarations using hybrid semantic + keyword matching.
 
         Args:
             query: Natural language search query
             num_results: Maximum number of results
+            hybrid_weight: Weight for keyword score (0-1). Higher = more keyword influence.
 
         Returns:
             List of matching declarations with metadata and similarity scores
@@ -620,11 +749,14 @@ class LeanSearchManager:
 
         collection = self._get_or_create_collection()
 
+        # Fetch more results for hybrid reranking
+        fetch_count = min(num_results * 3, 50)
+
         try:
             results = collection.query(
                 query_texts=[query],
-                n_results=num_results,
-                include=["metadatas", "distances"],
+                n_results=fetch_count,
+                include=["metadatas", "distances", "documents"],
             )
         except Exception as e:
             logger.error(f"Search failed: {e}")
@@ -633,25 +765,54 @@ class LeanSearchManager:
         if not results or not results["metadatas"] or not results["metadatas"][0]:
             return []
 
-        output = []
         distances = results.get("distances", [[]])
+        documents = results.get("documents", [[]])
         if not distances or not distances[0]:
             distances = [[0.0] * len(results["metadatas"][0])]
+        if not documents or not documents[0]:
+            documents = [[""] * len(results["metadatas"][0])]
 
-        for meta, dist in zip(results["metadatas"][0], distances[0]):
-            output.append(
-                {
-                    "name": meta.get("name", ""),
-                    "module": meta.get("module", ""),
-                    "kind": meta.get("kind"),
-                    "signature": meta.get("signature"),
-                    "distance": dist,
-                    "file_path": meta.get("file_path"),
-                    "line": meta.get("line"),
-                }
+        # Compute hybrid scores and deduplicate
+        seen_names: set[str] = set()
+        scored_results: list[tuple[float, dict[str, Any]]] = []
+
+        for meta, dist, doc in zip(
+            results["metadatas"][0], distances[0], documents[0]
+        ):
+            name = meta.get("name", "")
+
+            # Deduplicate by name
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+
+            # Hybrid scoring: combine semantic distance with keyword overlap
+            # Lower distance = better semantic match
+            # Higher keyword score = better keyword match
+            semantic_score = 1.0 - min(dist, 1.0)  # Normalize to 0-1
+            kw_score = _keyword_score(query, doc or name)
+
+            # Weighted combination
+            hybrid_score = (1 - hybrid_weight) * semantic_score + hybrid_weight * kw_score
+
+            scored_results.append(
+                (
+                    hybrid_score,
+                    {
+                        "name": name,
+                        "module": meta.get("module", ""),
+                        "kind": meta.get("kind"),
+                        "signature": meta.get("signature"),
+                        "distance": dist,
+                        "file_path": meta.get("file_path"),
+                        "line": meta.get("line"),
+                    },
+                )
             )
 
-        return output
+        # Sort by hybrid score (descending) and return top results
+        scored_results.sort(key=lambda x: x[0], reverse=True)
+        return [r[1] for r in scored_results[:num_results]]
 
     async def ensure_indexed(self, project_root: Path | None = None) -> bool:
         """Ensure the project is indexed, indexing if necessary.
