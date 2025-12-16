@@ -139,14 +139,11 @@ def test_local_search_project_root_updates_context(
         ctx=ctx, query=" foo ", limit=7, project_root=str(project_dir)
     )
 
-    # Result is now a JSON string with array of LocalSearchResult objects
-    import orjson
-
-    parsed = orjson.loads(result)
-    assert len(parsed) == 1
-    assert parsed[0]["name"] == "foo"
-    assert parsed[0]["kind"] == "def"
-    assert parsed[0]["file"] == "Foo.lean"
+    # Result is now a LocalSearchResults model with items field
+    assert len(result.items) == 1
+    assert result.items[0].name == "foo"
+    assert result.items[0].kind == "def"
+    assert result.items[0].file == "Foo.lean"
     assert called == {
         "query": "foo",
         "limit": 7,
