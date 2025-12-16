@@ -2,9 +2,62 @@ import os
 import secrets
 import sys
 import tempfile
-from typing import List, Dict, Optional, Callable
+from typing import Any, List, Dict, Optional, Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+
+
+class LeanToolError(Exception):
+    """Exception raised when a Lean MCP tool operation fails."""
+
+    pass
+
+
+def check_lsp_response(response: Any, operation: str) -> Any:
+    """Check an LSP response for error patterns and raise if found.
+
+    This function detects two failure patterns from leanclient:
+    1. None return value (typically indicates timeout)
+    2. Error dict pattern: {"error": {"message": "..."}}
+
+    Args:
+        response: The response from a leanclient LSP operation
+        operation: Human-readable description of the operation (for error messages)
+
+    Returns:
+        The original response if no error patterns detected
+
+    Raises:
+        LeanToolError: If the response indicates a failure
+    """
+    if response is None:
+        raise LeanToolError(f"LSP timeout during {operation}")
+    if isinstance(response, dict) and "error" in response:
+        msg = response["error"].get("message", "unknown error")
+        raise LeanToolError(f"LSP error during {operation}: {msg}")
+    return response
+
+
+def check_lsp_error_dict(response: Any, operation: str) -> Any:
+    """Check an LSP response for error dict pattern only (not None).
+
+    Use this for operations where None is a valid response (e.g., get_goal
+    returns None when no goal is present at the position).
+
+    Args:
+        response: The response from a leanclient LSP operation
+        operation: Human-readable description of the operation (for error messages)
+
+    Returns:
+        The original response if no error dict detected
+
+    Raises:
+        LeanToolError: If the response contains an error dict
+    """
+    if isinstance(response, dict) and "error" in response:
+        msg = response["error"].get("message", "unknown error")
+        raise LeanToolError(f"LSP error during {operation}: {msg}")
+    return response
 
 
 class OutputCapture:
