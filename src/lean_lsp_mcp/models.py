@@ -118,3 +118,80 @@ class RunResult(BaseModel):
 class DeclarationInfo(BaseModel):
     file_path: str = Field(description="Path to declaration file")
     content: str = Field(description="File content")
+
+
+# Wrapper models for list-returning tools
+# FastMCP flattens bare lists into separate TextContent blocks, causing serialization issues.
+# Wrapping in a model ensures proper JSON serialization.
+
+
+class DiagnosticsResult(BaseModel):
+    """Wrapper for diagnostic messages list."""
+
+    items: List[DiagnosticMessage] = Field(
+        default_factory=list, description="List of diagnostic messages"
+    )
+
+
+class CompletionsResult(BaseModel):
+    """Wrapper for completions list."""
+
+    items: List[CompletionItem] = Field(
+        default_factory=list, description="List of completion items"
+    )
+
+
+class MultiAttemptResult(BaseModel):
+    """Wrapper for multi-attempt results list."""
+
+    items: List[AttemptResult] = Field(
+        default_factory=list, description="List of attempt results"
+    )
+
+
+class LocalSearchResults(BaseModel):
+    """Wrapper for local search results list."""
+
+    items: List[LocalSearchResult] = Field(
+        default_factory=list, description="List of local search results"
+    )
+
+
+class LeanSearchResults(BaseModel):
+    """Wrapper for LeanSearch results list."""
+
+    items: List[LeanSearchResult] = Field(
+        default_factory=list, description="List of LeanSearch results"
+    )
+
+
+class LoogleResults(BaseModel):
+    """Wrapper for Loogle results list."""
+
+    items: List[LoogleResult] = Field(
+        default_factory=list, description="List of Loogle results"
+    )
+
+
+class LeanFinderResults(BaseModel):
+    """Wrapper for Lean Finder results list."""
+
+    items: List[LeanFinderResult] = Field(
+        default_factory=list, description="List of Lean Finder results"
+    )
+
+
+class StateSearchResults(BaseModel):
+    """Wrapper for state search results list."""
+
+    items: List[StateSearchResult] = Field(
+        default_factory=list, description="List of state search results"
+    )
+
+
+class PremiseResults(BaseModel):
+    """Wrapper for premise results list."""
+
+    items: List[PremiseResult] = Field(
+        default_factory=list, description="List of premise results"
+    )
