@@ -679,9 +679,10 @@ class LeanSearchManager:
                     "line": decl.line,
                 }
             )
-            ids.append(f"decl_{i}_{hashlib.md5(decl.name.encode()).hexdigest()[:8]}")
+            # Stable ID based on name for proper upsert behavior
+            ids.append(f"decl_{hashlib.md5(decl.name.encode()).hexdigest()}")
 
-        # Add to collection in batches
+        # Upsert to collection in batches (updates existing, adds new)
         batch_size = 500
         total_batches = (len(documents) + batch_size - 1) // batch_size
 
@@ -690,13 +691,13 @@ class LeanSearchManager:
             batch_end = min(i + batch_size, len(documents))
 
             try:
-                collection.add(
+                collection.upsert(
                     documents=documents[i:batch_end],
                     metadatas=metadatas[i:batch_end],
                     ids=ids[i:batch_end],
                 )
             except Exception as e:
-                logger.error(f"Failed to add batch {batch_idx}: {e}")
+                logger.error(f"Failed to upsert batch {batch_idx}: {e}")
 
             if progress_callback:
                 progress_callback(
