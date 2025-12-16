@@ -12,7 +12,7 @@ import functools
 import uuid
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
 from mcp.server.auth.settings import AuthSettings

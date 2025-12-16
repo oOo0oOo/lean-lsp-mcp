@@ -69,7 +69,9 @@ async def test_diagnostic_messages_line_filtering(
         )
         all_items = parse_diagnostics_result(diagnostics)
         # Should contain at least 2 errors
-        assert len(all_items) >= 2, f"Expected at least 2 diagnostics, got {len(all_items)}"
+        assert len(all_items) >= 2, (
+            f"Expected at least 2 diagnostics, got {len(all_items)}"
+        )
         # Verify items have expected structure
         for item in all_items:
             assert "severity" in item
@@ -190,7 +192,9 @@ async def test_diagnostic_messages_declaration_filtering(
             },
         )
         valid_items = parse_diagnostics_result(diagnostics)
-        assert len(valid_items) == 0, f"Expected no diagnostics for valid function, got {len(valid_items)}"
+        assert len(valid_items) == 0, (
+            f"Expected no diagnostics for valid function, got {len(valid_items)}"
+        )
 
 
 @pytest.mark.asyncio

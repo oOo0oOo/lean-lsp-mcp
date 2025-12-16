@@ -28,9 +28,7 @@ _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
 }
 
 
-def _create_ripgrep_process(
-    command: list[str], *, cwd: str
-) -> subprocess.Popen[str]:
+def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen[str]:
     """Spawn ripgrep and return a process with line-streaming stdout.
 
     Separated for test monkeypatching and to allow early termination once we
