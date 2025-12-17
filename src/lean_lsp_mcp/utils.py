@@ -87,6 +87,13 @@ def format_goal(goal, default_msg):
     return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
 
 
+def extract_goals_list(goal_response: dict | None) -> List[str]:
+    """Extract goals list from LSP response, returning empty list if no goals."""
+    if goal_response is None:
+        return []
+    return goal_response.get("goals", [])
+
+
 def _utf16_index_to_py_index(text: str, utf16_index: int) -> int | None:
     """Convert an LSP UTF-16 column index into a Python string index."""
     if utf16_index < 0:

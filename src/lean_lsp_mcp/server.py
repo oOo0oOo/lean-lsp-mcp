@@ -61,6 +61,7 @@ from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     OutputCapture,
     deprecated,
+    extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
@@ -495,14 +496,15 @@ def goal(
         )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
-        before = format_goal(goal_start, None)
-        after = format_goal(goal_end, None)
-        goals = f"{before} → {after}" if before != after else after
-        return GoalState(line_context=line_context, goals=goals)
+        return GoalState(
+            line_context=line_context,
+            goals_before=extract_goals_list(goal_start),
+            goals_after=extract_goals_list(goal_end),
+        )
     else:
         goal_result = client.get_goal(rel_path, line - 1, column - 1)
         return GoalState(
-            line_context=line_context, goals=format_goal(goal_result, None)
+            line_context=line_context, goals=extract_goals_list(goal_result)
         )
 
 
