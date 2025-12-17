@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -52,18 +53,25 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
 
 
 class LoogleManager:
-    """Manages local loogle installation and async subprocess."""
+    """Manages local loogle installation and async subprocess.
+
+    Args:
+        cache_dir: Directory for loogle repo and indices (default: ~/.cache/lean-lsp-mcp/loogle)
+        project_path: Optional Lean project path to index its .lake/packages dependencies
+    """
 
     REPO_URL = "https://github.com/nomeata/loogle.git"
     READY_SIGNAL = "Loogle is ready."
 
-    def __init__(self, cache_dir: Path | None = None):
+    def __init__(self, cache_dir: Path | None = None, project_path: Path | None = None):
         self.cache_dir = cache_dir or get_cache_dir()
         self.repo_dir = self.cache_dir / "repo"
         self.index_dir = self.cache_dir / "index"
+        self.project_path = project_path
         self.process: asyncio.subprocess.Process | None = None
         self._ready = False
         self._lock = asyncio.Lock()
+        self._extra_paths: list[Path] = []
 
     @property
     def binary_path(self) -> Path:
@@ -181,21 +189,54 @@ class LoogleManager:
             return False, err
         return True, ""
 
+    def _discover_project_paths(self) -> list[Path]:
+        """Find .lake/packages lib paths from the user's project."""
+        if not self.project_path:
+            return []
+        paths = []
+        # Check packages directory
+        lake_packages = self.project_path / ".lake" / "packages"
+        if lake_packages.exists():
+            for pkg_dir in lake_packages.iterdir():
+                if not pkg_dir.is_dir():
+                    continue
+                lib_path = pkg_dir / ".lake" / "build" / "lib" / "lean"
+                if lib_path.exists():
+                    paths.append(lib_path)
+        # Also add the project's own build output
+        project_lib = self.project_path / ".lake" / "build" / "lib" / "lean"
+        if project_lib.exists():
+            paths.append(project_lib)
+        return sorted(paths)
+
     def _get_index_path(self) -> Path:
-        return self.index_dir / f"mathlib-{self._get_mathlib_version()}.idx"
+        base = f"mathlib-{self._get_mathlib_version()}"
+        if self._extra_paths:
+            # Include hash of extra paths for project-specific index
+            paths_str = ":".join(str(p) for p in sorted(self._extra_paths))
+            path_hash = hashlib.sha256(paths_str.encode()).hexdigest()[:8]
+            return self.index_dir / f"{base}-{path_hash}.idx"
+        return self.index_dir / f"{base}.idx"
 
     def _cleanup_old_indices(self) -> None:
-        """Remove old index files from previous mathlib versions."""
+        """Remove old index files from previous mathlib versions.
+
+        Cleans up both mathlib-only indexes (mathlib-<version>.idx) and
+        project-specific indexes (mathlib-<version>-<hash>.idx) that don't
+        match the current mathlib version.
+        """
         if not self.index_dir.exists():
             return
-        current = self._get_index_path()
+        current_mathlib = f"mathlib-{self._get_mathlib_version()}"
         for idx in self.index_dir.glob("*.idx"):
-            if idx != current:
-                try:
-                    idx.unlink()
-                    logger.info(f"Removed old index: {idx.name}")
-                except Exception:
-                    pass
+            # Keep indexes with current mathlib version (both base and project-specific)
+            if idx.name.startswith(current_mathlib):
+                continue
+            try:
+                idx.unlink()
+                logger.info(f"Removed old index: {idx.name}")
+            except Exception:
+                pass
 
     def _build_index(self) -> Path | None:
         index_path = self._get_index_path()
@@ -205,16 +246,36 @@ class LoogleManager:
             return None
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_old_indices()
-        logger.info("Building search index...")
-        try:
-            self._run(
-                [str(self.binary_path), "--write-index", str(index_path), "--json", ""],
-                timeout=600,
+
+        # Build command with extra paths
+        cmd = [str(self.binary_path), "--write-index", str(index_path), "--json"]
+        for path in self._extra_paths:
+            cmd.extend(["--path", str(path)])
+        cmd.append("")  # Empty query for index building
+
+        if self._extra_paths:
+            logger.info(
+                f"Building search index with {len(self._extra_paths)} extra paths..."
             )
+        else:
+            logger.info("Building search index...")
+        try:
+            self._run(cmd, timeout=600)
             return index_path if index_path.exists() else None
         except Exception as e:
             logger.error(f"Index build error: {e}")
             return None
+
+    def set_project_path(self, project_path: Path | None) -> bool:
+        """Update project path and rediscover extra paths. Returns True if paths changed."""
+        self.project_path = project_path
+        new_paths = self._discover_project_paths()
+        if new_paths != self._extra_paths:
+            self._extra_paths = new_paths
+            if new_paths:
+                logger.info(f"Discovered {len(new_paths)} project library paths")
+            return True
+        return False
 
     def ensure_installed(self) -> bool:
         ok, err = self._check_prerequisites()
@@ -223,6 +284,10 @@ class LoogleManager:
             return False
         if not self._clone_repo() or not self._build_loogle():
             return False
+        # Discover project paths before building index
+        self._extra_paths = self._discover_project_paths()
+        if self._extra_paths:
+            logger.info(f"Indexing {len(self._extra_paths)} project library paths")
         if not self._build_index():
             logger.warning("Index build failed, loogle will build on startup")
         return self.is_installed
@@ -234,10 +299,26 @@ class LoogleManager:
         if not ok:
             logger.error(f"Loogle environment check failed: {err}")
             return False
+
+        # Check if project paths changed and we need to rebuild index
+        if self.project_path:
+            new_paths = self._discover_project_paths()
+            if new_paths != self._extra_paths:
+                self._extra_paths = new_paths
+                # Build new index if paths changed
+                self._build_index()
+
         cmd = [str(self.binary_path), "--json", "--interactive"]
         if (idx := self._get_index_path()).exists():
             cmd.extend(["--read-index", str(idx)])
-        logger.info("Starting loogle subprocess...")
+        # Add extra paths for runtime search (in case not all are indexed)
+        for path in self._extra_paths:
+            cmd.extend(["--path", str(path)])
+
+        if self._extra_paths:
+            logger.info(f"Starting loogle with {len(self._extra_paths)} extra paths...")
+        else:
+            logger.info("Starting loogle subprocess...")
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *cmd,

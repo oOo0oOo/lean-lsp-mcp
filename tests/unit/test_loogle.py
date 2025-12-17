@@ -222,18 +222,81 @@ class TestLoogleManager:
 
     def test_cleanup_old_indices(self, mgr):
         mgr.index_dir.mkdir(parents=True)
-        # Create some old index files
+        # Create some old mathlib index files
         (mgr.index_dir / "mathlib-old1.idx").touch()
         (mgr.index_dir / "mathlib-old2.idx").touch()
+        # Also create old project-specific indexes
+        (mgr.index_dir / "mathlib-old1-abc123.idx").touch()
+        (mgr.index_dir / "mathlib-old2-def456.idx").touch()
         current = mgr._get_index_path()
         current.touch()
+        # Create a project-specific index for current mathlib version (should be preserved)
+        current_mathlib_version = mgr._get_mathlib_version()
+        project_index = mgr.index_dir / f"mathlib-{current_mathlib_version}-proj123.idx"
+        project_index.touch()
 
         mgr._cleanup_old_indices()
 
-        # Only current should remain
+        # Current and project-specific index for current mathlib version should remain
         remaining = list(mgr.index_dir.glob("*.idx"))
-        assert len(remaining) == 1
-        assert remaining[0] == current
+        assert len(remaining) == 2
+        assert current in remaining
+        assert project_index in remaining
+
+    def test_discover_project_paths_no_project(self, mgr):
+        assert mgr._discover_project_paths() == []
+
+    def test_discover_project_paths(self, tmp_path):
+        # Create a fake project with packages
+        project = tmp_path / "project"
+        pkg1_lib = (
+            project / ".lake" / "packages" / "pkg1" / ".lake" / "build" / "lib" / "lean"
+        )
+        pkg2_lib = (
+            project / ".lake" / "packages" / "pkg2" / ".lake" / "build" / "lib" / "lean"
+        )
+        project_lib = project / ".lake" / "build" / "lib" / "lean"
+        pkg1_lib.mkdir(parents=True)
+        pkg2_lib.mkdir(parents=True)
+        project_lib.mkdir(parents=True)
+
+        mgr = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
+        paths = mgr._discover_project_paths()
+
+        assert len(paths) == 3
+        assert pkg1_lib in paths
+        assert pkg2_lib in paths
+        assert project_lib in paths
+
+    def test_index_path_with_project(self, tmp_path):
+        # Without project - base index name
+        mgr1 = LoogleManager(cache_dir=tmp_path / "cache1")
+        path1 = mgr1._get_index_path()
+        assert "mathlib-" in path1.name
+        assert path1.name.count("-") == 1  # Just mathlib-<version>.idx
+
+        # With extra paths - includes hash
+        mgr2 = LoogleManager(cache_dir=tmp_path / "cache2")
+        mgr2._extra_paths = [Path("/some/path")]
+        path2 = mgr2._get_index_path()
+        assert path2.name.count("-") == 2  # mathlib-<version>-<hash>.idx
+
+    def test_set_project_path(self, tmp_path):
+        project = tmp_path / "project"
+        lib = project / ".lake" / "build" / "lib" / "lean"
+        lib.mkdir(parents=True)
+
+        mgr = LoogleManager(cache_dir=tmp_path / "cache")
+        assert mgr._extra_paths == []
+
+        # Setting project path discovers paths
+        changed = mgr.set_project_path(project)
+        assert changed
+        assert len(mgr._extra_paths) == 1
+
+        # Setting same path again - no change
+        changed = mgr.set_project_path(project)
+        assert not changed
 
 
 @pytest.mark.slow
@@ -270,6 +333,15 @@ class TestLoogleIntegration:
             assert isinstance(results, list)
             assert len(results) > 0
             assert any("add" in r.get("name", "").lower() for r in results)
+
+            # Test project path feature (small check)
+            fake_project = tmp_path / "fake_project"
+            fake_lib = fake_project / ".lake" / "build" / "lib" / "lean"
+            fake_lib.mkdir(parents=True)
+            changed = mgr.set_project_path(fake_project)
+            assert changed, "set_project_path should detect new paths"
+            assert len(mgr._extra_paths) == 1
+            assert fake_lib in mgr._extra_paths
 
         finally:
             await mgr.stop()

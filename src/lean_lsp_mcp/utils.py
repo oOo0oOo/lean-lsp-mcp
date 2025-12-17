@@ -2,9 +2,37 @@ import os
 import secrets
 import sys
 import tempfile
-from typing import List, Dict, Optional, Callable
+from typing import Any, List, Dict, Optional, Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+
+
+class LeanToolError(Exception):
+    """Exception raised when a Lean MCP tool operation fails."""
+
+    pass
+
+
+def check_lsp_response(
+    response: Any, operation: str, *, allow_none: bool = False
+) -> Any:
+    """Check an LSP response for error patterns and raise if found.
+
+    Args:
+        response: The response from a leanclient LSP operation
+        operation: Human-readable description of the operation
+        allow_none: If False (default), None raises LeanToolError (timeout).
+                    If True, None is allowed (for operations where None is valid).
+
+    Raises:
+        LeanToolError: If response indicates failure
+    """
+    if response is None and not allow_none:
+        raise LeanToolError(f"LSP timeout during {operation}")
+    if isinstance(response, dict) and "error" in response:
+        msg = response["error"].get("message", "unknown error")
+        raise LeanToolError(f"LSP error during {operation}: {msg}")
+    return response
 
 
 class OutputCapture:
