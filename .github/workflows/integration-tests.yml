@@ -27,12 +27,17 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --extra dev
 
-      - name: Set up test project
+      - name: Update lake dependencies
         working-directory: tests/test_project
-        run: |
-          lake update --keep-toolchain
-          lake exe cache get
-          lake build
+        run: lake update --keep-toolchain
+
+      - name: Download Mathlib cache
+        working-directory: tests/test_project
+        run: lake exe cache get
+
+      - name: Build test project
+        working-directory: tests/test_project
+        run: lake build
 
       - name: Run all tests
         run: uv run pytest tests/ -v --timeout=300
