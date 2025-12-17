@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import orjson
 from collections.abc import Callable
 from pathlib import Path
 from typing import AsyncContextManager
 
+import orjson
 import pytest
 
 from tests.helpers.mcp_client import MCPClient, result_text
@@ -99,7 +99,7 @@ async def test_search_tools(
                 "file_path": str(goal_file),
                 "line": 4,
                 "column": 3,
-            }
+            },
         )
         # Now returns JSON array of PremiseResult models
         hammer_entry = _first_result_item(hammer)
