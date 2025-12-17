@@ -254,7 +254,9 @@ class LoogleManager:
         cmd.append("")  # Empty query for index building
 
         if self._extra_paths:
-            logger.info(f"Building search index with {len(self._extra_paths)} extra paths...")
+            logger.info(
+                f"Building search index with {len(self._extra_paths)} extra paths..."
+            )
         else:
             logger.info("Building search index...")
         try:

@@ -249,8 +249,12 @@ class TestLoogleManager:
     def test_discover_project_paths(self, tmp_path):
         # Create a fake project with packages
         project = tmp_path / "project"
-        pkg1_lib = project / ".lake" / "packages" / "pkg1" / ".lake" / "build" / "lib" / "lean"
-        pkg2_lib = project / ".lake" / "packages" / "pkg2" / ".lake" / "build" / "lib" / "lean"
+        pkg1_lib = (
+            project / ".lake" / "packages" / "pkg1" / ".lake" / "build" / "lib" / "lean"
+        )
+        pkg2_lib = (
+            project / ".lake" / "packages" / "pkg2" / ".lake" / "build" / "lib" / "lean"
+        )
         project_lib = project / ".lake" / "build" / "lib" / "lean"
         pkg1_lib.mkdir(parents=True)
         pkg2_lib.mkdir(parents=True)
