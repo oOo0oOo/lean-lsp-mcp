@@ -33,4 +33,7 @@ After finding a name: lean_local_search to verify, lean_hover_info for signature
 
 ## Return Formats
 List tools return JSON arrays. Empty = `[]`.
+
+## Error Handling
+Check `isError` in responses: `true` means failure (timeout/LSP error), while `[]` with `isError: false` means no results found.
 """

@@ -59,7 +59,9 @@ from lean_lsp_mcp.models import (
 )
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
+    LeanToolError,
     OutputCapture,
+    check_lsp_response,
     deprecated,
     extract_range,
     filter_diagnostics_by_position,
@@ -71,10 +73,6 @@ from lean_lsp_mcp.utils import (
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-
-
-class LeanToolError(Exception):
-    pass
 
 
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
@@ -445,6 +443,7 @@ def diagnostic_messages(
         end_line=end_line_0,
         inactivity_timeout=15.0,
     )
+    check_lsp_response(diagnostics, "get_diagnostics")
 
     return DiagnosticsResult(items=_to_diagnostic_messages(diagnostics))
 
@@ -494,13 +493,16 @@ def goal(
             (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
+        check_lsp_response(goal_start, "get_goal", allow_none=True)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
+        check_lsp_response(goal_end, "get_goal", allow_none=True)
         before = format_goal(goal_start, None)
         after = format_goal(goal_end, None)
         goals = f"{before} → {after}" if before != after else after
         return GoalState(line_context=line_context, goals=goals)
     else:
         goal_result = client.get_goal(rel_path, line - 1, column - 1)
+        check_lsp_response(goal_result, "get_goal", allow_none=True)
         return GoalState(
             line_context=line_context, goals=format_goal(goal_result, None)
         )
@@ -543,6 +545,7 @@ def term_goal(
         column = len(line_context)
 
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
+    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
     expected_type = None
     if term_goal_result is not None:
         rendered = term_goal_result.get("goal")
@@ -578,6 +581,7 @@ def hover(
     client.open_file(rel_path)
     file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
+    check_lsp_response(hover_info, "get_hover", allow_none=True)
     if hover_info is None:
         raise LeanToolError(f"No hover information at line {line}, column {column}")
 
@@ -589,6 +593,7 @@ def hover(
 
     # Add diagnostics if available
     diagnostics = client.get_diagnostics(rel_path)
+    check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
     return HoverInfo(
@@ -625,6 +630,7 @@ def completions(
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
     raw_completions = client.get_completions(rel_path, line - 1, column - 1)
+    check_lsp_response(raw_completions, "get_completions")
 
     # Convert to CompletionItem models
     items: List[CompletionItem] = []
@@ -770,9 +776,11 @@ def multi_attempt(
             # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
+            check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
+            check_lsp_response(goal_result, "get_goal", allow_none=True)
             goal_state = format_goal(goal_result, None)
             results.append(
                 AttemptResult(
@@ -838,6 +846,7 @@ def run_code(
         client.open_file(rel_path)
         opened_file = True
         raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
+        check_lsp_response(raw_diagnostics, "get_diagnostics")
     finally:
         if opened_file:
             try:
