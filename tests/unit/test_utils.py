@@ -4,11 +4,11 @@ import asyncio
 
 from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
+    extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
     format_diagnostics,
-    format_goal,
     format_line,
 )
 
@@ -30,10 +30,20 @@ def test_format_diagnostics_compact_range() -> None:
     assert rendered == ["l4c2-l4c6, severity: 2\nExample message"]
 
 
-def test_format_goal_strips_code_blocks() -> None:
-    goal = {"rendered": "```lean\ntest\n```"}
-    assert format_goal(goal, "fallback") == "test"
-    assert format_goal(None, "fallback") == "fallback"
+def test_extract_goals_list() -> None:
+    # With goals list
+    response = {"goals": ["goal1", "goal2"], "rendered": "..."}
+    assert extract_goals_list(response) == ["goal1", "goal2"]
+
+    # Empty goals list (proof complete)
+    response = {"goals": [], "rendered": "no goals"}
+    assert extract_goals_list(response) == []
+
+    # None response (no goals at position)
+    assert extract_goals_list(None) == []
+
+    # Missing goals key
+    assert extract_goals_list({"rendered": "..."}) == []
 
 
 def test_extract_range_multiline() -> None:

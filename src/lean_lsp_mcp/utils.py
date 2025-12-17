@@ -108,11 +108,11 @@ def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[s
     return msgs
 
 
-def format_goal(goal, default_msg):
-    if goal is None:
-        return default_msg
-    rendered = goal.get("rendered")
-    return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
+def extract_goals_list(goal_response: dict | None) -> List[str]:
+    """Extract goals list from LSP response, returning empty list if no goals."""
+    if goal_response is None:
+        return []
+    return goal_response.get("goals", [])
 
 
 def _utf16_index_to_py_index(text: str, utf16_index: int) -> int | None:

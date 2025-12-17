@@ -63,10 +63,10 @@ from lean_lsp_mcp.utils import (
     OutputCapture,
     check_lsp_response,
     deprecated,
+    extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
-    format_goal,
     get_declaration_range,
     OptionalTokenVerifier,
 )
@@ -495,16 +495,16 @@ def goal(
         goal_start = client.get_goal(rel_path, line - 1, column_start)
         check_lsp_response(goal_start, "get_goal", allow_none=True)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
-        check_lsp_response(goal_end, "get_goal", allow_none=True)
-        before = format_goal(goal_start, None)
-        after = format_goal(goal_end, None)
-        goals = f"{before} → {after}" if before != after else after
-        return GoalState(line_context=line_context, goals=goals)
+        return GoalState(
+            line_context=line_context,
+            goals_before=extract_goals_list(goal_start),
+            goals_after=extract_goals_list(goal_end),
+        )
     else:
         goal_result = client.get_goal(rel_path, line - 1, column - 1)
         check_lsp_response(goal_result, "get_goal", allow_none=True)
         return GoalState(
-            line_context=line_context, goals=format_goal(goal_result, None)
+            line_context=line_context, goals=extract_goals_list(goal_result)
         )
 
 
@@ -780,12 +780,11 @@ def multi_attempt(
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
-            check_lsp_response(goal_result, "get_goal", allow_none=True)
-            goal_state = format_goal(goal_result, None)
+            goals = extract_goals_list(goal_result)
             results.append(
                 AttemptResult(
                     snippet=snippet_str,
-                    goal_state=goal_state,
+                    goals=goals,
                     diagnostics=_to_diagnostic_messages(filtered_diag),
                 )
             )

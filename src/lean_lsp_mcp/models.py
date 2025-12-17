@@ -46,7 +46,15 @@ class DiagnosticMessage(BaseModel):
 
 class GoalState(BaseModel):
     line_context: str = Field(description="Source line where goals were queried")
-    goals: str = Field(description="Goal state (before→after if column omitted)")
+    goals: Optional[List[str]] = Field(
+        None, description="Goal list at specified column position"
+    )
+    goals_before: Optional[List[str]] = Field(
+        None, description="Goals at line start (when column omitted)"
+    )
+    goals_after: Optional[List[str]] = Field(
+        None, description="Goals at line end (when column omitted)"
+    )
 
 
 class CompletionItem(BaseModel):
@@ -94,8 +102,8 @@ class FileOutline(BaseModel):
 
 class AttemptResult(BaseModel):
     snippet: str = Field(description="Code snippet that was tried")
-    goal_state: Optional[str] = Field(
-        None, description="Goal state after applying snippet"
+    goals: List[str] = Field(
+        default_factory=list, description="Goal list after applying snippet"
     )
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics for this attempt"
