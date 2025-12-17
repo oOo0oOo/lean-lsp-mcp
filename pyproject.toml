@@ -2,39 +2,26 @@
 name = "lean-lsp-mcp"
 version = "0.16.2"
 description = "Lean Theorem Prover MCP"
-authors = [{name="Oliver Dressler", email="hey@oli.show"}]
+authors = [{ name = "Oliver Dressler", email = "hey@oli.show" }]
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = [
-    "leanclient==0.6.2",
-    "mcp[cli]==1.24.0",
-    "orjson>=3.11.1",
-]
+dependencies = ["leanclient==0.7.0", "mcp[cli]==1.24.0", "orjson>=3.11.1"]
 
 [project.urls]
 Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
 
 [project.optional-dependencies]
-lint = [
-    "ruff>=0.2.0",
-]
-dev = [
-    "ruff>=0.2.0",
-    "pytest>=8.3",
-    "anyio>=4.4",
-    "pytest-asyncio>=0.23",
-]
+lint = ["ruff>=0.2.0"]
+dev = ["ruff>=0.2.0", "pytest>=8.3", "anyio>=4.4", "pytest-asyncio>=0.23"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [tool.setuptools]
 packages = ["lean_lsp_mcp"]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [build-system]
 requires = ["setuptools>=61.0"]
