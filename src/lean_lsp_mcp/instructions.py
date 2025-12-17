@@ -36,4 +36,28 @@ List tools return JSON arrays. Empty = `[]`.
 
 ## Error Handling
 Check `isError` in responses: `true` means failure (timeout/LSP error), while `[]` with `isError: false` means no results found.
+
+## REPL Tools (if enabled with --repl)
+Stateful code evaluation with environment management and tactic mode.
+
+- **lean_repl_cmd**: Execute commands in environment. Returns `env` ID for backtracking.
+- **lean_repl_tactic**: Apply tactic to proof state. Use `proofState` from sorry.
+- **lean_repl_file**: Load entire file into REPL environment.
+- **lean_repl_pickle/unpickle**: Save/restore environment state.
+- **lean_repl_session**: Manage isolated sessions for parallel exploration.
+- **lean_repl_multi_tactic**: Try multiple tactics, keeps best result.
+
+### REPL Workflow Example
+```
+1. lean_repl_cmd(cmd="theorem foo : 1+1=2 := by sorry")
+   -> {env: 1, sorries: [{proofState: 0, goal: "⊢ 1+1=2"}]}
+2. lean_repl_tactic(tactic="rfl", proof_state=0)
+   -> {goals: []}  # Proof complete!
+```
+
+### Environment Backtracking
+Each command returns an `env` ID. Pass `env` to continue from that state:
+- `cmd(code1)` -> env 1
+- `cmd(code2, env=1)` -> env 2
+- `cmd(code3, env=1)` -> env 3 (branches from env 1, ignores env 2)
 """

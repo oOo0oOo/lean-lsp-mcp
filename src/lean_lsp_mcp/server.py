@@ -27,6 +27,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
+from lean_lsp_mcp.repl import ReplManager
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -54,6 +55,20 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+)
+from lean_lsp_mcp.repl_models import (
+    ReplCmdResult,
+    ReplTacticResult,
+    ReplFileResult,
+    ReplPickleResult,
+    ReplUnpickleResult,
+    ReplSessionInfo,
+    ReplSessionsResult,
+    ReplSessionCreateResult,
+    ReplSessionDeleteResult,
+    ReplMultiTacticResult,
+    ReplCommandResponse,
+    ReplTacticResponse,
 )
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
@@ -91,12 +106,16 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    repl_manager: ReplManager | None = None
+    repl_enabled: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
+    repl_manager: ReplManager | None = None
+    repl_enabled = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -118,6 +137,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
+        # Initialize REPL manager if enabled via env var or CLI
+        if os.environ.get("LEAN_REPL_ENABLED", "").lower() in ("1", "true", "yes"):
+            logger.info("REPL integration enabled")
+            repl_manager = ReplManager()
+            repl_enabled = True
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -131,6 +156,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            repl_manager=repl_manager,
+            repl_enabled=repl_enabled,
         )
         yield context
     finally:
@@ -141,6 +168,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if loogle_manager:
             await loogle_manager.stop()
+
+        if repl_manager:
+            await repl_manager.stop_all()
 
 
 mcp_kwargs = dict(
@@ -1191,6 +1221,324 @@ def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+
+# ===========================================================================
+# REPL Tools
+# ===========================================================================
+
+
+class ReplNotEnabledError(LeanToolError):
+    """REPL feature not enabled."""
+
+    pass
+
+
+def _get_repl_manager(ctx: Context) -> ReplManager:
+    """Get the REPL manager, raising if not enabled."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.repl_enabled or app_ctx.repl_manager is None:
+        raise ReplNotEnabledError(
+            "REPL not enabled. Start with --repl flag or set LEAN_REPL_ENABLED=true"
+        )
+    return app_ctx.repl_manager
+
+
+def _get_project_path(ctx: Context) -> Path:
+    """Get the project path, raising if not set."""
+    project_path = ctx.request_context.lifespan_context.lean_project_path
+    if project_path is None:
+        raise LeanToolError(
+            "No Lean project path set. Call another tool first to set it up."
+        )
+    return project_path
+
+
+@mcp.tool(
+    "lean_repl_cmd",
+    annotations=ToolAnnotations(
+        title="REPL Command",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+async def repl_cmd(
+    ctx: Context,
+    cmd: Annotated[str, Field(description="Lean command (def, theorem, #check, etc.)")],
+    env: Annotated[
+        Optional[int], Field(description="Environment ID (omit for fresh)")
+    ] = None,
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID for isolation")
+    ] = None,
+) -> ReplCmdResult:
+    """Execute a Lean command in the REPL. Returns new environment ID and any sorries."""
+    manager = _get_repl_manager(ctx)
+    project_path = _get_project_path(ctx)
+
+    response = await manager.run_command(project_path, cmd, env, session_id)
+
+    has_errors = any(m.severity == "error" for m in response.messages)
+    return ReplCmdResult(
+        env=response.env,
+        sorries=response.sorries,
+        messages=response.messages,
+        success=not has_errors,
+    )
+
+
+@mcp.tool(
+    "lean_repl_tactic",
+    annotations=ToolAnnotations(
+        title="REPL Tactic",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+async def repl_tactic(
+    ctx: Context,
+    tactic: Annotated[str, Field(description="Tactic to apply")],
+    proof_state: Annotated[int, Field(description="Proof state ID from sorry")],
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID for isolation")
+    ] = None,
+) -> ReplTacticResult:
+    """Apply a tactic in proof state. Use proofState ID from lean_repl_cmd sorries."""
+    manager = _get_repl_manager(ctx)
+    project_path = _get_project_path(ctx)
+
+    response = await manager.run_tactic(project_path, tactic, proof_state, session_id)
+
+    has_errors = any(m.severity == "error" for m in response.messages)
+    return ReplTacticResult(
+        proofState=response.proofState,
+        goals=response.goals,
+        success=not has_errors and (response.proofState is not None or not response.goals),
+        messages=response.messages,
+    )
+
+
+@mcp.tool(
+    "lean_repl_file",
+    annotations=ToolAnnotations(
+        title="REPL Load File",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def repl_file(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Path to Lean file")],
+    all_tactics: Annotated[
+        bool, Field(description="Include all tactics in response")
+    ] = False,
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID for isolation")
+    ] = None,
+) -> ReplFileResult:
+    """Load a Lean file into the REPL environment."""
+    manager = _get_repl_manager(ctx)
+    project_path = _get_project_path(ctx)
+
+    # Convert to relative path if absolute
+    abs_path = Path(file_path)
+    try:
+        rel_path = abs_path.relative_to(project_path)
+    except ValueError:
+        rel_path = Path(file_path)  # Already relative
+
+    response = await manager.load_file(project_path, str(rel_path), all_tactics, session_id)
+
+    has_errors = any(m.severity == "error" for m in response.messages)
+    return ReplFileResult(
+        env=response.env,
+        sorries=response.sorries,
+        messages=response.messages,
+        tactics=response.tactics,
+        success=not has_errors,
+    )
+
+
+@mcp.tool(
+    "lean_repl_pickle",
+    annotations=ToolAnnotations(
+        title="REPL Pickle",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def repl_pickle(
+    ctx: Context,
+    env: Annotated[int, Field(description="Environment ID to serialize")],
+    path: Annotated[str, Field(description="Output .olean file path")],
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID for isolation")
+    ] = None,
+) -> ReplPickleResult:
+    """Serialize REPL environment to .olean file for later restoration."""
+    manager = _get_repl_manager(ctx)
+    project_path = _get_project_path(ctx)
+
+    response = await manager.pickle_env(project_path, env, path, session_id)
+
+    has_errors = any(m.severity == "error" for m in response.messages)
+    return ReplPickleResult(
+        success=not has_errors,
+        path=path,
+        messages=response.messages,
+    )
+
+
+@mcp.tool(
+    "lean_repl_unpickle",
+    annotations=ToolAnnotations(
+        title="REPL Unpickle",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def repl_unpickle(
+    ctx: Context,
+    path: Annotated[str, Field(description="Path to .olean file")],
+    restore_type: Annotated[
+        str, Field(description="What to restore: 'env' or 'proof_state'")
+    ] = "env",
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID for isolation")
+    ] = None,
+) -> ReplUnpickleResult:
+    """Restore REPL environment or proof state from pickled .olean file."""
+    manager = _get_repl_manager(ctx)
+    project_path = _get_project_path(ctx)
+
+    response = await manager.unpickle_env(project_path, path, session_id)
+
+    has_errors = any(m.severity == "error" for m in response.messages)
+    return ReplUnpickleResult(
+        env=response.env if restore_type == "env" else None,
+        proofState=None,
+        success=not has_errors,
+        messages=response.messages,
+    )
+
+
+@mcp.tool(
+    "lean_repl_session",
+    annotations=ToolAnnotations(
+        title="REPL Session",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+async def repl_session(
+    ctx: Context,
+    operation: Annotated[
+        str, Field(description="Operation: 'create', 'list', 'delete', or 'info'")
+    ],
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID (for delete/info)")
+    ] = None,
+) -> ReplSessionInfo | ReplSessionsResult | ReplSessionCreateResult | ReplSessionDeleteResult:
+    """Manage REPL sessions for environment isolation."""
+    manager = _get_repl_manager(ctx)
+    project_path = ctx.request_context.lifespan_context.lean_project_path
+
+    if operation == "create":
+        if project_path is None:
+            raise LeanToolError("No project path set")
+        session = manager.create_session(project_path)
+        return ReplSessionCreateResult(
+            session_id=session.session_id,
+            project_path=str(project_path),
+        )
+
+    elif operation == "list":
+        sessions = manager.list_sessions(project_path)
+        return ReplSessionsResult(
+            sessions=[
+                ReplSessionInfo(
+                    session_id=s.session_id,
+                    project_path=str(s.project_path),
+                    current_env=s.current_env,
+                    proof_states=list(s.proof_states.keys()),
+                    created_at=s.created_at,
+                )
+                for s in sessions
+            ]
+        )
+
+    elif operation == "delete":
+        if not session_id:
+            raise LeanToolError("session_id required for delete operation")
+        success = manager.delete_session(session_id)
+        return ReplSessionDeleteResult(success=success, session_id=session_id)
+
+    elif operation == "info":
+        if not session_id:
+            raise LeanToolError("session_id required for info operation")
+        session = manager.get_session(session_id)
+        if not session:
+            raise LeanToolError(f"Session '{session_id}' not found")
+        return ReplSessionInfo(
+            session_id=session.session_id,
+            project_path=str(session.project_path),
+            current_env=session.current_env,
+            proof_states=list(session.proof_states.keys()),
+            created_at=session.created_at,
+        )
+
+    else:
+        raise LeanToolError(f"Unknown operation: {operation}")
+
+
+@mcp.tool(
+    "lean_repl_multi_tactic",
+    annotations=ToolAnnotations(
+        title="REPL Multi-Tactic",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+async def repl_multi_tactic(
+    ctx: Context,
+    tactics: Annotated[List[str], Field(description="Tactics to try")],
+    proof_state: Annotated[int, Field(description="Starting proof state ID")],
+    session_id: Annotated[
+        Optional[str], Field(description="Session ID for isolation")
+    ] = None,
+) -> ReplMultiTacticResult:
+    """Try multiple tactics from the same proof state (backtracking exploration)."""
+    manager = _get_repl_manager(ctx)
+    project_path = _get_project_path(ctx)
+
+    results = []
+    for tactic in tactics:
+        response = await manager.run_tactic(project_path, tactic, proof_state, session_id)
+        has_errors = any(m.severity == "error" for m in response.messages)
+        results.append(
+            ReplTacticResult(
+                proofState=response.proofState,
+                goals=response.goals,
+                success=not has_errors and (response.proofState is not None or not response.goals),
+                messages=response.messages,
+            )
+        )
+
+    return ReplMultiTacticResult(results=results)
 
 
 if __name__ == "__main__":
