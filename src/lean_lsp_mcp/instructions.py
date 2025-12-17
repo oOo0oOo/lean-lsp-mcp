@@ -35,8 +35,5 @@ After finding a name: lean_local_search to verify, lean_hover_info for signature
 List tools return JSON arrays. Empty = `[]`.
 
 ## Error Handling
-Tool calls may fail with `isError: true` in the response. This indicates the operation
-could not be completed (timeout, LSP error, etc.). An empty result `[]` with
-`isError: false` means success with no items found. Always check `isError` to
-distinguish "nothing found" from "couldn't check".
+Check `isError` in responses: `true` means failure (timeout/LSP error), while `[]` with `isError: false` means no results found.
 """
