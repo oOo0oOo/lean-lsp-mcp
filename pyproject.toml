@@ -1,6 +1,6 @@
 [project]
 name = "lean-lsp-mcp"
-version = "0.16.2"
+version = "0.17.0"
 description = "Lean Theorem Prover MCP"
 authors = [{ name = "Oliver Dressler", email = "hey@oli.show" }]
 readme = "README.md"
