@@ -102,8 +102,8 @@ class FileOutline(BaseModel):
 
 class AttemptResult(BaseModel):
     snippet: str = Field(description="Code snippet that was tried")
-    goal_state: Optional[str] = Field(
-        None, description="Goal state after applying snippet"
+    goals: List[str] = Field(
+        default_factory=list, description="Goal list after applying snippet"
     )
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics for this attempt"

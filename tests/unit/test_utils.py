@@ -9,7 +9,6 @@ from lean_lsp_mcp.utils import (
     filter_diagnostics_by_position,
     find_start_position,
     format_diagnostics,
-    format_goal,
     format_line,
 )
 
@@ -29,12 +28,6 @@ def test_format_diagnostics_compact_range() -> None:
     rendered = format_diagnostics(diagnostics)
 
     assert rendered == ["l4c2-l4c6, severity: 2\nExample message"]
-
-
-def test_format_goal_strips_code_blocks() -> None:
-    goal = {"rendered": "```lean\ntest\n```"}
-    assert format_goal(goal, "fallback") == "test"
-    assert format_goal(None, "fallback") == "fallback"
 
 
 def test_extract_goals_list() -> None:

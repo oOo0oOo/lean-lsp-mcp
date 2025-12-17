@@ -65,7 +65,6 @@ from lean_lsp_mcp.utils import (
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
-    format_goal,
     get_declaration_range,
     OptionalTokenVerifier,
 )
@@ -775,11 +774,11 @@ def multi_attempt(
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
-            goal_state = format_goal(goal_result, None)
+            goals = extract_goals_list(goal_result)
             results.append(
                 AttemptResult(
                     snippet=snippet_str,
-                    goal_state=goal_state,
+                    goals=goals,
                     diagnostics=_to_diagnostic_messages(filtered_diag),
                 )
             )
