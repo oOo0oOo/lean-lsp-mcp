@@ -16,9 +16,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install elan
-        run: |
-          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+        run: curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+
+      - name: Add elan to PATH
+        run: echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
       - uses: astral-sh/setup-uv@v4
         with:
