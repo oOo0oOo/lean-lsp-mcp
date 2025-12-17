@@ -220,9 +220,17 @@ def _build_outline_entry(
     )
 
 
-def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
-    """Generate structured outline data for a Lean file."""
-    client.open_file(path)
+def generate_outline_data(
+    client: LeanLSPClient, path: str, *, open_file: bool = True
+) -> FileOutline:
+    """Generate structured outline data for a Lean file.
+
+    By default this opens the file in the LSP client to preserve the historical
+    contract for external callers. Pass ``open_file=False`` if the caller has
+    already ensured the document is open.
+    """
+    if open_file:
+        client.open_file(path)
     content = client.get_file_content(path)
 
     # Extract imports
@@ -274,9 +282,17 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
     return FileOutline(imports=imports, declarations=declarations)
 
 
-def generate_outline(client: LeanLSPClient, path: str) -> str:
-    """Generate a concise outline of a Lean file showing structure and signatures."""
-    client.open_file(path)
+def generate_outline(
+    client: LeanLSPClient, path: str, *, open_file: bool = True
+) -> str:
+    """Generate a concise outline of a Lean file showing structure and signatures.
+
+    By default this opens the file in the LSP client to preserve the historical
+    contract for external callers. Pass ``open_file=False`` if the caller has
+    already ensured the document is open.
+    """
+    if open_file:
+        client.open_file(path)
     content = client.get_file_content(path)
 
     # Extract imports

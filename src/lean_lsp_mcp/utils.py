@@ -327,10 +327,7 @@ def get_declaration_range(
     from lean_lsp_mcp.server import logger
 
     try:
-        # Ensure file is opened (LSP needs this to analyze the file)
-        client.open_file(file_path)
-
-        # Get document symbols from LSP
+        # Get document symbols from LSP (caller ensures file is open)
         symbols = client.get_document_symbols(file_path)
 
         if not symbols:
