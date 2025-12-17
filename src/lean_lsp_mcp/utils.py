@@ -13,47 +13,22 @@ class LeanToolError(Exception):
     pass
 
 
-def check_lsp_response(response: Any, operation: str) -> Any:
+def check_lsp_response(
+    response: Any, operation: str, *, allow_none: bool = False
+) -> Any:
     """Check an LSP response for error patterns and raise if found.
 
-    This function detects two failure patterns from leanclient:
-    1. None return value (typically indicates timeout)
-    2. Error dict pattern: {"error": {"message": "..."}}
-
     Args:
         response: The response from a leanclient LSP operation
-        operation: Human-readable description of the operation (for error messages)
-
-    Returns:
-        The original response if no error patterns detected
+        operation: Human-readable description of the operation
+        allow_none: If False (default), None raises LeanToolError (timeout).
+                    If True, None is allowed (for operations where None is valid).
 
     Raises:
-        LeanToolError: If the response indicates a failure
+        LeanToolError: If response indicates failure
     """
-    if response is None:
+    if response is None and not allow_none:
         raise LeanToolError(f"LSP timeout during {operation}")
-    if isinstance(response, dict) and "error" in response:
-        msg = response["error"].get("message", "unknown error")
-        raise LeanToolError(f"LSP error during {operation}: {msg}")
-    return response
-
-
-def check_lsp_error_dict(response: Any, operation: str) -> Any:
-    """Check an LSP response for error dict pattern only (not None).
-
-    Use this for operations where None is a valid response (e.g., get_goal
-    returns None when no goal is present at the position).
-
-    Args:
-        response: The response from a leanclient LSP operation
-        operation: Human-readable description of the operation (for error messages)
-
-    Returns:
-        The original response if no error dict detected
-
-    Raises:
-        LeanToolError: If the response contains an error dict
-    """
     if isinstance(response, dict) and "error" in response:
         msg = response["error"].get("message", "unknown error")
         raise LeanToolError(f"LSP error during {operation}: {msg}")

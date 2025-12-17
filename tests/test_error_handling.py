@@ -5,7 +5,6 @@ import pytest
 from lean_lsp_mcp.utils import (
     LeanToolError,
     check_lsp_response,
-    check_lsp_error_dict,
 )
 
 
@@ -43,33 +42,22 @@ class TestCheckLspResponse:
             check_lsp_response(response, "test_op")
         assert "unknown error" in str(exc_info.value)
 
+    def test_allow_none_returns_none(self):
+        """With allow_none=True, None should pass through."""
+        assert check_lsp_response(None, "get_goal", allow_none=True) is None
 
-class TestCheckLspErrorDict:
-    """Tests for check_lsp_error_dict function."""
-
-    def test_returns_valid_response(self):
-        """Valid responses should pass through unchanged."""
-        response = {"goals": ["some goal"]}
-        assert check_lsp_error_dict(response, "test_op") == response
-
-    def test_allows_none(self):
-        """None is allowed (valid for goal-related responses)."""
-        assert check_lsp_error_dict(None, "get_goal") is None
-
-    def test_raises_on_error_dict(self):
-        """Error dict pattern should raise LeanToolError."""
+    def test_allow_none_still_raises_on_error_dict(self):
+        """With allow_none=True, error dict should still raise."""
         response = {"error": {"message": "Internal error"}}
         with pytest.raises(LeanToolError) as exc_info:
-            check_lsp_error_dict(response, "get_goal")
+            check_lsp_response(response, "get_goal", allow_none=True)
         assert "LSP error during get_goal" in str(exc_info.value)
         assert "Internal error" in str(exc_info.value)
 
-    def test_raises_on_error_dict_without_message(self):
-        """Error dict without message should use default."""
-        response = {"error": {}}
-        with pytest.raises(LeanToolError) as exc_info:
-            check_lsp_error_dict(response, "test_op")
-        assert "unknown error" in str(exc_info.value)
+    def test_allow_none_returns_valid_response(self):
+        """With allow_none=True, valid responses should pass through."""
+        response = {"goals": ["some goal"]}
+        assert check_lsp_response(response, "test_op", allow_none=True) == response
 
 
 class TestLeanToolError:

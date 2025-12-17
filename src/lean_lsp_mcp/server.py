@@ -61,7 +61,6 @@ from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     LeanToolError,
     OutputCapture,
-    check_lsp_error_dict,
     check_lsp_response,
     deprecated,
     extract_range,
@@ -494,16 +493,16 @@ def goal(
             (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
-        check_lsp_error_dict(goal_start, "get_goal")
+        check_lsp_response(goal_start, "get_goal", allow_none=True)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
-        check_lsp_error_dict(goal_end, "get_goal")
+        check_lsp_response(goal_end, "get_goal", allow_none=True)
         before = format_goal(goal_start, None)
         after = format_goal(goal_end, None)
         goals = f"{before} → {after}" if before != after else after
         return GoalState(line_context=line_context, goals=goals)
     else:
         goal_result = client.get_goal(rel_path, line - 1, column - 1)
-        check_lsp_error_dict(goal_result, "get_goal")
+        check_lsp_response(goal_result, "get_goal", allow_none=True)
         return GoalState(
             line_context=line_context, goals=format_goal(goal_result, None)
         )
@@ -546,7 +545,7 @@ def term_goal(
         column = len(line_context)
 
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
-    check_lsp_error_dict(term_goal_result, "get_term_goal")
+    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
     expected_type = None
     if term_goal_result is not None:
         rendered = term_goal_result.get("goal")
@@ -582,7 +581,7 @@ def hover(
     client.open_file(rel_path)
     file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
-    check_lsp_error_dict(hover_info, "get_hover")
+    check_lsp_response(hover_info, "get_hover", allow_none=True)
     if hover_info is None:
         raise LeanToolError(f"No hover information at line {line}, column {column}")
 
@@ -781,7 +780,7 @@ def multi_attempt(
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
-            check_lsp_error_dict(goal_result, "get_goal")
+            check_lsp_response(goal_result, "get_goal", allow_none=True)
             goal_state = format_goal(goal_result, None)
             results.append(
                 AttemptResult(
