@@ -219,17 +219,24 @@ class LoogleManager:
         return self.index_dir / f"{base}.idx"
 
     def _cleanup_old_indices(self) -> None:
-        """Remove old index files from previous mathlib versions."""
+        """Remove old index files from previous mathlib versions.
+
+        Cleans up both mathlib-only indexes (mathlib-<version>.idx) and
+        project-specific indexes (mathlib-<version>-<hash>.idx) that don't
+        match the current mathlib version.
+        """
         if not self.index_dir.exists():
             return
-        current = self._get_index_path()
+        current_mathlib = f"mathlib-{self._get_mathlib_version()}"
         for idx in self.index_dir.glob("*.idx"):
-            if idx != current:
-                try:
-                    idx.unlink()
-                    logger.info(f"Removed old index: {idx.name}")
-                except Exception:
-                    pass
+            # Keep indexes with current mathlib version (both base and project-specific)
+            if idx.name.startswith(current_mathlib):
+                continue
+            try:
+                idx.unlink()
+                logger.info(f"Removed old index: {idx.name}")
+            except Exception:
+                pass
 
     def _build_index(self) -> Path | None:
         index_path = self._get_index_path()
