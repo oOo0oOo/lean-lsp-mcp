@@ -1,65 +1,66 @@
 import asyncio
+import functools
 import os
 import re
 import time
-from typing import Annotated, List, Optional, Dict
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
 import urllib
-import orjson
-import functools
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated, Dict, List, Optional
 
-from pydantic import Field
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
+import orjson
+from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
 from mcp.types import ToolAnnotations
-from leanclient import LeanLSPClient, DocumentContentChange
+from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    infer_project_path,
     setup_client_for_file,
     startup_client,
-    infer_project_path,
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
-from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
-from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.models import (
-    LocalSearchResult,
-    LeanSearchResult,
-    LoogleResult,
-    LeanFinderResult,
-    StateSearchResult,
-    PremiseResult,
-    DiagnosticMessage,
-    GoalState,
-    CompletionItem,
-    HoverInfo,
-    TermGoalState,
-    FileOutline,
     AttemptResult,
     BuildResult,
-    RunResult,
+    CompletionItem,
+    CompletionsResult,
     DeclarationInfo,
+    DiagnosticMessage,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
-    CompletionsResult,
-    MultiAttemptResult,
-    LocalSearchResults,
-    LeanSearchResults,
-    LoogleResults,
+    FileOutline,
+    GoalState,
+    HoverInfo,
+    LeanFinderResult,
     LeanFinderResults,
-    StateSearchResults,
+    LeanSearchResult,
+    LeanSearchResults,
+    LocalSearchResult,
+    LocalSearchResults,
+    LoogleResult,
+    LoogleResults,
+    MultiAttemptResult,
+    PremiseResult,
     PremiseResults,
+    RunResult,
+    StateSearchResult,
+    StateSearchResults,
+    TermGoalState,
 )
+from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     LeanToolError,
+    OptionalTokenVerifier,
     OutputCapture,
     check_lsp_response,
     deprecated,
@@ -68,7 +69,6 @@ from lean_lsp_mcp.utils import (
     filter_diagnostics_by_position,
     find_start_position,
     get_declaration_range,
-    OptionalTokenVerifier,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
@@ -954,7 +954,7 @@ def leansearch(
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
+    with urllib.request.urlopen(req, timeout=10) as response:
         results = orjson.loads(response.read())
 
     if not results or not results[0]:
@@ -1063,7 +1063,7 @@ def leanfinder(
     )
 
     results: List[LeanFinderResult] = []
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(req, timeout=10) as response:
         data = orjson.loads(response.read())
         for result in data["results"]:
             if (
@@ -1126,7 +1126,7 @@ def state_search(
         method="GET",
     )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
+    with urllib.request.urlopen(req, timeout=10) as response:
         results = orjson.loads(response.read())
 
     items = [StateSearchResult(name=r["name"]) for r in results]
@@ -1186,7 +1186,7 @@ def hammer_premise(
         data=orjson.dumps(data),
     )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
+    with urllib.request.urlopen(req, timeout=10) as response:
         results = orjson.loads(response.read())
 
     items = [PremiseResult(name=r["name"]) for r in results]

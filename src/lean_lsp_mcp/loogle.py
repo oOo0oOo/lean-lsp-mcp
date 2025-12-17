@@ -35,7 +35,7 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
             f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
         )
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             results = orjson.loads(response.read())
         if "hits" not in results:
             return "No results found."
