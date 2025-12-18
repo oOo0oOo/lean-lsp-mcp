@@ -768,7 +768,14 @@ async def _multi_attempt_repl(
     line: int,
     snippets: List[str],
 ) -> MultiAttemptResult | None:
-    """Try tactics using REPL backtracking (more efficient than LSP)."""
+    """Try code snippets using REPL environment backtracking.
+
+    Key insight: Load base context once, then try each snippet from that same
+    environment. Each snippet is independent - they all fork from the same base.
+
+    This is more efficient than LSP (no file modifications) and supports
+    true backtracking (each attempt starts from identical state).
+    """
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.repl_enabled or not app_ctx.repl_manager:
         return None
@@ -788,33 +795,26 @@ async def _multi_attempt_repl(
         if line > len(lines):
             return None
 
-        # Get context up to the tactic line (for loading into REPL)
-        # We need to find the theorem/lemma context and create a proof state
-        # Insert a sorry at the specified line to get the proof state
-        context_lines = lines[: line - 1]
-        after_lines = lines[line:]
+        # Load base context (everything up to the specified line)
+        base_code = "\n".join(lines[: line - 1])
 
-        # Create a command that loads the file content up to the tactic line with a sorry
-        code = "\n".join(context_lines) + "\n  sorry\n" + "\n".join(after_lines)
+        # Load base into REPL to get environment ID
+        base_response = await manager.run_command(project_path, base_code)
+        base_env = base_response.env
 
-        # Load this into REPL
-        response = await manager.run_command(project_path, code)
-
-        # Find the sorry's proof state
-        if not response.sorries:
-            # No sorry found, can't proceed with REPL approach
+        if base_env is None:
+            # Check if there's an error in the base code
+            if base_response.messages:
+                logger.debug(f"Base code has errors: {base_response.messages}")
             return None
-
-        # Get the first proof state (from the sorry at the tactic line)
-        proof_state = response.sorries[0].proofState
-        initial_goal = response.sorries[0].goal
 
         results: List[AttemptResult] = []
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
-            tactic_response = await manager.run_tactic(
-                project_path, snippet_str, proof_state
-            )
+
+            # Try this snippet from the base environment (true backtracking!)
+            # Each snippet runs from the same base_env, independent of others
+            response = await manager.run_command(project_path, snippet_str, env=base_env)
 
             # Convert messages to diagnostics format
             diagnostics = [
@@ -824,14 +824,21 @@ async def _multi_attempt_repl(
                     line=m.pos.line if m.pos else 0,
                     column=m.pos.column if m.pos else 0,
                 )
-                for m in tactic_response.messages
+                for m in response.messages
             ]
+
+            # Extract goals from sorries (if any)
+            goals = [s.goal for s in response.sorries] if response.sorries else []
+
+            # Check for tactic-style goals in the response
+            if response.tactics:
+                for t in response.tactics:
+                    goals.extend(t.goals)
 
             results.append(
                 AttemptResult(
                     snippet=snippet_str,
-                    goals=tactic_response.goals
-                    or ([initial_goal] if tactic_response.proofState is None else []),
+                    goals=goals,
                     diagnostics=diagnostics,
                 )
             )
@@ -906,13 +913,23 @@ async def multi_attempt(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[
-        List[str], Field(description="Tactics to try (3+ recommended)")
+        List[str], Field(description="Code snippets to try (tactics, definitions, etc.)")
     ],
 ) -> MultiAttemptResult:
-    """Try multiple tactics without modifying file. Returns goal state for each.
+    """Try multiple code snippets from the same base context.
 
-    Uses REPL backtracking when LEAN_REPL_ENABLED=1 (more efficient).
-    Falls back to LSP-based approach otherwise.
+    Each snippet is evaluated independently from the same starting point
+    (the file contents up to `line`). This enables:
+    - Testing different tactic approaches: ["simp", "ring", "omega"]
+    - Trying alternative definitions: ["def foo := 1", "def foo := 2"]
+    - Exploring proof strategies without file modifications
+
+    When LEAN_REPL_ENABLED=1:
+    - Uses REPL environment backtracking (true fork from same state)
+    - More efficient (no file I/O per attempt)
+    - Supports any Lean code, not just tactics
+
+    Otherwise falls back to LSP file modification approach.
     """
     # Try REPL first (more efficient, supports true backtracking)
     result = await _multi_attempt_repl(ctx, file_path, line, snippets)
