@@ -202,36 +202,63 @@ class LeanSearchIndex:
             embeddings = embed_fn(search_texts)
 
             # Insert into SQLite and usearch
-            for j, decl in enumerate(batch):
-                # Get or create ID for this declaration
-                cursor = conn.execute(
-                    """
-                    INSERT INTO declarations (name, kind, module, signature, docstring, file_path, line, search_text)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET
-                        kind=excluded.kind, module=excluded.module,
-                        signature=excluded.signature, docstring=excluded.docstring,
-                        file_path=excluded.file_path, line=excluded.line,
-                        search_text=excluded.search_text
-                    RETURNING id
-                    """,
-                    (
-                        decl.name,
-                        decl.kind,
-                        decl.module,
-                        decl.signature[:500] if decl.signature else "",
-                        decl.docstring[:1000] if decl.docstring else None,
-                        decl.file_path,
-                        decl.line,
-                        search_texts[j],
-                    ),
-                )
-                row = cursor.fetchone()
-                decl_id = row[0] if row else None
+            new_ids = []
+            new_embeddings = []
 
-                if decl_id is not None:
-                    # Add vector to index
-                    index.add(decl_id, embeddings[j])
+            for j, decl in enumerate(batch):
+                # Check if declaration already exists
+                existing = conn.execute(
+                    "SELECT id FROM declarations WHERE name = ?", (decl.name,)
+                ).fetchone()
+
+                if existing:
+                    # Update existing record, don't re-add to vector index
+                    conn.execute(
+                        """
+                        UPDATE declarations SET
+                            kind=?, module=?, signature=?, docstring=?,
+                            file_path=?, line=?, search_text=?
+                        WHERE name=?
+                        """,
+                        (
+                            decl.kind,
+                            decl.module,
+                            decl.signature[:500] if decl.signature else "",
+                            decl.docstring[:1000] if decl.docstring else None,
+                            decl.file_path,
+                            decl.line,
+                            search_texts[j],
+                            decl.name,
+                        ),
+                    )
+                else:
+                    # Insert new record
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO declarations (name, kind, module, signature, docstring, file_path, line, search_text)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        RETURNING id
+                        """,
+                        (
+                            decl.name,
+                            decl.kind,
+                            decl.module,
+                            decl.signature[:500] if decl.signature else "",
+                            decl.docstring[:1000] if decl.docstring else None,
+                            decl.file_path,
+                            decl.line,
+                            search_texts[j],
+                        ),
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        new_ids.append(row[0])
+                        new_embeddings.append(embeddings[j])
+
+            # Batch add new vectors to index
+            if new_ids:
+                for decl_id, emb in zip(new_ids, new_embeddings):
+                    index.add(decl_id, emb)
 
             conn.commit()
 
@@ -378,9 +405,10 @@ class LeanSearchIndex:
 
     def clear(self) -> None:
         """Clear all data from the index."""
-        if self._conn:
-            self._conn.execute("DELETE FROM declarations")
-            self._conn.commit()
+        # Ensure we have a connection to clear the database
+        conn = self._get_db()
+        conn.execute("DELETE FROM declarations")
+        conn.commit()
 
         # Remove usearch index file
         if self.index_path.exists():

@@ -138,6 +138,11 @@ class LeanSearchManager:
             self._embed_fn, self._embed_dim = get_embedding_function(
                 self.embedding_provider, self.embedding_model
             )
+            # Warm up the model with a dummy query to avoid first-query latency
+            try:
+                self._embed_fn(["warmup query"])
+            except Exception:
+                pass
         return self._embed_fn, self._embed_dim
 
     def _get_index(self) -> LeanSearchIndex:
@@ -157,8 +162,10 @@ class LeanSearchManager:
         """Collect all Lean files to index with their module prefixes and base paths.
 
         Returns list of (file_path, module_prefix, base_path) tuples.
+        Prefers main project files over .lake/packages duplicates.
         """
         files: list[tuple[Path, str, Path]] = []
+        seen_relative_paths: set[str] = set()
 
         if not self.project_root:
             return files
@@ -166,17 +173,27 @@ class LeanSearchManager:
         if progress_callback:
             progress_callback("Scanning project files...", 0, 1)
 
-        # Project source files
+        # Project source files (highest priority)
         for src_dir in [".", "src", self.project_root.name]:
             src_path = self.project_root / src_dir
             if src_path.exists() and src_path.is_dir():
                 lean_files = find_lean_files(src_path)
                 for f in lean_files:
-                    files.append((f, "", src_path))
+                    # Track relative path to avoid duplicates
+                    try:
+                        rel = f.relative_to(src_path)
+                        rel_str = str(rel)
+                    except ValueError:
+                        rel_str = str(f)
+
+                    if rel_str not in seen_relative_paths:
+                        files.append((f, "", src_path))
+                        seen_relative_paths.add(rel_str)
+
                 if lean_files:
                     logger.info(f"Found {len(lean_files)} files in {src_path}")
 
-        # .lake/packages dependencies
+        # .lake/packages dependencies (lower priority, skip duplicates)
         lake_packages = self.project_root / ".lake" / "packages"
         if lake_packages.exists():
             pkg_dirs = [d for d in lake_packages.iterdir() if d.is_dir()]
@@ -192,7 +209,16 @@ class LeanSearchManager:
                     if sub_path.exists() and sub_path.is_dir():
                         pkg_files = find_lean_files(sub_path)
                         for f in pkg_files:
-                            files.append((f, "", sub_path))
+                            # Check if this file's relative path was already seen
+                            try:
+                                rel = f.relative_to(sub_path)
+                                rel_str = str(rel)
+                            except ValueError:
+                                rel_str = str(f)
+
+                            if rel_str not in seen_relative_paths:
+                                files.append((f, "", sub_path))
+                                seen_relative_paths.add(rel_str)
 
         return files
 
@@ -422,9 +448,10 @@ class LeanSearchManager:
         else:
             target = goal_state
 
-        # Search with theorem filter
+        # Search without kind filter - include theorems, lemmas, and defs
+        # that might be relevant to the goal
         return index.search_by_text(
-            target, embed_fn, k=num_results, kind="theorem"
+            target, embed_fn, k=num_results
         )
 
     async def ensure_indexed(self, project_root: Path | None = None) -> bool:
