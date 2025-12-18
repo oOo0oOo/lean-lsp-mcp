@@ -376,27 +376,122 @@ class LeanSearchIndex:
         Returns:
             List of matching declarations
         """
+        import re
+
         query_embedding = embed_fn([query])[0]
         results = self.search(query_embedding, k * 3, kind, module)
+
+        # Detect if query looks like an identifier (single word, camelCase, or dotted)
+        query_stripped = query.strip()
+        is_identifier_query = (
+            len(query_stripped.split()) == 1
+            and not query_stripped.startswith('"')
+            and len(query_stripped) >= 3
+        )
+
+        # For identifier queries, also search by name in SQL to catch exact matches
+        # that might not have high semantic similarity
+        if is_identifier_query:
+            conn = self._get_db()
+            sql = """
+                SELECT * FROM declarations
+                WHERE LOWER(name) LIKE ?
+            """
+            params = [f"%{query_stripped.lower()}%"]
+
+            if kind:
+                sql += " AND kind = ?"
+                params.append(kind)
+            if module:
+                sql += " AND module LIKE ?"
+                params.append(f"{module}%")
+
+            sql += " LIMIT ?"
+            params.append(k * 3)
+
+            sql_results = conn.execute(sql, params).fetchall()
+
+            # Add SQL matches not already in results, with distance based on match quality
+            seen_ids = {r.get("id") for r in results}
+            query_lower = query_stripped.lower()
+            for row in sql_results:
+                row_dict = dict(row)
+                if row_dict["id"] not in seen_ids:
+                    # Compute match-quality distance for SQL results
+                    name = row_dict.get("name", "")
+                    name_last = name.split(".")[-1].lower() if name else ""
+
+                    if name_last == query_lower:
+                        # Exact match on final component - very strong
+                        row_dict["distance"] = 0.05
+                    elif name_last.endswith(query_lower):
+                        # Suffix match (e.g., "instToJson" for "toJson") - strong
+                        row_dict["distance"] = 0.15
+                    elif name_last.startswith(query_lower):
+                        # Prefix match - moderately strong
+                        row_dict["distance"] = 0.25
+                    elif query_lower in name_last:
+                        # Substring match - decent
+                        row_dict["distance"] = 0.35
+                    else:
+                        # Match elsewhere in qualified name
+                        row_dict["distance"] = 0.45
+
+                    results.append(row_dict)
+                    seen_ids.add(row_dict["id"])
 
         if not results:
             return []
 
-        # Apply hybrid scoring
-        query_terms = set(query.lower().split())
+        # For identifier queries, boost keyword weight significantly
+        effective_weight = 0.7 if is_identifier_query else hybrid_weight
+
+        # Normalize query for matching
+        query_lower = query.lower()
+        query_terms = set(query_lower.split())
+
+        # Split camelCase for additional matching
+        camel_parts = set()
+        for term in query_terms:
+            # Split on camelCase boundaries
+            parts = re.findall(r'[a-z]+|[A-Z][a-z]*', term)
+            camel_parts.update(p.lower() for p in parts if len(p) > 1)
+        query_terms.update(camel_parts)
 
         scored = []
         for r in results:
-            # Keyword score
-            text = (r.get("search_text") or r.get("name", "")).lower()
+            name = r.get("name", "")
+            text = (r.get("search_text") or name).lower()
+
+            # Base keyword score
             kw_matches = sum(1 for t in query_terms if t in text)
             kw_score = kw_matches / len(query_terms) if query_terms else 0
+
+            # Bonus for exact name component match (e.g., "toJson" matches "instToJson")
+            name_parts = name.split(".")
+            exact_bonus = 0.0
+            for part in name_parts:
+                part_lower = part.lower()
+                if query_lower in part_lower:
+                    # Substring match in name component
+                    exact_bonus = max(exact_bonus, 0.3)
+                if part_lower == query_lower:
+                    # Exact match on a name component - strongest
+                    exact_bonus = max(exact_bonus, 0.7)
+                elif part_lower.endswith(query_lower):
+                    # Suffix match (e.g., "instToJson" for "toJson") - very strong
+                    # This catches Lean's `inst*` naming convention
+                    exact_bonus = max(exact_bonus, 0.6)
+                elif part_lower.startswith(query_lower):
+                    # Prefix match - strong
+                    exact_bonus = max(exact_bonus, 0.5)
 
             # Semantic score (lower distance = better)
             semantic_score = 1.0 - min(r["distance"], 1.0)
 
-            # Hybrid
-            hybrid = (1 - hybrid_weight) * semantic_score + hybrid_weight * kw_score
+            # Combined score
+            keyword_total = min(1.0, kw_score + exact_bonus)
+            hybrid = (1 - effective_weight) * semantic_score + effective_weight * keyword_total
             r["hybrid_score"] = hybrid
             scored.append(r)
 
