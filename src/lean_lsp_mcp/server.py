@@ -762,24 +762,93 @@ def declaration_file(
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
-@mcp.tool(
-    "lean_multi_attempt",
-    annotations=ToolAnnotations(
-        title="Multi-Attempt",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def multi_attempt(
+async def _multi_attempt_repl(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    snippets: Annotated[
-        List[str], Field(description="Tactics to try (3+ recommended)")
-    ],
+    file_path: str,
+    line: int,
+    snippets: List[str],
+) -> MultiAttemptResult | None:
+    """Try tactics using REPL backtracking (more efficient than LSP)."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.repl_enabled or not app_ctx.repl_manager:
+        return None
+
+    manager = app_ctx.repl_manager
+    project_path = app_ctx.lean_project_path
+    if not project_path:
+        return None
+
+    try:
+        # Read the file contents
+        file_contents = get_file_contents(file_path)
+        if file_contents is None:
+            return None
+
+        lines = file_contents.splitlines()
+        if line > len(lines):
+            return None
+
+        # Get context up to the tactic line (for loading into REPL)
+        # We need to find the theorem/lemma context and create a proof state
+        # Insert a sorry at the specified line to get the proof state
+        context_lines = lines[: line - 1]
+        after_lines = lines[line:]
+
+        # Create a command that loads the file content up to the tactic line with a sorry
+        code = "\n".join(context_lines) + "\n  sorry\n" + "\n".join(after_lines)
+
+        # Load this into REPL
+        response = await manager.run_command(project_path, code)
+
+        # Find the sorry's proof state
+        if not response.sorries:
+            # No sorry found, can't proceed with REPL approach
+            return None
+
+        # Get the first proof state (from the sorry at the tactic line)
+        proof_state = response.sorries[0].proofState
+        initial_goal = response.sorries[0].goal
+
+        results: List[AttemptResult] = []
+        for snippet in snippets:
+            snippet_str = snippet.rstrip("\n")
+            tactic_response = await manager.run_tactic(
+                project_path, snippet_str, proof_state
+            )
+
+            # Convert messages to diagnostics format
+            diagnostics = [
+                DiagnosticMessage(
+                    severity="error" if m.severity == "error" else "info",
+                    message=m.data,
+                    line=m.pos.line if m.pos else 0,
+                    column=m.pos.column if m.pos else 0,
+                )
+                for m in tactic_response.messages
+            ]
+
+            results.append(
+                AttemptResult(
+                    snippet=snippet_str,
+                    goals=tactic_response.goals
+                    or ([initial_goal] if tactic_response.proofState is None else []),
+                    diagnostics=diagnostics,
+                )
+            )
+
+        return MultiAttemptResult(items=results)
+    except Exception as e:
+        logger.debug(f"REPL multi_attempt failed: {e}")
+        return None
+
+
+def _multi_attempt_lsp(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    snippets: List[str],
 ) -> MultiAttemptResult:
-    """Try multiple tactics without modifying file. Returns goal state for each."""
+    """Try tactics using LSP file modifications (fallback)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -791,22 +860,18 @@ def multi_attempt(
 
     try:
         results: List[AttemptResult] = []
-        # Avoid mutating caller-provided snippets; normalize locally per attempt
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
             payload = f"{snippet_str}\n"
-            # Create a DocumentContentChange for the snippet
             change = DocumentContentChange(
                 payload,
                 [line - 1, 0],
                 [line, 0],
             )
-            # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
-            # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
             goals = extract_goals_list(goal_result)
             results.append(
@@ -821,10 +886,41 @@ def multi_attempt(
     finally:
         try:
             client.close_files([rel_path])
-        except Exception as exc:  # pragma: no cover - close failures only logged
+        except Exception as exc:
             logger.warning(
                 "Failed to close `%s` after multi_attempt: %s", rel_path, exc
             )
+
+
+@mcp.tool(
+    "lean_multi_attempt",
+    annotations=ToolAnnotations(
+        title="Multi-Attempt",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def multi_attempt(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    snippets: Annotated[
+        List[str], Field(description="Tactics to try (3+ recommended)")
+    ],
+) -> MultiAttemptResult:
+    """Try multiple tactics without modifying file. Returns goal state for each.
+
+    Uses REPL backtracking when LEAN_REPL_ENABLED=1 (more efficient).
+    Falls back to LSP-based approach otherwise.
+    """
+    # Try REPL first (more efficient, supports true backtracking)
+    result = await _multi_attempt_repl(ctx, file_path, line, snippets)
+    if result is not None:
+        return result
+
+    # Fall back to LSP approach
+    return _multi_attempt_lsp(ctx, file_path, line, snippets)
 
 
 @mcp.tool(
@@ -1315,7 +1411,8 @@ async def repl_tactic(
     return ReplTacticResult(
         proofState=response.proofState,
         goals=response.goals,
-        success=not has_errors and (response.proofState is not None or not response.goals),
+        success=not has_errors
+        and (response.proofState is not None or not response.goals),
         messages=response.messages,
     )
 
@@ -1351,7 +1448,9 @@ async def repl_file(
     except ValueError:
         rel_path = Path(file_path)  # Already relative
 
-    response = await manager.load_file(project_path, str(rel_path), all_tactics, session_id)
+    response = await manager.load_file(
+        project_path, str(rel_path), all_tactics, session_id
+    )
 
     has_errors = any(m.severity == "error" for m in response.messages)
     return ReplFileResult(
@@ -1448,7 +1547,12 @@ async def repl_session(
     session_id: Annotated[
         Optional[str], Field(description="Session ID (for delete/info)")
     ] = None,
-) -> ReplSessionInfo | ReplSessionsResult | ReplSessionCreateResult | ReplSessionDeleteResult:
+) -> (
+    ReplSessionInfo
+    | ReplSessionsResult
+    | ReplSessionCreateResult
+    | ReplSessionDeleteResult
+):
     """Manage REPL sessions for environment isolation."""
     manager = _get_repl_manager(ctx)
     project_path = ctx.request_context.lifespan_context.lean_project_path
@@ -1525,13 +1629,16 @@ async def repl_multi_tactic(
 
     results = []
     for tactic in tactics:
-        response = await manager.run_tactic(project_path, tactic, proof_state, session_id)
+        response = await manager.run_tactic(
+            project_path, tactic, proof_state, session_id
+        )
         has_errors = any(m.severity == "error" for m in response.messages)
         results.append(
             ReplTacticResult(
                 proofState=response.proofState,
                 goals=response.goals,
-                success=not has_errors and (response.proofState is not None or not response.goals),
+                success=not has_errors
+                and (response.proofState is not None or not response.goals),
                 messages=response.messages,
             )
         )
