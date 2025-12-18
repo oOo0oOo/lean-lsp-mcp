@@ -782,6 +782,88 @@ def declaration_file(
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
+async def _multi_attempt_pool(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    snippets: List[str],
+) -> MultiAttemptResult | None:
+    """Try code snippets using pool manager with header caching.
+
+    This is the most efficient approach:
+    1. Split code into header (imports) and body
+    2. Acquire worker with matching header (reuses cached worker if available)
+    3. Load body to get base environment
+    4. Try each snippet from base (true backtracking)
+    5. Release worker back to pool
+    """
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.pool_enabled or not app_ctx.pool_manager:
+        return None
+
+    pool_manager = app_ctx.pool_manager
+
+    try:
+        # Read file and get base code
+        file_contents = get_file_contents(file_path)
+        if file_contents is None:
+            return None
+
+        lines = file_contents.splitlines()
+        if line > len(lines):
+            return None
+
+        base_code = "\n".join(lines[: line - 1])
+
+        # Use pool manager with header caching
+        pool_results = await pool_manager.run_multi_attempt(
+            base_code=base_code,
+            snippets=snippets,
+            timeout=60.0,
+        )
+
+        # Convert pool results to AttemptResult format
+        results: List[AttemptResult] = []
+        for i, pr in enumerate(pool_results):
+            diagnostics: List[DiagnosticMessage] = []
+            if pr.messages:
+                for m in pr.messages:
+                    diagnostics.append(
+                        DiagnosticMessage(
+                            severity=m.get("severity", "info"),
+                            message=m.get("data", ""),
+                            line=m.get("pos", {}).get("line", 0),
+                            column=m.get("pos", {}).get("column", 0),
+                        )
+                    )
+
+            goals = pr.goals or []
+            if pr.error:
+                diagnostics.append(
+                    DiagnosticMessage(
+                        severity="error",
+                        message=pr.error,
+                        line=0,
+                        column=0,
+                    )
+                )
+
+            results.append(
+                AttemptResult(
+                    snippet=snippets[i].rstrip("\n"),
+                    goals=goals,
+                    diagnostics=diagnostics,
+                    proof_state=pr.proof_state,
+                )
+            )
+
+        return MultiAttemptResult(items=results)
+
+    except Exception as e:
+        logger.debug(f"Pool multi_attempt failed: {e}")
+        return None
+
+
 async def _multi_attempt_repl(
     ctx: Context,
     file_path: str,
@@ -1004,17 +1086,24 @@ async def multi_attempt(
 
     When LEAN_REPL_ENABLED=1:
     - Uses REPL environment backtracking (true fork from same state)
+    - Pool manager with header caching for best performance
     - More efficient (no file I/O per attempt)
     - Supports any Lean code, not just tactics
 
     Otherwise falls back to LSP file modification approach.
     """
-    # Try REPL first (more efficient, supports true backtracking)
+    # Priority 1: Pool manager with header caching (most efficient, no proof_state yet)
+    if proof_state is None:
+        result = await _multi_attempt_pool(ctx, file_path, line, snippets)
+        if result is not None:
+            return result
+
+    # Priority 2: REPL manager (supports proof_state, true backtracking)
     result = await _multi_attempt_repl(ctx, file_path, line, snippets, proof_state)
     if result is not None:
         return result
 
-    # Fall back to LSP approach (doesn't support proof_state)
+    # Priority 3: LSP approach (fallback, doesn't support proof_state)
     if proof_state is not None:
         raise LeanToolError("proof_state requires REPL mode (LEAN_REPL_ENABLED=1)")
     return _multi_attempt_lsp(ctx, file_path, line, snippets)

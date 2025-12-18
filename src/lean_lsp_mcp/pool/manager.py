@@ -9,13 +9,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from time import time
+from typing import Any
 
 from .repl import Repl, ReplError, ReplResponse, close_verbose, is_blank
 from .settings import pool_settings
+from .split import split_snippet
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SnippetResult:
+    """Result from running a code snippet."""
+
+    env: int | None = None
+    goals: list[str] | None = None
+    messages: list[dict[str, Any]] | None = None
+    sorries: list[dict[str, Any]] | None = None
+    error: str | None = None
+    proof_state: int | None = None
 
 
 class NoAvailableReplError(Exception):
@@ -272,3 +287,111 @@ class Manager:
             return cmd_response
 
         return repl.header_cmd_response
+
+    async def run_multi_attempt(
+        self,
+        base_code: str,
+        snippets: list[str],
+        timeout: float = 60.0,
+    ) -> list[SnippetResult]:
+        """Run multiple code snippets from the same base context.
+
+        Uses header caching for efficiency:
+        1. Split base_code into header (imports) and body
+        2. Acquire a worker with matching header (may reuse existing)
+        3. Load body to get base environment
+        4. Try each snippet from that base environment (true backtracking)
+        5. Release worker back to pool
+
+        Args:
+            base_code: Full code context up to the insertion point
+            snippets: List of code snippets to try
+            timeout: Per-command timeout in seconds
+
+        Returns:
+            List of SnippetResult for each snippet
+        """
+        # Split into header (imports) and body
+        split = split_snippet(base_code)
+        header = split.header
+        body = split.body
+
+        logger.debug(
+            "Split code: header=%d lines, body=%d chars",
+            split.header_line_count,
+            len(body),
+        )
+
+        # Acquire worker with matching header (may reuse cached worker)
+        repl = await self.get_repl(header=header, snippet_id="multi_attempt")
+
+        try:
+            # Prepare worker (start + run header if needed)
+            await self.prep(repl, snippet_id="multi_attempt", timeout=timeout)
+
+            # Get header env if available
+            header_env = None
+            if repl.header_cmd_response and repl.header_cmd_response.response:
+                header_env = repl.header_cmd_response.response.env
+
+            # Load body to get base environment
+            if body.strip():
+                body_response = await repl.send_timeout(
+                    snippet_id="body",
+                    code=body,
+                    timeout=timeout,
+                )
+                if body_response.response and body_response.response.env is not None:
+                    base_env = body_response.response.env
+                else:
+                    # Body had error, use header env
+                    base_env = header_env
+            else:
+                base_env = header_env
+
+            results: list[SnippetResult] = []
+            for i, snippet in enumerate(snippets):
+                snippet_str = snippet.rstrip("\n")
+
+                try:
+                    # Try this snippet from base environment (true backtracking!)
+                    # Each snippet forks from base_env, independent of others
+                    response = await repl.send_timeout(
+                        snippet_id=f"snippet_{i}",
+                        code=snippet_str,
+                        timeout=timeout,
+                        env=base_env,  # Fork from base for each attempt
+                    )
+
+                    resp = response.response
+                    if resp:
+                        # Extract goals from sorries
+                        goals = [s.get("goal", "") for s in resp.sorries]
+
+                        # Get proof_state from first sorry
+                        proof_state = None
+                        if resp.sorries:
+                            proof_state = resp.sorries[0].get("proofState")
+
+                        results.append(
+                            SnippetResult(
+                                env=resp.env,
+                                goals=goals if goals else None,
+                                messages=resp.messages,
+                                sorries=resp.sorries,
+                                error=resp.error,
+                                proof_state=proof_state,
+                            )
+                        )
+                    else:
+                        results.append(SnippetResult(error="No response"))
+
+                except Exception as e:
+                    logger.debug(f"Snippet {i} failed: {e}")
+                    results.append(SnippetResult(error=str(e)))
+
+            return results
+
+        finally:
+            # Return worker to pool
+            await self.release_repl(repl)

@@ -9,7 +9,7 @@ This package provides:
 - split_snippet: Header/body splitting for efficient caching
 """
 
-from .manager import Manager, NoAvailableReplError
+from .manager import Manager, NoAvailableReplError, SnippetResult
 from .repl import CommandResponse, Repl, ReplError, ReplResponse
 from .settings import PoolSettings, pool_settings
 from .split import SplitSnippet, split_snippet
@@ -17,6 +17,7 @@ from .split import SplitSnippet, split_snippet
 __all__ = [
     "Manager",
     "NoAvailableReplError",
+    "SnippetResult",
     "Repl",
     "ReplError",
     "ReplResponse",

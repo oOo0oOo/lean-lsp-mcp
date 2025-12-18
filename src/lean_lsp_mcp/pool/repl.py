@@ -178,11 +178,12 @@ class Repl:
         code: str,
         timeout: float,
         is_header: bool = False,
+        env: int | None = None,
     ) -> ReplResponse:
         """Send a command with timeout handling."""
         try:
             cmd_response, elapsed_time = await asyncio.wait_for(
-                self.send(snippet_id, code, is_header=is_header),
+                self.send(snippet_id, code, is_header=is_header, env=env),
                 timeout=timeout,
             )
         except asyncio.TimeoutError as e:
@@ -208,8 +209,16 @@ class Repl:
         snippet_id: str,
         code: str,
         is_header: bool = False,
+        env: int | None = None,
     ) -> tuple[CommandResponse, float]:
-        """Send a command to the REPL subprocess."""
+        """Send a command to the REPL subprocess.
+
+        Args:
+            snippet_id: Identifier for logging
+            code: Lean code to execute
+            is_header: If True, this is the initial import header
+            env: Environment ID to fork from (for backtracking)
+        """
         logger.debug("[%s] Running snippet %s", self.uuid.hex[:8], snippet_id)
 
         if not self.proc or self.proc.returncode is not None:
@@ -225,8 +234,11 @@ class Repl:
 
         input_cmd: Command = {"cmd": code}
 
-        # GC after first use (not for header)
-        if self.use_count != 0 and not is_header:
+        # If env specified, use it for backtracking (fork from that state)
+        if env is not None:
+            input_cmd["env"] = env
+        # GC after first use (not for header) when no specific env requested
+        elif self.use_count != 0 and not is_header:
             input_cmd["env"] = 0
             input_cmd["gc"] = True
 
