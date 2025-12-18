@@ -4,6 +4,8 @@ import pytest
 import tempfile
 from pathlib import Path
 
+pytest.importorskip("numpy", reason="leansearch tests require numpy")
+
 from lean_lsp_mcp.leansearch.declarations import (
     compute_file_hash,
     infer_module_name,
