@@ -19,8 +19,6 @@ from datetime import datetime
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
-from .settings import pool_settings
-
 logger = logging.getLogger(__name__)
 
 
