@@ -32,11 +32,9 @@ class WidgetAwareLeanLSPClient(LeanLSPClient):
         # First do the minimal setup from BaseLeanLSPClient
         from pathlib import Path
         import subprocess
-        import urllib.parse
         import threading
         import asyncio
         import atexit
-        import orjson
 
         from leanclient.utils import SemanticTokenProcessor, has_mathlib_dependency
 

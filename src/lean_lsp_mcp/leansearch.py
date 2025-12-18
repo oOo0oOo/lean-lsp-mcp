@@ -844,6 +844,111 @@ class LeanSearchManager:
         """Force reindex the project."""
         return self.index_project(force=True, progress_callback=progress_callback)
 
+    def search_by_goal(
+        self, goal_str: str, num_results: int = 10, include_hypotheses: bool = True
+    ) -> list[dict[str, Any]]:
+        """Search for declarations that could help close a proof goal.
+
+        This is a local alternative to premise-search.com. It extracts the
+        target type from the goal and searches for declarations with matching
+        type signatures.
+
+        Args:
+            goal_str: Full goal string from LSP (e.g., "h : a = b\n⊢ b = a")
+            num_results: Maximum number of results
+            include_hypotheses: If True, also search based on hypothesis types
+
+        Returns:
+            List of declarations that might help close the goal
+        """
+        if not self._ready:
+            raise RuntimeError("Index not ready. Call index_project() first.")
+
+        # Parse the goal to extract target type and hypotheses
+        lines = goal_str.strip().split("\n")
+        target_type = ""
+        hypotheses: list[str] = []
+
+        for line in lines:
+            line = line.strip()
+            if line.startswith("⊢"):
+                # This is the target/goal
+                target_type = line[1:].strip()
+            elif ":" in line and not line.startswith("case"):
+                # This is a hypothesis
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    hypotheses.append(parts[1].strip())
+
+        if not target_type:
+            # Fallback: use the whole goal string
+            target_type = goal_str
+
+        # Build search queries
+        queries: list[str] = []
+
+        # Primary query: search for the target type
+        # Remove common symbols that don't help with semantic search
+        cleaned_target = target_type.replace("→", " implies ").replace("∀", "forall ").replace("∃", "exists ")
+        queries.append(cleaned_target)
+
+        # Also search for common patterns in the target
+        # e.g., "a = b" -> search for "eq_comm" or "eq_symm"
+        if "=" in target_type:
+            queries.append("equality symmetric commutative")
+        if "+" in target_type or "-" in target_type:
+            queries.append("addition subtraction arithmetic")
+        if "*" in target_type or "/" in target_type:
+            queries.append("multiplication division")
+        if "∧" in target_type or "and" in target_type.lower():
+            queries.append("conjunction and intro elim")
+        if "∨" in target_type or "or" in target_type.lower():
+            queries.append("disjunction or intro elim")
+
+        # If including hypotheses, add queries based on them
+        if include_hypotheses:
+            for hyp in hypotheses[:3]:  # Limit to first 3 hypotheses
+                cleaned_hyp = hyp.replace("→", " implies ").replace("∀", "forall ")
+                queries.append(cleaned_hyp)
+
+        # Combine results from all queries with deduplication
+        all_results: dict[str, dict[str, Any]] = {}  # name -> result with best score
+
+        for query in queries:
+            try:
+                results = self.search(query, num_results=num_results * 2)
+                for r in results:
+                    name = r.get("name", "")
+                    if name not in all_results:
+                        all_results[name] = r
+            except Exception as e:
+                logger.debug(f"Search query '{query[:50]}...' failed: {e}")
+
+        # Return results sorted by how well they match (based on first occurrence)
+        sorted_results = list(all_results.values())
+
+        # Boost results that contain keywords from the goal
+        goal_keywords = set(
+            w.lower()
+            for w in target_type.replace("(", " ").replace(")", " ").split()
+            if len(w) > 2
+        )
+
+        def relevance_score(r: dict[str, Any]) -> float:
+            """Score how relevant a result is to the goal."""
+            name = r.get("name", "").lower()
+            sig = (r.get("signature") or "").lower()
+            text = f"{name} {sig}"
+
+            score = 0.0
+            for kw in goal_keywords:
+                if kw in text:
+                    score += 1.0
+            return score
+
+        sorted_results.sort(key=relevance_score, reverse=True)
+        return sorted_results[:num_results]
+
     def clear_cache(self) -> None:
         """Clear the cached index."""
         if self._collection is not None:

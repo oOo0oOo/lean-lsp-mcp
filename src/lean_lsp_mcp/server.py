@@ -62,7 +62,6 @@ from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
 )
 from lean_lsp_mcp.render_utils import (
-    proofwidget_to_html,
     render_widget_to_base64,
     extract_images_from_props,
 )
@@ -1231,7 +1230,10 @@ def state_search(
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> str:
-    """Find lemmas to close the goal at a position. Searches premise-search.com."""
+    """Find lemmas to close the goal at a position.
+
+    Uses local semantic search when available (no rate limits), falls back to premise-search.com.
+    """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -1247,11 +1249,39 @@ def state_search(
             f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete."
         )
 
-    goal_str = urllib.parse.quote(goal["goals"][0])
+    goal_str = goal["goals"][0]
+    app_ctx = ctx.request_context.lifespan_context
+
+    # Try local state search first if available (no rate limiting)
+    if app_ctx.leansearch_local_available and app_ctx.leansearch_manager:
+        try:
+            project_root = Path(file_path).parent
+            while project_root.parent != project_root:
+                if (project_root / "lakefile.lean").exists() or (
+                    project_root / "lakefile.toml"
+                ).exists():
+                    break
+                project_root = project_root.parent
+
+            loop = asyncio.get_event_loop()
+            if loop.run_until_complete(
+                app_ctx.leansearch_manager.ensure_indexed(project_root)
+            ):
+                results = app_ctx.leansearch_manager.search_by_goal(
+                    goal_str, num_results
+                )
+                if results:
+                    items = [StateSearchResult(name=r["name"]) for r in results]
+                    return _to_json_array(items)
+        except Exception as e:
+            logger.warning(f"Local state search failed: {e}, falling back to remote")
+
+    # Fall back to remote premise-search.com
+    goal_str_encoded = urllib.parse.quote(goal_str)
 
     url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
     req = urllib.request.Request(
-        f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
+        f"{url}/api/search?query={goal_str_encoded}&results={num_results}&rev=v4.22.0",
         headers={"User-Agent": "lean-lsp-mcp/0.1"},
         method="GET",
     )
