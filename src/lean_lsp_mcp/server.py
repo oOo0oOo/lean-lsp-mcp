@@ -64,6 +64,18 @@ from lean_lsp_mcp.models import (
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.repl_models import (
+    ReplCmdResult,
+    ReplTacticResult,
+    ReplFileResult,
+    ReplPickleResult,
+    ReplUnpickleResult,
+    ReplSessionInfo,
+    ReplSessionsResult,
+    ReplSessionCreateResult,
+    ReplSessionDeleteResult,
+    ReplMultiTacticResult,
+)
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
