@@ -36,6 +36,18 @@ def main():
         type=str,
         help="Override loogle cache location (default: ~/.cache/lean-lsp-mcp/loogle)",
     )
+    parser.add_argument(
+        "--hammer-local",
+        action="store_true",
+        help="Enable local lean-hammer premise server (requires Docker or macOS container). "
+        "Avoids rate limits and network dependencies.",
+    )
+    parser.add_argument(
+        "--hammer-port",
+        type=int,
+        default=8765,
+        help="Port for local hammer server (default: 8765)",
+    )
     args = parser.parse_args()
 
     # Set env vars from CLI args (CLI takes precedence over env vars)
@@ -43,6 +55,10 @@ def main():
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:
         os.environ["LEAN_LOOGLE_CACHE_DIR"] = args.loogle_cache_dir
+    if args.hammer_local:
+        os.environ["LEAN_HAMMER_LOCAL"] = "true"
+    if args.hammer_port != 8765:
+        os.environ["LEAN_HAMMER_PORT"] = str(args.hammer_port)
 
     mcp.settings.host = args.host
     mcp.settings.port = args.port
