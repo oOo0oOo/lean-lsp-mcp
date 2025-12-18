@@ -42,9 +42,19 @@ from .declarations import (
     extract_declarations_from_file,
     compute_file_hash,
 )
-from .indexer import LeanSearchIndex, get_cache_dir, compute_project_hash
+from .indexer import (
+    LeanSearchIndex,
+    get_cache_dir,
+    compute_project_hash,
+    extract_constants_from_text,
+)
 from .premises import LocalPremiseSearch
 from .training_data import TrainingDataExtractor, find_training_data_repo
+from .jixia import (
+    JixiaExtractor,
+    check_jixia_available,
+    jixia_to_lean_declarations,
+)
 
 __all__ = [
     "LeanSearchManager",
@@ -53,6 +63,7 @@ __all__ = [
     "IndexStats",
     "PremiseGraph",
     "check_leansearch_available",
+    "check_jixia_available",
 ]
 
 logger = logging.getLogger(__name__)
@@ -92,6 +103,7 @@ class LeanSearchManager:
         embedding_provider: str = "default",
         embedding_model: str | None = None,
         training_data_path: Path | None = None,
+        use_jixia: bool = True,
     ):
         """Initialize the search manager.
 
@@ -101,12 +113,14 @@ class LeanSearchManager:
             embedding_provider: One of 'default', 'openai', 'gemini', 'voyage'
             embedding_model: Override default model for provider
             training_data_path: Path to lean-training-data repo (optional)
+            use_jixia: Whether to use jixia for extraction (provides better triggers)
         """
         self.project_root = project_root
         self.cache_dir = cache_dir or get_cache_dir()
         self.embedding_provider = embedding_provider
         self.embedding_model = embedding_model
         self.training_data_path = training_data_path or find_training_data_repo()
+        self.use_jixia = use_jixia
 
         self._index: LeanSearchIndex | None = None
         self._embed_fn: Callable[[list[str]], Any] | None = None
@@ -116,6 +130,8 @@ class LeanSearchManager:
         self._stats: IndexStats | None = None
         self._premise_graph: PremiseGraph | None = None
         self._premise_search: LocalPremiseSearch | None = None
+        self._jixia: JixiaExtractor | None = None
+        self._triggers_built = False
 
     @property
     def is_ready(self) -> bool:
@@ -387,6 +403,167 @@ class LeanSearchManager:
             f"Indexing complete: {index.count()} declarations in {elapsed:.1f}s "
             f"({files_added} new, {files_updated} updated, {files_unchanged} unchanged)"
         )
+
+        # Build triggers for SineQuaNon search
+        self._build_triggers_from_signatures()
+
+        return index.count()
+
+    def _build_triggers_from_signatures(self) -> int:
+        """Build trigger index from declaration signatures.
+
+        Extracts constants from type signatures and builds the reverse
+        index needed for SineQuaNon search.
+
+        Returns:
+            Number of unique symbols indexed
+        """
+        if not self._ready:
+            return 0
+
+        index = self._get_index()
+        conn = index._get_db()
+
+        logger.info("Building trigger index from signatures...")
+        start = time.monotonic()
+
+        # Clear existing triggers
+        conn.execute("DELETE FROM triggers")
+        conn.commit()
+
+        # Extract constants from each declaration's signature
+        rows = conn.execute(
+            "SELECT id, name, signature FROM declarations WHERE signature IS NOT NULL"
+        ).fetchall()
+
+        trigger_count = 0
+        for row in rows:
+            decl_id = row[0]
+            signature = row[2] or ""
+
+            # Extract constants from signature
+            constants = extract_constants_from_text(signature)
+
+            for const in constants:
+                if const and not const.startswith("_"):
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO triggers (constant, decl_id, is_type_ref) VALUES (?, ?, 1)",
+                            (const, decl_id),
+                        )
+                        trigger_count += 1
+                    except Exception:
+                        pass
+
+        conn.commit()
+
+        # Build symbol frequency
+        num_symbols = index.build_symbol_frequency()
+
+        elapsed = time.monotonic() - start
+        logger.info(
+            f"Built trigger index: {trigger_count} triggers, {num_symbols} unique symbols in {elapsed:.1f}s"
+        )
+
+        self._triggers_built = True
+        return num_symbols
+
+    def index_with_jixia(
+        self,
+        force: bool = False,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> int:
+        """Index project using jixia for accurate extraction with reference graphs.
+
+        Jixia provides:
+        - More accurate declaration extraction from .olean files
+        - Reference graphs (which constants each declaration uses)
+        - Better type information after elaboration
+
+        Args:
+            force: If True, reindex all files
+            progress_callback: Optional progress callback
+
+        Returns:
+            Number of declarations indexed
+        """
+        if self._jixia is None:
+            self._jixia = JixiaExtractor()
+
+        if not self._jixia.is_available():
+            logger.warning("jixia not available, falling back to regex extraction")
+            return self.index_project(force=force, progress_callback=progress_callback)
+
+        if not self.project_root:
+            logger.warning("No project root set")
+            return 0
+
+        start_time = time.monotonic()
+        index = self._get_index()
+        embed_fn, _ = self._get_embed_fn()
+
+        if force:
+            index.clear()
+
+        if progress_callback:
+            progress_callback("Extracting with jixia...", 0, 100)
+
+        logger.info("Extracting project with jixia...")
+
+        # Use jixia to extract declarations and references
+        result = self._jixia.extract_project(self.project_root, include_deps=True)
+
+        if not result.declarations:
+            logger.warning("No declarations found by jixia")
+            return 0
+
+        logger.info(f"jixia extracted {len(result.declarations)} declarations")
+
+        # Convert to LeanDeclarations for indexing
+        declarations = jixia_to_lean_declarations(result)
+
+        if progress_callback:
+            progress_callback(
+                f"Building embeddings for {len(declarations)} declarations...",
+                50,
+                100,
+            )
+
+        # Add to index
+        index.add(declarations, embed_fn)
+
+        # Add triggers from jixia reference graph
+        logger.info("Building trigger index from jixia references...")
+        for jd in result.declarations:
+            if jd.type_references or jd.value_references:
+                index.add_triggers(jd.name, jd.type_references, jd.value_references)
+
+        # Build symbol frequency
+        num_symbols = index.build_symbol_frequency()
+        self._triggers_built = True
+
+        elapsed = time.monotonic() - start_time
+        self._ready = True
+
+        # Count by kind
+        kind_counts: dict[str, int] = {}
+        for d in declarations:
+            kind_counts[d.kind] = kind_counts.get(d.kind, 0) + 1
+
+        self._stats = IndexStats(
+            total_declarations=index.count(),
+            total_files=len(set(d.file_path for d in declarations)),
+            declarations_by_kind=kind_counts,
+            index_time_seconds=elapsed,
+            project_name=self.project_root.name if self.project_root else "",
+            embedding_provider=self.embedding_provider,
+        )
+
+        logger.info(
+            f"jixia indexing complete: {index.count()} declarations, "
+            f"{num_symbols} symbols in {elapsed:.1f}s"
+        )
+
         return index.count()
 
     def search(
@@ -500,10 +677,11 @@ class LeanSearchManager:
     ) -> list[dict[str, Any]]:
         """Find lemmas relevant to a goal state.
 
-        Uses a hybrid approach:
-        1. Loogle (remote API) for mathlib pattern matching
-        2. Local semantic search for project-specific lemmas
-        3. Premise graph if available
+        Uses a multi-pronged approach:
+        1. SineQuaNon trigger search (if triggers built) - structure-aware
+        2. Semantic search on local index
+        3. Loogle (remote API) for mathlib pattern matching (optional)
+        4. Premise graph if available
 
         Args:
             goal_state: The goal state text
@@ -516,7 +694,63 @@ class LeanSearchManager:
         results: list[dict[str, Any]] = []
         seen_names: set[str] = set()
 
-        # 1. Try loogle for mathlib lemmas (type pattern matching)
+        # Extract target from goal
+        if "⊢" in goal_state:
+            target = goal_state.split("⊢")[-1].strip()
+        else:
+            target = goal_state
+
+        # 1. SineQuaNon trigger-based search (primary for structure-aware matching)
+        if self._ready and self._triggers_built:
+            index = self._get_index()
+            constants = extract_constants_from_text(target)
+            if constants:
+                try:
+                    trigger_results = index.search_by_triggers(
+                        constants, k=num_results * 2
+                    )
+                    for r in trigger_results:
+                        name = r.get("name", "")
+                        if name and name not in seen_names:
+                            r["source"] = "trigger"
+                            # Normalize score from trigger_score
+                            if "trigger_score" in r:
+                                # Normalize trigger score to 0-1 range
+                                max_score = (
+                                    max(
+                                        t.get("trigger_score", 0)
+                                        for t in trigger_results
+                                    )
+                                    or 1
+                                )
+                                r["score"] = r["trigger_score"] / max_score
+                            results.append(r)
+                            seen_names.add(name)
+                except Exception as e:
+                    logger.debug(f"Trigger search failed: {e}")
+
+        # 2. Semantic search on local index
+        if self._ready:
+            index = self._get_index()
+            embed_fn, _ = self._get_embed_fn()
+
+            try:
+                semantic_results = index.search_by_text(target, embed_fn, k=num_results)
+                for r in semantic_results:
+                    name = r.get("name", "")
+                    if name and name not in seen_names:
+                        r["source"] = "semantic"
+                        # Normalize score key
+                        if "hybrid_score" in r:
+                            r["score"] = r["hybrid_score"]
+                        elif "distance" in r:
+                            r["score"] = 1.0 - min(r["distance"], 1.0)
+                        results.append(r)
+                        seen_names.add(name)
+            except Exception as e:
+                logger.debug(f"Semantic search failed: {e}")
+
+        # 3. Try loogle for mathlib lemmas (type pattern matching)
         if use_loogle:
             loogle_query = self._goal_to_loogle_query(goal_state)
             if loogle_query:
@@ -534,7 +768,7 @@ class LeanSearchManager:
                                         "kind": r.get("kind", "theorem"),
                                         "signature": r.get("type", ""),
                                         "module": r.get("module", ""),
-                                        "score": 1.0
+                                        "score": 0.9
                                         - (i * 0.05),  # Rank by loogle order
                                         "source": "loogle",
                                     }
@@ -543,7 +777,7 @@ class LeanSearchManager:
                 except Exception as e:
                     logger.debug(f"Loogle query failed: {e}")
 
-        # 2. Use premise search if available
+        # 4. Use premise search if available
         if self._ready and self._premise_search is not None:
             embed_fn, _ = self._get_embed_fn()
             try:
@@ -558,33 +792,6 @@ class LeanSearchManager:
                         seen_names.add(name)
             except Exception as e:
                 logger.debug(f"Premise search failed: {e}")
-
-        # 3. Fall back to semantic search on local index
-        if self._ready:
-            index = self._get_index()
-            embed_fn, _ = self._get_embed_fn()
-
-            # Extract target for semantic search
-            if "⊢" in goal_state:
-                target = goal_state.split("⊢")[-1].strip()
-            else:
-                target = goal_state
-
-            try:
-                semantic_results = index.search_by_text(target, embed_fn, k=num_results)
-                for r in semantic_results:
-                    name = r.get("name", "")
-                    if name and name not in seen_names:
-                        r["source"] = "semantic"
-                        # Normalize score key
-                        if "hybrid_score" in r:
-                            r["score"] = r["hybrid_score"]
-                        elif "distance" in r:
-                            r["score"] = 1.0 - min(r["distance"], 1.0)
-                        results.append(r)
-                        seen_names.add(name)
-            except Exception as e:
-                logger.debug(f"Semantic search failed: {e}")
 
         # Sort by score and return top results
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
