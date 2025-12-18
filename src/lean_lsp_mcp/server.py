@@ -29,6 +29,7 @@ from lean_lsp_mcp.client_utils import (
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
+from lean_lsp_mcp.hammer import HammerManager
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
@@ -152,6 +153,8 @@ class AppContext:
     # REPL for efficient multi-attempt execution
     repl: Repl | None = None
     repl_enabled: bool = False
+    hammer_manager: HammerManager | None = None
+    hammer_local_available: bool = False
 
 
 @asynccontextmanager
@@ -160,6 +163,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_local_available = False
     repl: Repl | None = None
     repl_on = False
+    hammer_manager: HammerManager | None = None
+    hammer_local_available = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -200,6 +205,36 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                     )
             else:
                 logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
+        # Initialize local hammer if enabled via env var or CLI
+        if os.environ.get("LEAN_HAMMER_LOCAL", "").lower() in ("1", "true", "yes"):
+            logger.info("Local hammer enabled, initializing...")
+            hammer_manager = HammerManager()
+            if hammer_manager.is_available():
+                if await hammer_manager.start_async():
+                    hammer_local_available = True
+                    logger.info("Local hammer started successfully")
+                else:
+                    logger.warning("Local hammer failed to start, will use remote API")
+            else:
+                logger.warning(
+                    "No container runtime found (Docker or macOS container), "
+                    "will use remote API"
+                )
+        # Initialize local hammer if enabled via env var or CLI
+        if os.environ.get("LEAN_HAMMER_LOCAL", "").lower() in ("1", "true", "yes"):
+            logger.info("Local hammer enabled, initializing...")
+            hammer_manager = HammerManager()
+            if hammer_manager.is_available():
+                if await hammer_manager.start_async():
+                    hammer_local_available = True
+                    logger.info("Local hammer started successfully")
+                else:
+                    logger.warning("Local hammer failed to start, will use remote API")
+            else:
+                logger.warning(
+                    "No container runtime found (Docker or macOS container), "
+                    "will use remote API"
+                )
 
         context = AppContext(
             lean_project_path=lean_project_path,
@@ -216,6 +251,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_local_available=loogle_local_available,
             repl=repl,
             repl_enabled=repl_on,
+            hammer_manager=hammer_manager,
+            hammer_local_available=hammer_local_available,
         )
         yield context
     finally:
@@ -229,6 +266,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if repl:
             await repl.close()
+        if hammer_manager:
+            await hammer_manager.stop_async()
+        if repl:
+            await repl.close()
+        if hammer_manager:
+            await hammer_manager.stop_async()
 
 
 mcp_kwargs = dict(
@@ -1372,6 +1415,32 @@ async def state_search(
     return StateSearchResults(items=items)
 
 
+async def _query_hammer_remote(
+    ctx: Context, goal_state: str, num_results: int
+) -> list[dict]:
+    """Query the remote leanpremise.net API."""
+    data = {
+        "state": goal_state,
+        "new_premises": [],
+        "k": num_results,
+    }
+
+    url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
+    req = urllib.request.Request(
+        url + "/retrieve",
+        headers={
+            "User-Agent": "lean-lsp-mcp/0.1",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+        data=orjson.dumps(data),
+    )
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
+    return await _urlopen_json(req, timeout=10)
+
+
 @mcp.tool(
     "lean_hammer_premise",
     annotations=ToolAnnotations(
@@ -1381,7 +1450,6 @@ async def state_search(
         openWorldHint=True,
     ),
 )
-@rate_limited("hammer_premise", max_requests=3, per_seconds=30)
 async def hammer_premise(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -1391,8 +1459,13 @@ async def hammer_premise(
 ) -> PremiseResults:
     """Get premise suggestions for automation tactics at a goal position.
 
+    Uses local premise server when LEAN_HAMMER_LOCAL=1 (no rate limits).
+    Otherwise uses leanpremise.net API (rate limited: 3 requests per 30s).
+
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
     """
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -1408,28 +1481,32 @@ async def hammer_premise(
             f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete."
         )
 
-    data = {
-        "state": goal["goals"][0],
-        "new_premises": [],
-        "k": num_results,
-    }
+    goal_state = goal["goals"][0]
 
-    url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
-    req = urllib.request.Request(
-        url + "/retrieve",
-        headers={
-            "User-Agent": "lean-lsp-mcp/0.1",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-        data=orjson.dumps(data),
-    )
+    # Prefer local hammer if available (no rate limits)
+    if app_ctx.hammer_local_available and app_ctx.hammer_manager:
+        try:
+            results = app_ctx.hammer_manager.query(goal_state, num_results)
+            items = [PremiseResult(name=r["name"]) for r in results]
+            return PremiseResults(items=items)
+        except Exception as e:
+            logger.warning(f"Local hammer failed, falling back to remote: {e}")
 
-    await _safe_report_progress(
-        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
-    )
-    results = await _urlopen_json(req, timeout=10)
+    # Fall back to remote API with rate limiting
+    rate_limit = app_ctx.rate_limit.get("hammer_premise", [])
+    now = time.time()
 
+    # Clean old entries
+    rate_limit[:] = [t for t in rate_limit if now - t < 30]
+
+    if len(rate_limit) >= 3:
+        raise LeanToolError(
+            "Rate limit exceeded: 3 requests per 30s. "
+            "Set LEAN_HAMMER_LOCAL=1 to use local premise server without limits."
+        )
+
+    rate_limit.append(now)
+    results = await _query_hammer_remote(ctx, goal_state, num_results)
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
 
