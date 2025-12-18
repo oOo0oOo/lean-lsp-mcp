@@ -28,6 +28,7 @@ from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import ReplManager
+from lean_lsp_mcp import pool  # Kimina-style REPL pooling
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -96,6 +97,9 @@ class AppContext:
     loogle_local_available: bool = False
     repl_manager: ReplManager | None = None
     repl_enabled: bool = False
+    # Kimina-style REPL pool (optional, for parallel execution)
+    pool_manager: "pool.Manager | None" = None
+    pool_enabled: bool = False
 
 
 @asynccontextmanager
@@ -104,6 +108,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_local_available = False
     repl_manager: ReplManager | None = None
     repl_enabled = False
+    pool_manager: pool.Manager | None = None
+    pool_enabled = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -131,6 +137,24 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             repl_manager = ReplManager()
             repl_enabled = True
 
+        # Initialize REPL pool if enabled (kimina-style parallel execution)
+        if os.environ.get("LEAN_POOL_ENABLED", "").lower() in ("1", "true", "yes"):
+            if lean_project_path:
+                repl_path = os.environ.get("LEAN_REPL_PATH", "repl")
+                logger.info("REPL pool enabled, initializing...")
+                pool_manager = pool.Manager(
+                    repl_path=repl_path,
+                    project_dir=str(lean_project_path),
+                )
+                pool_enabled = True
+                logger.info(
+                    "REPL pool initialized: max_repls=%d, max_uses=%d",
+                    pool_manager.max_repls,
+                    pool_manager.max_repl_uses,
+                )
+            else:
+                logger.warning("REPL pool requires LEAN_PROJECT_PATH to be set")
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -146,6 +170,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_local_available=loogle_local_available,
             repl_manager=repl_manager,
             repl_enabled=repl_enabled,
+            pool_manager=pool_manager,
+            pool_enabled=pool_enabled,
         )
         yield context
     finally:
@@ -159,6 +185,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if repl_manager:
             await repl_manager.stop_all()
+
+        if pool_manager:
+            await pool_manager.cleanup()
 
 
 mcp_kwargs = dict(
@@ -757,6 +786,7 @@ async def _multi_attempt_repl(
     file_path: str,
     line: int,
     snippets: List[str],
+    proof_state: int | None = None,
 ) -> MultiAttemptResult | None:
     """Try code snippets using REPL environment backtracking.
 
@@ -765,6 +795,11 @@ async def _multi_attempt_repl(
 
     This is more efficient than LSP (no file modifications) and supports
     true backtracking (each attempt starts from identical state).
+
+    When proof_state is provided:
+    - Snippets are applied as tactics from that proof state
+    - Each attempt forks from the same proof_state
+    - Returns new proof_state IDs for chaining
     """
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.repl_enabled or not app_ctx.repl_manager:
@@ -776,7 +811,41 @@ async def _multi_attempt_repl(
         return None
 
     try:
-        # Read the file contents
+        results: List[AttemptResult] = []
+
+        # Tactic mode: apply snippets as tactics from existing proof state
+        if proof_state is not None:
+            for snippet in snippets:
+                snippet_str = snippet.rstrip("\n")
+
+                # Apply tactic from the given proof state
+                response = await manager.run_tactic(
+                    project_path, snippet_str, proof_state=proof_state
+                )
+
+                # Convert messages to diagnostics format
+                diagnostics = [
+                    DiagnosticMessage(
+                        severity="error" if m.severity == "error" else "info",
+                        message=m.data,
+                        line=m.pos.line if m.pos else 0,
+                        column=m.pos.column if m.pos else 0,
+                    )
+                    for m in response.messages
+                ]
+
+                results.append(
+                    AttemptResult(
+                        snippet=snippet_str,
+                        goals=response.goals,
+                        diagnostics=diagnostics,
+                        proof_state=response.proofState,
+                    )
+                )
+
+            return MultiAttemptResult(items=results)
+
+        # Command mode: load base context and try each snippet
         file_contents = get_file_contents(file_path)
         if file_contents is None:
             return None
@@ -798,7 +867,6 @@ async def _multi_attempt_repl(
                 logger.debug(f"Base code has errors: {base_response.messages}")
             return None
 
-        results: List[AttemptResult] = []
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
 
@@ -820,6 +888,11 @@ async def _multi_attempt_repl(
             # Extract goals from sorries (if any)
             goals = [s.goal for s in response.sorries] if response.sorries else []
 
+            # Get proof_state from first sorry if available (for chaining)
+            result_proof_state = None
+            if response.sorries:
+                result_proof_state = response.sorries[0].proofState
+
             # Check for tactic-style goals in the response
             if response.tactics:
                 for t in response.tactics:
@@ -830,6 +903,7 @@ async def _multi_attempt_repl(
                     snippet=snippet_str,
                     goals=goals,
                     diagnostics=diagnostics,
+                    proof_state=result_proof_state,
                 )
             )
 
@@ -905,6 +979,12 @@ async def multi_attempt(
     snippets: Annotated[
         List[str], Field(description="Code snippets to try (tactics, definitions, etc.)")
     ],
+    proof_state: Annotated[
+        int | None,
+        Field(
+            description="Proof state ID to continue from. If provided, snippets are applied as tactics."
+        ),
+    ] = None,
 ) -> MultiAttemptResult:
     """Try multiple code snippets from the same base context.
 
@@ -914,6 +994,10 @@ async def multi_attempt(
     - Trying alternative definitions: ["def foo := 1", "def foo := 2"]
     - Exploring proof strategies without file modifications
 
+    When proof_state is provided:
+    - Snippets are applied as tactics from that proof state
+    - Returns proof_state IDs in results for chaining
+
     When LEAN_REPL_ENABLED=1:
     - Uses REPL environment backtracking (true fork from same state)
     - More efficient (no file I/O per attempt)
@@ -922,11 +1006,13 @@ async def multi_attempt(
     Otherwise falls back to LSP file modification approach.
     """
     # Try REPL first (more efficient, supports true backtracking)
-    result = await _multi_attempt_repl(ctx, file_path, line, snippets)
+    result = await _multi_attempt_repl(ctx, file_path, line, snippets, proof_state)
     if result is not None:
         return result
 
-    # Fall back to LSP approach
+    # Fall back to LSP approach (doesn't support proof_state)
+    if proof_state is not None:
+        raise LeanToolError("proof_state requires REPL mode (LEAN_REPL_ENABLED=1)")
     return _multi_attempt_lsp(ctx, file_path, line, snippets)
 
 
