@@ -110,8 +110,8 @@ class LocalPremiseSearch:
             graph_score = item.get("graph_score", 0.0)
             semantic_score = item.get("semantic_score", 0.0)
             item["score"] = (
-                (1 - semantic_weight) * graph_score + semantic_weight * semantic_score
-            )
+                1 - semantic_weight
+            ) * graph_score + semantic_weight * semantic_score
 
         # Sort and return
         results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)

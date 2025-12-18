@@ -40,9 +40,7 @@ class TrainingDataExtractor:
 
     def is_available(self) -> bool:
         """Check if lean-training-data is available."""
-        return self.repo_path.exists() and (
-            self.repo_path / "lakefile.lean"
-        ).exists()
+        return self.repo_path.exists() and (self.repo_path / "lakefile.lean").exists()
 
     def ensure_built(self) -> bool:
         """Build lean-training-data if binaries don't exist.
@@ -266,9 +264,7 @@ class TrainingDataExtractor:
                 graph.adjacency[name] = edges
 
         graph.build_reverse_index()
-        logger.info(
-            f"Parsed premise graph with {len(graph.adjacency)} declarations"
-        )
+        logger.info(f"Parsed premise graph with {len(graph.adjacency)} declarations")
         return graph
 
 
