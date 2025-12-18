@@ -30,12 +30,20 @@ def infer_module_name(file_path: Path, base_path: Path | None = None) -> str:
 
     Handles common Lean project structures:
     - Mathlib/Algebra/Group/Basic.lean -> Mathlib.Algebra.Group.Basic
+    - .lake/packages/foo/src/Foo/Bar.lean -> Foo.Bar
     - src/MyLib/Foo.lean -> MyLib.Foo
     - Basic.lean -> Basic
     """
     parts = file_path.parts
+    path_str = str(file_path)
 
-    # Try to find a recognizable root
+    # Handle .lake/packages paths specially
+    # For packages, return empty module name - let the namespace handle naming
+    # This avoids duplicating directory structure with Lean namespaces
+    if ".lake/packages/" in path_str or ".lake\\packages\\" in path_str:
+        return ""
+
+    # Try to find a recognizable root (standard libraries)
     roots = {"Mathlib", "Std", "Init", "Lean", "Batteries", "Aesop", "ProofWidgets"}
 
     for i, part in enumerate(parts):
@@ -182,11 +190,14 @@ def extract_declarations_from_file(
         ns = namespace_at_line.get(line_num - 1, "")
 
         # Build fully qualified name
-        name_parts = [module_name]
+        # When namespace is active, it IS the qualified path (don't add module)
+        # Only use module_name as prefix when no namespace is active
         if ns:
-            name_parts.append(ns)
-        name_parts.append(base_name)
-        full_name = ".".join(filter(None, name_parts))
+            full_name = f"{ns}.{base_name}"
+        elif module_name:
+            full_name = f"{module_name}.{base_name}"
+        else:
+            full_name = base_name
 
         declarations.append(
             LeanDeclaration(
