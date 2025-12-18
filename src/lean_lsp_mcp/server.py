@@ -57,6 +57,7 @@ from lean_lsp_mcp.models import (
     StateSearchResults,
     TermGoalState,
 )
+
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
@@ -872,7 +873,9 @@ async def _multi_attempt_repl(
 
             # Try this snippet from the base environment (true backtracking!)
             # Each snippet runs from the same base_env, independent of others
-            response = await manager.run_command(project_path, snippet_str, env=base_env)
+            response = await manager.run_command(
+                project_path, snippet_str, env=base_env
+            )
 
             # Convert messages to diagnostics format
             diagnostics = [
@@ -977,7 +980,8 @@ async def multi_attempt(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[
-        List[str], Field(description="Code snippets to try (tactics, definitions, etc.)")
+        List[str],
+        Field(description="Code snippets to try (tactics, definitions, etc.)"),
     ],
     proof_state: Annotated[
         int | None,

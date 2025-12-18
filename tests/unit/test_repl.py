@@ -285,7 +285,11 @@ class TestReplManagerResponseParsing:
                 {"pos": {"line": 5, "column": 8}, "goal": "⊢ n = n", "proofState": 3}
             ],
             "messages": [
-                {"severity": "warning", "pos": {"line": 1, "column": 1}, "data": "unused variable"}
+                {
+                    "severity": "warning",
+                    "pos": {"line": 1, "column": 1},
+                    "data": "unused variable",
+                }
             ],
         }
         response = manager._parse_command_response(data)

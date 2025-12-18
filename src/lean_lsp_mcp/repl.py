@@ -401,7 +401,9 @@ class ReplManager:
             messages.append(
                 ReplMessage(
                     severity=m.get("severity", "error"),
-                    pos=ReplPosition(**m["pos"]) if "pos" in m else ReplPosition(line=0, column=0),
+                    pos=ReplPosition(**m["pos"])
+                    if "pos" in m
+                    else ReplPosition(line=0, column=0),
                     endPos=ReplPosition(**m["endPos"]) if "endPos" in m else None,
                     data=m.get("data", ""),
                 )
@@ -414,7 +416,9 @@ class ReplManager:
                 ReplTacticInfo(
                     tactic=t.get("tactic", ""),
                     goals=t.get("goals", []),
-                    pos=ReplPosition(**t["pos"]) if "pos" in t else ReplPosition(line=0, column=0),
+                    pos=ReplPosition(**t["pos"])
+                    if "pos" in t
+                    else ReplPosition(line=0, column=0),
                     endPos=ReplPosition(**t["endPos"]) if "endPos" in t else None,
                 )
             )
@@ -450,7 +454,9 @@ class ReplManager:
             messages.append(
                 ReplMessage(
                     severity=m.get("severity", "info"),
-                    pos=ReplPosition(**m["pos"]) if "pos" in m else ReplPosition(line=0, column=0),
+                    pos=ReplPosition(**m["pos"])
+                    if "pos" in m
+                    else ReplPosition(line=0, column=0),
                     endPos=ReplPosition(**m["endPos"]) if "endPos" in m else None,
                     data=m.get("data", ""),
                 )
@@ -639,7 +645,9 @@ class ReplManager:
         return ReplTacticResponse(
             proofState=None,
             goals=[],
-            messages=response.messages if isinstance(response, ReplCommandResponse) else [],
+            messages=response.messages
+            if isinstance(response, ReplCommandResponse)
+            else [],
             traces=[],
             proofStatus=None,
         )

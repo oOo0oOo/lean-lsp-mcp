@@ -148,9 +148,7 @@ class ReplTacticResponse(BaseModel):
         default_factory=list, description="Messages from tactic execution"
     )
     traces: List[str] = Field(default_factory=list, description="Trace output")
-    proofStatus: Optional[str] = Field(
-        None, description="Proof completion status"
-    )
+    proofStatus: Optional[str] = Field(None, description="Proof completion status")
 
 
 class ReplErrorResponse(BaseModel):
