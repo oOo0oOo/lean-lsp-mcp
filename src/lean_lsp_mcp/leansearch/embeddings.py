@@ -80,8 +80,7 @@ def _get_openai_embeddings(
         import openai
     except ImportError:
         raise RuntimeError(
-            "openai is required for OpenAI embeddings. "
-            "Install with: pip install openai"
+            "openai is required for OpenAI embeddings. Install with: pip install openai"
         )
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -177,6 +176,7 @@ def check_embeddings_available() -> tuple[bool, str]:
     """Check if embedding dependencies are available."""
     try:
         from sentence_transformers import SentenceTransformer  # noqa: F401
+
         return True, ""
     except ImportError:
         return False, (

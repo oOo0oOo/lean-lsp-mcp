@@ -199,9 +199,7 @@ class LeanSearchManager:
             pkg_dirs = [d for d in lake_packages.iterdir() if d.is_dir()]
             for idx, pkg_dir in enumerate(pkg_dirs):
                 if progress_callback:
-                    progress_callback(
-                        f"Scanning {pkg_dir.name}...", idx, len(pkg_dirs)
-                    )
+                    progress_callback(f"Scanning {pkg_dir.name}...", idx, len(pkg_dirs))
 
                 # Look for source files in common locations
                 for subdir in [".", "src", pkg_dir.name]:
@@ -450,9 +448,7 @@ class LeanSearchManager:
 
         # Search without kind filter - include theorems, lemmas, and defs
         # that might be relevant to the goal
-        return index.search_by_text(
-            target, embed_fn, k=num_results
-        )
+        return index.search_by_text(target, embed_fn, k=num_results)
 
     async def ensure_indexed(self, project_root: Path | None = None) -> bool:
         """Ensure the project is indexed, indexing if necessary.

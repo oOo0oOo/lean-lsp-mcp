@@ -262,7 +262,9 @@ class LeanSearchIndex:
 
             conn.commit()
 
-            logger.debug(f"Indexed batch {i // batch_size + 1}: {len(batch)} declarations")
+            logger.debug(
+                f"Indexed batch {i // batch_size + 1}: {len(batch)} declarations"
+            )
 
         # Save index to disk
         index.save(str(self.index_path))
@@ -454,7 +456,7 @@ class LeanSearchIndex:
         camel_parts = set()
         for term in query_terms:
             # Split on camelCase boundaries
-            parts = re.findall(r'[a-z]+|[A-Z][a-z]*', term)
+            parts = re.findall(r"[a-z]+|[A-Z][a-z]*", term)
             camel_parts.update(p.lower() for p in parts if len(p) > 1)
         query_terms.update(camel_parts)
 
@@ -491,7 +493,9 @@ class LeanSearchIndex:
 
             # Combined score
             keyword_total = min(1.0, kw_score + exact_bonus)
-            hybrid = (1 - effective_weight) * semantic_score + effective_weight * keyword_total
+            hybrid = (
+                1 - effective_weight
+            ) * semantic_score + effective_weight * keyword_total
             r["hybrid_score"] = hybrid
             scored.append(r)
 
