@@ -67,8 +67,6 @@ from lean_lsp_mcp.repl_models import (
     ReplSessionCreateResult,
     ReplSessionDeleteResult,
     ReplMultiTacticResult,
-    ReplCommandResponse,
-    ReplTacticResponse,
 )
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search

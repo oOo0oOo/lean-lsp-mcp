@@ -22,11 +22,9 @@ import orjson
 from lean_lsp_mcp.repl_models import (
     ReplCommandRequest,
     ReplCommandResponse,
-    ReplErrorResponse,
     ReplFileRequest,
     ReplMessage,
     ReplPickleEnvRequest,
-    ReplPickleProofStateRequest,
     ReplPosition,
     ReplRequest,
     ReplSorry,
@@ -34,7 +32,6 @@ from lean_lsp_mcp.repl_models import (
     ReplTacticRequest,
     ReplTacticResponse,
     ReplUnpickleEnvRequest,
-    ReplUnpickleProofStateRequest,
 )
 
 logger = logging.getLogger(__name__)

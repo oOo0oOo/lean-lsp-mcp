@@ -1,24 +1,16 @@
 """Unit tests for REPL manager and models."""
 
-import asyncio
-import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from lean_lsp_mcp.repl import ReplManager, ReplSession, get_repl_cache_dir
 from lean_lsp_mcp.repl_models import (
     ReplCommandRequest,
     ReplCommandResponse,
     ReplCmdResult,
-    ReplMessage,
     ReplPosition,
-    ReplSessionInfo,
     ReplSorry,
     ReplTacticRequest,
     ReplTacticResponse,
-    ReplTacticResult,
 )
 
 
