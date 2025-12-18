@@ -1,6 +1,9 @@
 """Tests for leansearch.models module."""
 
 import pytest
+
+pytest.importorskip("numpy", reason="leansearch tests require numpy")
+
 from lean_lsp_mcp.leansearch.models import (
     LeanDeclaration,
     IndexStats,
