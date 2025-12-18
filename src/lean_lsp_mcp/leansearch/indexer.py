@@ -1,0 +1,398 @@
+"""Vector index and metadata storage for semantic search.
+
+Uses usearch for fast HNSW vector search and SQLite for metadata storage.
+This is lighter and faster than ChromaDB while maintaining filtering capability.
+
+Architecture:
+- usearch: Binary HNSW index for vector similarity search
+- SQLite: Metadata storage with indexes for kind/module filtering
+- Query flow: embed -> usearch.search() -> SQLite JOIN for metadata
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import sqlite3
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+from .models import LeanDeclaration
+
+logger = logging.getLogger(__name__)
+
+
+def get_cache_dir() -> Path:
+    """Get the cache directory for local leansearch data."""
+    if d := os.environ.get("LEAN_LEANSEARCH_CACHE_DIR"):
+        return Path(d)
+    xdg = os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
+    return Path(xdg) / "lean-lsp-mcp" / "leansearch"
+
+
+def compute_project_hash(project_root: Path) -> str:
+    """Compute a hash of the project to detect changes requiring reindex."""
+    hasher = hashlib.sha256()
+
+    # Hash lake-manifest.json if it exists (tracks dependency versions)
+    manifest = project_root / "lake-manifest.json"
+    if manifest.exists():
+        hasher.update(manifest.read_bytes())
+
+    # Hash lakefile.lean or lakefile.toml
+    for lakefile in ["lakefile.lean", "lakefile.toml"]:
+        lf = project_root / lakefile
+        if lf.exists():
+            hasher.update(lf.read_bytes())
+            break
+
+    # Include project name for uniqueness
+    hasher.update(project_root.name.encode())
+
+    return hasher.hexdigest()[:16]
+
+
+class LeanSearchIndex:
+    """Vector index with SQLite metadata for semantic search.
+
+    Combines usearch for fast vector search with SQLite for flexible
+    metadata filtering. Supports incremental updates via file hashing.
+    """
+
+    def __init__(
+        self,
+        cache_dir: Path | None = None,
+        embedding_dim: int = 384,
+        project_name: str = "default",
+    ):
+        self.cache_dir = cache_dir or get_cache_dir()
+        self.embedding_dim = embedding_dim
+        self.project_name = project_name
+
+        # Paths
+        project_dir = self.cache_dir / project_name
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        self.index_path = project_dir / "vectors.usearch"
+        self.db_path = project_dir / "metadata.db"
+        self.hashes_path = project_dir / "file_hashes.json"
+
+        # State
+        self._index = None
+        self._conn: sqlite3.Connection | None = None
+        self._file_hashes: dict[str, str] = {}
+
+    def _get_index(self):
+        """Get or create the usearch index."""
+        if self._index is None:
+            try:
+                from usearch.index import Index
+            except ImportError:
+                raise RuntimeError(
+                    "usearch is required for local leansearch. "
+                    "Install with: pip install usearch"
+                )
+
+            self._index = Index(ndim=self.embedding_dim, metric="cos")
+
+            # Load existing index if available
+            if self.index_path.exists():
+                try:
+                    self._index.load(str(self.index_path))
+                    logger.info(f"Loaded index with {len(self._index)} vectors")
+                except Exception as e:
+                    logger.warning(f"Could not load index: {e}")
+
+        return self._index
+
+    def _get_db(self) -> sqlite3.Connection:
+        """Get or create the SQLite connection."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._init_db()
+        return self._conn
+
+    def _init_db(self) -> None:
+        """Create SQLite schema for declaration metadata."""
+        conn = self._conn
+        if conn is None:
+            return
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS declarations (
+                id INTEGER PRIMARY KEY,
+                name TEXT UNIQUE,
+                kind TEXT,
+                module TEXT,
+                signature TEXT,
+                docstring TEXT,
+                file_path TEXT,
+                line INTEGER,
+                search_text TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kind ON declarations(kind)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_module ON declarations(module)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_path ON declarations(file_path)"
+        )
+        conn.commit()
+
+    def load_file_hashes(self) -> dict[str, str]:
+        """Load cached file hashes from disk."""
+        if self.hashes_path.exists():
+            try:
+                self._file_hashes = json.loads(self.hashes_path.read_text())
+                return self._file_hashes
+            except Exception:
+                pass
+        self._file_hashes = {}
+        return self._file_hashes
+
+    def save_file_hashes(self) -> None:
+        """Save file hashes to disk."""
+        self.hashes_path.write_text(json.dumps(self._file_hashes))
+
+    def count(self) -> int:
+        """Get number of declarations in the index."""
+        conn = self._get_db()
+        result = conn.execute("SELECT COUNT(*) FROM declarations").fetchone()
+        return result[0] if result else 0
+
+    def add(
+        self,
+        declarations: list[LeanDeclaration],
+        embed_fn: Callable[[list[str]], np.ndarray],
+        batch_size: int = 500,
+    ) -> None:
+        """Add declarations with their embeddings.
+
+        Args:
+            declarations: List of declarations to add
+            embed_fn: Function to compute embeddings for a batch of texts
+            batch_size: Number of declarations to process at once
+        """
+        if not declarations:
+            return
+
+        index = self._get_index()
+        conn = self._get_db()
+
+        # Process in batches
+        for i in range(0, len(declarations), batch_size):
+            batch = declarations[i : i + batch_size]
+
+            # Build search texts with docstring weighting
+            search_texts = []
+            for decl in batch:
+                parts = [decl.name.replace(".", " "), decl.kind]
+                if decl.docstring:
+                    # Weight docstrings heavily - they contain natural language
+                    parts.extend([decl.docstring] * 3)
+                if decl.signature:
+                    parts.append(decl.signature)
+                search_texts.append(" ".join(parts))
+
+            # Compute embeddings
+            embeddings = embed_fn(search_texts)
+
+            # Insert into SQLite and usearch
+            for j, decl in enumerate(batch):
+                # Get or create ID for this declaration
+                cursor = conn.execute(
+                    """
+                    INSERT INTO declarations (name, kind, module, signature, docstring, file_path, line, search_text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        kind=excluded.kind, module=excluded.module,
+                        signature=excluded.signature, docstring=excluded.docstring,
+                        file_path=excluded.file_path, line=excluded.line,
+                        search_text=excluded.search_text
+                    RETURNING id
+                    """,
+                    (
+                        decl.name,
+                        decl.kind,
+                        decl.module,
+                        decl.signature[:500] if decl.signature else "",
+                        decl.docstring[:1000] if decl.docstring else None,
+                        decl.file_path,
+                        decl.line,
+                        search_texts[j],
+                    ),
+                )
+                row = cursor.fetchone()
+                decl_id = row[0] if row else None
+
+                if decl_id is not None:
+                    # Add vector to index
+                    index.add(decl_id, embeddings[j])
+
+            conn.commit()
+
+            logger.debug(f"Indexed batch {i // batch_size + 1}: {len(batch)} declarations")
+
+        # Save index to disk
+        index.save(str(self.index_path))
+
+    def remove_by_file(self, file_path: str) -> int:
+        """Remove all declarations from a file.
+
+        Returns number of declarations removed.
+        """
+        conn = self._get_db()
+
+        # Get IDs to remove from vector index
+        rows = conn.execute(
+            "SELECT id FROM declarations WHERE file_path = ?", (file_path,)
+        ).fetchall()
+
+        if not rows:
+            return 0
+
+        ids = [row[0] for row in rows]
+
+        # Note: usearch doesn't support deletion, so we'll need to rebuild
+        # For now, just remove from SQLite - rebuild handles vector index
+        conn.execute("DELETE FROM declarations WHERE file_path = ?", (file_path,))
+        conn.commit()
+
+        return len(ids)
+
+    def search(
+        self,
+        query_embedding: np.ndarray,
+        k: int = 10,
+        kind: str | None = None,
+        module: str | None = None,
+        overfetch_factor: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Search with optional metadata filtering.
+
+        Args:
+            query_embedding: Query vector
+            k: Number of results to return
+            kind: Filter by declaration kind (theorem, lemma, def, etc.)
+            module: Filter by module prefix
+            overfetch_factor: How many extra results to fetch for filtering
+
+        Returns:
+            List of matching declarations with metadata and distances
+        """
+        index = self._get_index()
+        conn = self._get_db()
+
+        if len(index) == 0:
+            return []
+
+        # Overfetch for post-filtering
+        fetch_k = min(k * overfetch_factor, len(index))
+        matches = index.search(query_embedding, fetch_k)
+
+        if len(matches) == 0:
+            return []
+
+        # Get IDs and distances
+        ids = [int(m.key) for m in matches]
+        distances = [float(m.distance) for m in matches]
+
+        # Build SQL query with optional filters
+        placeholders = ",".join("?" * len(ids))
+        sql = f"SELECT * FROM declarations WHERE id IN ({placeholders})"
+        params: list[Any] = list(ids)
+
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        if module:
+            sql += " AND module LIKE ?"
+            params.append(f"{module}%")
+
+        rows = conn.execute(sql, params).fetchall()
+
+        # Build results with distances
+        id_to_distance = dict(zip(ids, distances))
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["distance"] = id_to_distance.get(row["id"], 1.0)
+            results.append(result)
+
+        # Sort by distance and limit
+        results.sort(key=lambda x: x["distance"])
+        return results[:k]
+
+    def search_by_text(
+        self,
+        query: str,
+        embed_fn: Callable[[list[str]], np.ndarray],
+        k: int = 10,
+        kind: str | None = None,
+        module: str | None = None,
+        hybrid_weight: float = 0.3,
+    ) -> list[dict[str, Any]]:
+        """Search by text query with hybrid semantic + keyword matching.
+
+        Args:
+            query: Natural language search query
+            embed_fn: Embedding function
+            k: Number of results
+            kind: Filter by kind
+            module: Filter by module prefix
+            hybrid_weight: Weight for keyword score (0-1)
+
+        Returns:
+            List of matching declarations
+        """
+        query_embedding = embed_fn([query])[0]
+        results = self.search(query_embedding, k * 3, kind, module)
+
+        if not results:
+            return []
+
+        # Apply hybrid scoring
+        query_terms = set(query.lower().split())
+
+        scored = []
+        for r in results:
+            # Keyword score
+            text = (r.get("search_text") or r.get("name", "")).lower()
+            kw_matches = sum(1 for t in query_terms if t in text)
+            kw_score = kw_matches / len(query_terms) if query_terms else 0
+
+            # Semantic score (lower distance = better)
+            semantic_score = 1.0 - min(r["distance"], 1.0)
+
+            # Hybrid
+            hybrid = (1 - hybrid_weight) * semantic_score + hybrid_weight * kw_score
+            r["hybrid_score"] = hybrid
+            scored.append(r)
+
+        scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
+        return scored[:k]
+
+    def clear(self) -> None:
+        """Clear all data from the index."""
+        if self._conn:
+            self._conn.execute("DELETE FROM declarations")
+            self._conn.commit()
+
+        # Remove usearch index file
+        if self.index_path.exists():
+            self.index_path.unlink()
+        self._index = None
+
+        self._file_hashes = {}
+        if self.hashes_path.exists():
+            self.hashes_path.unlink()
+
+    def close(self) -> None:
+        """Close database connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
