@@ -7,6 +7,10 @@ Architecture:
 - usearch: Binary HNSW index for vector similarity search
 - SQLite: Metadata storage with indexes for kind/module filtering
 - Query flow: embed -> usearch.search() -> SQLite JOIN for metadata
+
+Extended for SineQuaNon:
+- symbol_frequency: Track how common each constant is (rarity = discriminative power)
+- triggers: Reverse index mapping constants to declarations that use them
 """
 
 from __future__ import annotations
@@ -14,7 +18,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Callable
@@ -118,11 +124,12 @@ class LeanSearchIndex:
         return self._conn
 
     def _init_db(self) -> None:
-        """Create SQLite schema for declaration metadata."""
+        """Create SQLite schema for declaration metadata and SineQuaNon tables."""
         conn = self._conn
         if conn is None:
             return
 
+        # Main declarations table (extended with source column)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS declarations (
                 id INTEGER PRIMARY KEY,
@@ -133,7 +140,8 @@ class LeanSearchIndex:
                 docstring TEXT,
                 file_path TEXT,
                 line INTEGER,
-                search_text TEXT
+                search_text TEXT,
+                source TEXT DEFAULT 'project'
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kind ON declarations(kind)")
@@ -141,6 +149,46 @@ class LeanSearchIndex:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_path ON declarations(file_path)"
         )
+
+        # Try to add source column if table exists but column doesn't
+        # Must happen BEFORE creating index on source column
+        try:
+            conn.execute(
+                "ALTER TABLE declarations ADD COLUMN source TEXT DEFAULT 'project'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_source ON declarations(source)")
+
+        # Symbol frequency table for SineQuaNon
+        # Tracks how common each constant is across all declarations
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_frequency (
+                name TEXT PRIMARY KEY,
+                count INTEGER DEFAULT 0,
+                rarity_score REAL DEFAULT 0.0
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rarity ON symbol_frequency(rarity_score DESC)"
+        )
+
+        # Triggers table for SineQuaNon
+        # Reverse index: which declarations USE each constant?
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS triggers (
+                constant TEXT,
+                decl_id INTEGER,
+                is_type_ref BOOLEAN DEFAULT 1,
+                PRIMARY KEY (constant, decl_id),
+                FOREIGN KEY (decl_id) REFERENCES declarations(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trigger_const ON triggers(constant)"
+        )
+
         conn.commit()
 
     def load_file_hashes(self) -> dict[str, str]:
@@ -523,3 +571,237 @@ class LeanSearchIndex:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+    # ==================== SineQuaNon Support ====================
+
+    def add_triggers(
+        self,
+        decl_name: str,
+        type_refs: list[str],
+        value_refs: list[str] | None = None,
+    ) -> None:
+        """Add trigger entries for a declaration.
+
+        Args:
+            decl_name: Fully qualified declaration name
+            type_refs: Constants appearing in the type signature
+            value_refs: Constants appearing in the value/proof
+        """
+        conn = self._get_db()
+
+        # Get declaration ID
+        row = conn.execute(
+            "SELECT id FROM declarations WHERE name = ?", (decl_name,)
+        ).fetchone()
+        if not row:
+            return
+
+        decl_id = row[0]
+
+        # Add type references (more important for SineQuaNon)
+        for const in type_refs:
+            if const and not const.startswith("_"):
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO triggers (constant, decl_id, is_type_ref) VALUES (?, ?, 1)",
+                        (const, decl_id),
+                    )
+                except sqlite3.Error:
+                    pass
+
+        # Add value references (less weight but still useful)
+        if value_refs:
+            for const in value_refs:
+                if const and not const.startswith("_"):
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO triggers (constant, decl_id, is_type_ref) VALUES (?, ?, 0)",
+                            (const, decl_id),
+                        )
+                    except sqlite3.Error:
+                        pass
+
+        conn.commit()
+
+    def build_symbol_frequency(self) -> int:
+        """Build symbol frequency table from all triggers.
+
+        Computes rarity score: log(total / count) for each constant.
+        Higher rarity = more discriminative for SineQuaNon.
+
+        Returns:
+            Number of unique symbols indexed
+        """
+        conn = self._get_db()
+
+        # Count occurrences of each constant
+        conn.execute("DELETE FROM symbol_frequency")
+
+        # Insert counts from triggers
+        conn.execute("""
+            INSERT INTO symbol_frequency (name, count)
+            SELECT constant, COUNT(DISTINCT decl_id)
+            FROM triggers
+            GROUP BY constant
+        """)
+
+        # Get total for rarity calculation
+        total_row = conn.execute("SELECT SUM(count) FROM symbol_frequency").fetchone()
+        total = total_row[0] if total_row and total_row[0] else 1
+
+        # Compute rarity scores: log(total / count)
+        # Higher score = rarer = more discriminative
+        conn.execute(f"""
+            UPDATE symbol_frequency
+            SET rarity_score = {math.log(total)} - LOG(count)
+        """)
+
+        conn.commit()
+
+        count_row = conn.execute("SELECT COUNT(*) FROM symbol_frequency").fetchone()
+        return count_row[0] if count_row else 0
+
+    def get_rarity(self, constant: str) -> float:
+        """Get rarity score for a constant.
+
+        Args:
+            constant: Fully qualified constant name
+
+        Returns:
+            Rarity score (higher = rarer = more discriminative)
+            Returns 1.0 for unknown constants (assume rare)
+        """
+        conn = self._get_db()
+        row = conn.execute(
+            "SELECT rarity_score FROM symbol_frequency WHERE name = ?", (constant,)
+        ).fetchone()
+        return row[0] if row else 1.0
+
+    def get_decls_using(self, constant: str, type_only: bool = False) -> list[int]:
+        """Find declarations that use a constant.
+
+        Args:
+            constant: Fully qualified constant name
+            type_only: If True, only return declarations where constant appears in type
+
+        Returns:
+            List of declaration IDs
+        """
+        conn = self._get_db()
+
+        if type_only:
+            rows = conn.execute(
+                "SELECT decl_id FROM triggers WHERE constant = ? AND is_type_ref = 1",
+                (constant,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT decl_id FROM triggers WHERE constant = ?", (constant,)
+            ).fetchall()
+
+        return [r[0] for r in rows]
+
+    def get_by_ids(self, ids: list[int]) -> list[dict[str, Any]]:
+        """Get declarations by their IDs.
+
+        Args:
+            ids: List of declaration IDs
+
+        Returns:
+            List of declaration dicts
+        """
+        if not ids:
+            return []
+
+        conn = self._get_db()
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT * FROM declarations WHERE id IN ({placeholders})", ids
+        ).fetchall()
+
+        # Preserve order of input IDs
+        id_to_row = {row["id"]: dict(row) for row in rows}
+        return [id_to_row[i] for i in ids if i in id_to_row]
+
+    def search_by_triggers(
+        self,
+        constants: set[str],
+        k: int = 10,
+        type_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Search for declarations using SineQuaNon trigger matching.
+
+        Args:
+            constants: Set of constants extracted from goal
+            k: Number of results to return
+            type_only: Only match constants in type signatures
+
+        Returns:
+            List of declarations ranked by trigger overlap * rarity
+        """
+        if not constants:
+            return []
+
+        # Get rarity scores for all constants
+        rarity = {c: self.get_rarity(c) for c in constants}
+
+        # Select top triggers by rarity (most discriminative)
+        triggers = sorted(constants, key=lambda c: rarity[c], reverse=True)[:5]
+
+        if not triggers:
+            return []
+
+        # Reverse lookup: find declarations using these triggers
+        candidates: dict[int, float] = {}  # decl_id -> score
+        for trigger in triggers:
+            trigger_weight = rarity[trigger]
+            for decl_id in self.get_decls_using(trigger, type_only=type_only):
+                candidates[decl_id] = candidates.get(decl_id, 0) + trigger_weight
+
+        if not candidates:
+            return []
+
+        # Sort by score (descending) and get top-k
+        top_ids = sorted(candidates.keys(), key=lambda i: candidates[i], reverse=True)[
+            :k
+        ]
+
+        # Get full declaration info
+        results = self.get_by_ids(top_ids)
+
+        # Add trigger scores
+        for r in results:
+            r["trigger_score"] = candidates.get(r["id"], 0)
+
+        return results
+
+
+def extract_constants_from_text(text: str) -> set[str]:
+    """Extract qualified constant names from goal/type text.
+
+    Matches patterns like:
+    - List.length
+    - Nat.add_comm
+    - Function.Injective.comp
+    - List.find?
+    - Option.some'
+
+    Args:
+        text: Goal state or type expression text
+
+    Returns:
+        Set of qualified constant names
+    """
+    # Match qualified names: Foo.bar, Foo.Bar.baz, etc.
+    # Must start with uppercase (module), can have multiple components
+    # Allows trailing ? or ' for Lean naming conventions
+    # Use (?![a-zA-Z0-9_]) instead of \b to handle special chars at end
+    pattern = (
+        r"(?<![a-zA-Z0-9_])([A-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_?']+)+)(?![a-zA-Z0-9_])"
+    )
+    matches = re.findall(pattern, text)
+
+    # Filter out some very common/generic ones that aren't useful triggers
+    common = {"Eq.refl", "Eq.trans", "Eq.symm", "True.intro", "False.elim"}
+
+    return {m for m in matches if m not in common}
