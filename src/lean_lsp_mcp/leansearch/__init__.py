@@ -412,43 +412,183 @@ class LeanSearchManager:
             query, embed_fn, k=num_results, hybrid_weight=hybrid_weight
         )
 
+    def _goal_to_loogle_query(self, goal_state: str) -> str | None:
+        """Convert a goal state to a loogle query pattern.
+
+        Examples:
+            "⊢ List.length (List.map f xs) = List.length xs"
+            -> "List.length (List.map _ _) = List.length _"
+
+            "h : x ∈ xs ⊢ List.find? (· == x) xs = some x"
+            -> "List.find? _ _ = some _"
+        """
+        import re
+
+        # Extract the target (after ⊢)
+        if "⊢" in goal_state:
+            target = goal_state.split("⊢")[-1].strip()
+        else:
+            target = goal_state.strip()
+
+        if not target:
+            return None
+
+        # Strategy: Keep qualified names (Foo.bar), replace standalone variables
+        pattern = target
+
+        # First, protect qualified names by marking them
+        # Match patterns like List.length, Option.some, etc.
+        qualified_names: list[str] = []
+
+        def protect_qualified(m: re.Match) -> str:
+            qualified_names.append(m.group(0))
+            return f"__QUAL{len(qualified_names) - 1}__"
+
+        # Protect qualified names (capitalized.anything or anything.anything.etc)
+        pattern = re.sub(
+            r"\b([A-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_?']+)+)\b",
+            protect_qualified,
+            pattern,
+        )
+
+        # Replace standalone lowercase variables (single word, not part of qualified)
+        # But keep common Lean operators/keywords
+        keep_words = {
+            "true",
+            "false",
+            "some",
+            "none",
+            "fun",
+            "let",
+            "if",
+            "then",
+            "else",
+        }
+
+        def replace_var(m: re.Match) -> str:
+            word = m.group(1)
+            if word in keep_words:
+                return word
+            return "_"
+
+        pattern = re.sub(r"\b([a-z][a-z0-9_']*)\b", replace_var, pattern)
+
+        # Restore qualified names
+        for i, name in enumerate(qualified_names):
+            pattern = pattern.replace(f"__QUAL{i}__", name)
+
+        # Clean up multiple underscores and spaces
+        pattern = re.sub(r"_\s+_", "_ _", pattern)
+        pattern = re.sub(r"\s+", " ", pattern)
+        pattern = pattern.strip()
+
+        # If the pattern has only underscores (no structure), return None
+        # But keep patterns with operators - they can still be useful for loogle
+        has_structure = bool(
+            re.search(r"[A-Z][a-zA-Z0-9_]*", pattern)  # Has a capitalized name
+            or re.search(r"\d+", pattern)  # Has a number
+            or ("=" in pattern and pattern.count("_") >= 2)  # Equation with wildcards
+        )
+
+        if not has_structure and re.fullmatch(r"[_\s]+", pattern):
+            return None
+
+        return pattern
+
     def search_by_goal(
-        self, goal_state: str, num_results: int = 10
+        self, goal_state: str, num_results: int = 10, use_loogle: bool = True
     ) -> list[dict[str, Any]]:
         """Find lemmas relevant to a goal state.
 
-        Uses premise graph (if available) combined with semantic search.
+        Uses a hybrid approach:
+        1. Loogle (remote API) for mathlib pattern matching
+        2. Local semantic search for project-specific lemmas
+        3. Premise graph if available
 
         Args:
             goal_state: The goal state text
             num_results: Number of results
+            use_loogle: Whether to query loogle for mathlib results
 
         Returns:
             List of relevant declarations
         """
-        if not self._ready:
-            raise RuntimeError("Index not ready. Call index_project() first.")
+        results: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
 
-        embed_fn, _ = self._get_embed_fn()
+        # 1. Try loogle for mathlib lemmas (type pattern matching)
+        if use_loogle:
+            loogle_query = self._goal_to_loogle_query(goal_state)
+            if loogle_query:
+                try:
+                    from ..loogle import loogle_remote
 
-        # Use premise search if available
-        if self._premise_search is not None:
-            return self._premise_search.search_by_goal(
-                goal_state, embed_fn, num_results
-            )
+                    loogle_results = loogle_remote(loogle_query, num_results)
+                    if isinstance(loogle_results, list):
+                        for i, r in enumerate(loogle_results):
+                            name = r.get("name", "")
+                            if name and name not in seen_names:
+                                results.append(
+                                    {
+                                        "name": name,
+                                        "kind": r.get("kind", "theorem"),
+                                        "signature": r.get("type", ""),
+                                        "module": r.get("module", ""),
+                                        "score": 1.0
+                                        - (i * 0.05),  # Rank by loogle order
+                                        "source": "loogle",
+                                    }
+                                )
+                                seen_names.add(name)
+                except Exception as e:
+                    logger.debug(f"Loogle query failed: {e}")
 
-        # Fallback to regular semantic search with goal-aware query expansion
-        index = self._get_index()
+        # 2. Use premise search if available
+        if self._ready and self._premise_search is not None:
+            embed_fn, _ = self._get_embed_fn()
+            try:
+                premise_results = self._premise_search.search_by_goal(
+                    goal_state, embed_fn, num_results
+                )
+                for r in premise_results:
+                    name = r.get("name", "")
+                    if name and name not in seen_names:
+                        r["source"] = "premise"
+                        results.append(r)
+                        seen_names.add(name)
+            except Exception as e:
+                logger.debug(f"Premise search failed: {e}")
 
-        # Extract the target from goal state
-        if "⊢" in goal_state:
-            target = goal_state.split("⊢")[-1].strip()
-        else:
-            target = goal_state
+        # 3. Fall back to semantic search on local index
+        if self._ready:
+            index = self._get_index()
+            embed_fn, _ = self._get_embed_fn()
 
-        # Search without kind filter - include theorems, lemmas, and defs
-        # that might be relevant to the goal
-        return index.search_by_text(target, embed_fn, k=num_results)
+            # Extract target for semantic search
+            if "⊢" in goal_state:
+                target = goal_state.split("⊢")[-1].strip()
+            else:
+                target = goal_state
+
+            try:
+                semantic_results = index.search_by_text(target, embed_fn, k=num_results)
+                for r in semantic_results:
+                    name = r.get("name", "")
+                    if name and name not in seen_names:
+                        r["source"] = "semantic"
+                        # Normalize score key
+                        if "hybrid_score" in r:
+                            r["score"] = r["hybrid_score"]
+                        elif "distance" in r:
+                            r["score"] = 1.0 - min(r["distance"], 1.0)
+                        results.append(r)
+                        seen_names.add(name)
+            except Exception as e:
+                logger.debug(f"Semantic search failed: {e}")
+
+        # Sort by score and return top results
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return results[:num_results]
 
     async def ensure_indexed(self, project_root: Path | None = None) -> bool:
         """Ensure the project is indexed, indexing if necessary.
