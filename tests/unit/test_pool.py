@@ -1,8 +1,6 @@
 """Unit tests for REPL pool manager."""
 
-import pytest
-
-from lean_lsp_mcp.pool import SnippetResult, split_snippet, SplitSnippet
+from lean_lsp_mcp.pool import SnippetResult, split_snippet
 from lean_lsp_mcp.pool.settings import PoolSettings
 
 
