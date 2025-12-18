@@ -57,6 +57,7 @@ class Manager:
         max_repl_uses: int = pool_settings.max_repl_uses,
         max_repl_mem: int = pool_settings.max_repl_mem,
         max_wait: float = pool_settings.max_wait,
+        command_timeout: float = pool_settings.command_timeout,
         init_repls: dict[str, int] | None = None,
     ) -> None:
         self.repl_path = repl_path
@@ -65,6 +66,7 @@ class Manager:
         self.max_repl_uses = max_repl_uses
         self.max_repl_mem = max_repl_mem
         self.max_wait = max_wait
+        self.command_timeout = command_timeout
         self.init_repls = init_repls or {}
 
         self._lock: asyncio.Lock | None = None
@@ -292,7 +294,7 @@ class Manager:
         self,
         base_code: str,
         snippets: list[str],
-        timeout: float = 60.0,
+        timeout: float | None = None,
     ) -> list[SnippetResult]:
         """Run multiple code snippets from the same base context.
 
@@ -311,6 +313,9 @@ class Manager:
         Returns:
             List of SnippetResult for each snippet
         """
+        if timeout is None:
+            timeout = self.command_timeout
+
         # Split into header (imports) and body
         split = split_snippet(base_code)
         header = split.header

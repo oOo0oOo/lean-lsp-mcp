@@ -819,7 +819,6 @@ async def _multi_attempt_pool(
         pool_results = await pool_manager.run_multi_attempt(
             base_code=base_code,
             snippets=snippets,
-            timeout=60.0,
         )
 
         # Convert pool results to AttemptResult format

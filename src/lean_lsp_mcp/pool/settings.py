@@ -19,7 +19,8 @@ class PoolSettings(BaseSettings):
     max_repls: int = max((os.cpu_count() or 1) - 1, 1)
     max_repl_uses: int = -1  # -1 = unlimited
     max_repl_mem: int = 8 * 1024  # MB (8GB default)
-    max_wait: int = 60  # seconds
+    max_wait: int = 60  # seconds to wait for worker
+    command_timeout: int = 60  # seconds per REPL command
 
     # Pre-initialized REPLs by header
     init_repls: dict[str, int] = {}
