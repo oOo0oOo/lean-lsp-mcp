@@ -312,9 +312,7 @@ def _build_outline_entry(
     if kind in ("macro", "notation", "syntax", "elab"):
         tag = kind.capitalize()
     else:
-        tag = _detect_tag(
-            name, kind, type_sig, bool(fields), sym.get("_keyword")
-        )
+        tag = _detect_tag(name, kind, type_sig, bool(fields), sym.get("_keyword"))
     start = sym["range"]["start"]["line"] + 1
     end = sym["range"]["end"]["line"] + 1
 

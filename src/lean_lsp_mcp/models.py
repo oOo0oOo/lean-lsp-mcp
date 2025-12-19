@@ -5,7 +5,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 # Re-export syntax models for convenience
-from lean_lsp_mcp.syntax_utils import SyntaxRange, MacroExpansion
+from lean_lsp_mcp.syntax_utils import MacroExpansion
 
 
 class LocalSearchResult(BaseModel):
@@ -111,7 +111,9 @@ class OutlineEntry(BaseModel):
         default_factory=list, description="Nested declarations"
     )
     # Syntax metadata
-    is_macro: bool = Field(default=False, description="True if this is a macro definition")
+    is_macro: bool = Field(
+        default=False, description="True if this is a macro definition"
+    )
     is_notation: bool = Field(
         default=False, description="True if this is a notation definition"
     )
