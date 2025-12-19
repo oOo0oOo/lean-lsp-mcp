@@ -76,13 +76,27 @@ def _extract_fields(info: str, name: str) -> List[Tuple[str, str]]:
     return fields
 
 
+def _extract_macro_type(line: str) -> Optional[str]:
+    """Extract the macro output type (term, tactic, command) from a macro definition."""
+    # Patterns: `macro ... : term`, `macro ... : tactic`, `macro ... : command`
+    if ": term" in line:
+        return "term"
+    if ": tactic" in line:
+        return "tactic"
+    if ": command" in line:
+        return "command"
+    return None
+
+
 def _extract_declarations(content: str, start: int, end: int) -> List[Dict]:
-    """Extract theorem/lemma/def declarations from file content."""
+    """Extract theorem/lemma/def/macro/notation declarations from file content."""
     lines = content.splitlines()
     decls, i = [], start
 
     while i < min(end, len(lines)):
         line = lines[i].strip()
+
+        # Standard declarations (theorem, lemma, def)
         for keyword in ["theorem", "lemma", "def"]:
             if line.startswith(f"{keyword} "):
                 name = line[len(keyword) :].strip().split()[0]
@@ -120,6 +134,104 @@ def _extract_declarations(content: str, start: int, end: int) -> List[Dict]:
                         }
                     )
                 break
+
+        # Macro definitions: macro "name" ... : term/tactic/command
+        if line.startswith("macro "):
+            # Extract macro name from quoted string or identifier
+            macro_match = re.search(r'macro\s+"([^"]+)"', line)
+            if macro_match:
+                name = macro_match.group(1)
+            else:
+                # Fallback: take first word after 'macro'
+                parts = line[6:].strip().split()
+                name = parts[0] if parts else "macro"
+
+            macro_type = _extract_macro_type(line)
+            decls.append(
+                {
+                    "name": name,
+                    "kind": "macro",
+                    "range": {
+                        "start": {"line": i, "character": 0},
+                        "end": {"line": i, "character": len(lines[i])},
+                    },
+                    "_keyword": "macro",
+                    "_is_macro": True,
+                    "_macro_type": macro_type,
+                }
+            )
+
+        # Notation definitions: notation ... => ...
+        elif line.startswith("notation"):
+            # Extract the notation pattern (between notation and =>)
+            if "=>" in line:
+                pattern_part = line[8:].split("=>")[0].strip()
+                # Try to extract a meaningful name
+                name_match = re.search(r'"([^"]+)"', pattern_part)
+                if name_match:
+                    name = name_match.group(1)
+                else:
+                    name = pattern_part[:30].strip() if pattern_part else "notation"
+            else:
+                name = "notation"
+
+            decls.append(
+                {
+                    "name": name,
+                    "kind": "notation",
+                    "range": {
+                        "start": {"line": i, "character": 0},
+                        "end": {"line": i, "character": len(lines[i])},
+                    },
+                    "_keyword": "notation",
+                    "_is_notation": True,
+                }
+            )
+
+        # Syntax definitions: syntax ...
+        elif line.startswith("syntax "):
+            syntax_match = re.search(r'syntax\s+"([^"]+)"', line)
+            if syntax_match:
+                name = syntax_match.group(1)
+            else:
+                parts = line[7:].strip().split()
+                name = parts[0] if parts else "syntax"
+
+            decls.append(
+                {
+                    "name": name,
+                    "kind": "syntax",
+                    "range": {
+                        "start": {"line": i, "character": 0},
+                        "end": {"line": i, "character": len(lines[i])},
+                    },
+                    "_keyword": "syntax",
+                    "_is_syntax": True,
+                }
+            )
+
+        # Elab definitions: elab ...
+        elif line.startswith("elab ") or line.startswith("elab_rules"):
+            elab_match = re.search(r'elab\s+"([^"]+)"', line)
+            if elab_match:
+                name = elab_match.group(1)
+            else:
+                parts = line.split()[1] if len(line.split()) > 1 else "elab"
+                name = parts
+
+            decls.append(
+                {
+                    "name": name,
+                    "kind": "elab",
+                    "range": {
+                        "start": {"line": i, "character": 0},
+                        "end": {"line": i, "character": len(lines[i])},
+                    },
+                    "_keyword": "elab",
+                    "_is_syntax": True,
+                }
+            )
+
         i += 1
     return decls
 
@@ -195,9 +307,14 @@ def _build_outline_entry(
     type_sig = sym.get("_type") or type_sigs.get(name, "")
     fields = fields_map.get(name, [])
 
-    tag = _detect_tag(
-        name, sym.get("kind", ""), type_sig, bool(fields), sym.get("_keyword")
-    )
+    # Determine tag, with special handling for syntax definitions
+    kind = sym.get("kind", "")
+    if kind in ("macro", "notation", "syntax", "elab"):
+        tag = kind.capitalize()
+    else:
+        tag = _detect_tag(
+            name, kind, type_sig, bool(fields), sym.get("_keyword")
+        )
     start = sym["range"]["start"]["line"] + 1
     end = sym["range"]["end"]["line"] + 1
 
@@ -214,6 +331,12 @@ def _build_outline_entry(
         for fname, ftype in fields
     ]
 
+    # Syntax metadata
+    is_macro = sym.get("_is_macro", False)
+    is_notation = sym.get("_is_notation", False)
+    is_syntax_extension = sym.get("_is_syntax", False) or kind == "elab"
+    macro_type = sym.get("_macro_type")
+
     return OutlineEntry(
         name=name,
         kind=tag,
@@ -221,7 +344,14 @@ def _build_outline_entry(
         end_line=end,
         type_signature=type_sig if type_sig else None,
         children=children,
+        is_macro=is_macro,
+        is_notation=is_notation,
+        is_syntax_extension=is_syntax_extension,
+        macro_type=macro_type,
     )
+
+
+SYNTAX_KINDS = {"macro", "notation", "syntax", "elab"}
 
 
 def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
@@ -237,11 +367,22 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
     ]
 
     symbols = client.get_document_symbols(path)
-    if not symbols and not imports:
+
+    # Extract top-level declarations (including macro/notation/syntax)
+    num_lines = len(content.splitlines())
+    top_level_decls = _extract_declarations(content, 0, num_lines)
+
+    if not symbols and not imports and not top_level_decls:
         return FileOutline(imports=[], declarations=[])
 
     # Flatten symbol tree and extract namespace declarations
     all_symbols = _flatten_symbols(symbols, content=content)
+
+    # Add top-level declarations that aren't in LSP symbols
+    lsp_names = {s["name"] for s, _ in all_symbols}
+    for decl in top_level_decls:
+        if decl["name"] not in lsp_names:
+            all_symbols.append((decl, 0))
 
     # Get info trees only for LSP symbols (not extracted declarations)
     lsp_methods = [
@@ -270,6 +411,7 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
             sym.get("kind") in METHOD_KIND
             or sym.get("_keyword")
             or sym.get("kind") == "namespace"
+            or sym.get("kind") in SYNTAX_KINDS
         ):
             entry = _build_outline_entry(sym, type_sigs, fields_map, indent)
             if entry:
