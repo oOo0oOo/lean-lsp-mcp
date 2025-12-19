@@ -210,15 +210,13 @@ def get_macro_expansion_at_position(
 ) -> Optional[MacroExpansion]:
     """Get macro expansion info at a position, including nested expansions.
 
+    DEPRECATED: InfoTree positions have variable offsets from file positions.
+    Use get_macro_expansion_by_text() instead for reliable matching.
+
     Args:
         trees: List of parsed InfoTree dictionaries from leanclient.get_info_trees()
-        line: Line in Lean's internal format (1-indexed file line + 1)
+        line: Line in Lean's internal format (varies based on file structure)
         col: Column in 0-indexed format
-
-    Note:
-        Lean's InfoTree uses positions that are offset from standard file positions:
-        - Lines: 1-indexed file line + 1 (so file line 6 -> InfoTree line 7)
-        - Columns: 0-indexed
 
     Returns:
         MacroExpansion if found at position, None otherwise
@@ -227,6 +225,44 @@ def get_macro_expansion_at_position(
         exp = _find_expansion_at_position(tree, line, col)
         if exp:
             return exp
+    return None
+
+
+def get_macro_expansion_by_text(
+    trees: List[Dict[str, Any]], source_text: str
+) -> Optional[MacroExpansion]:
+    """Get macro expansion by matching source text.
+
+    This is the reliable way to find macro expansions - by matching the
+    source syntax text rather than positions (which have variable offsets).
+
+    Args:
+        trees: List of parsed InfoTree dictionaries from leanclient.get_info_trees()
+        source_text: The source code text to find expansion for (from hover range)
+
+    Returns:
+        MacroExpansion if found matching the source text, None otherwise
+    """
+    source_text = source_text.strip()
+    if not source_text:
+        return None
+
+    # Get all macro expansions and find one matching the source text
+    for tree in trees:
+        all_expansions = get_all_macro_expansions(tree)
+        for exp in all_expansions:
+            # Check if source_text matches the original (before expansion)
+            orig = exp.original.strip()
+            # Handle multi-line originals - first line often has the macro call
+            first_line = orig.split("\n")[0].strip()
+
+            if source_text == orig or source_text == first_line:
+                return exp
+
+            # Also try matching if source_text is contained in original
+            if source_text in orig and len(source_text) >= 2:
+                return exp
+
     return None
 
 
