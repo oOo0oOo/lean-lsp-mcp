@@ -52,7 +52,9 @@ def _parse_range(range_info: Optional[Dict[str, Any]]) -> Optional[SyntaxRange]:
         return None
 
 
-def _get_range_from_node(node: Dict[str, Any], max_depth: int = 3) -> Optional[Dict[str, Any]]:
+def _get_range_from_node(
+    node: Dict[str, Any], max_depth: int = 3
+) -> Optional[Dict[str, Any]]:
     """Get range from node or its descendants.
 
     MacroExpansion nodes often don't have range directly, but their
