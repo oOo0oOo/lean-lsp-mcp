@@ -97,7 +97,15 @@ The goal is to help AI agents understand Lean 4 custom syntax automatically.
 - Enhanced diagnostic_messages with macro context
 - Created TicTacToe DSL stress test
 
-**InfoTree Line Coordinates:**
-- InfoTree line = 1-indexed file line + 1
-- InfoTree column = 0-indexed
-- To query: `get_macro_expansion_at_position(trees, line + 1, column - 1)`
+**InfoTree Line Coordinates (IMPORTANT):**
+- InfoTree uses line numbers with a VARIABLE offset from file lines (not a fixed +1)
+- The offset grows throughout the file due to elaborated content
+- **DO NOT use position-based lookup** - it's unreliable
+- Use `get_macro_expansion_by_text(trees, source_text)` instead
+- The source_text should be extracted from the hover range (which uses correct file coordinates)
+
+**How hover expansion now works:**
+1. Get hover at file position (LSP uses correct 0-indexed file lines)
+2. Extract symbol from hover range
+3. Search InfoTree for macro expansion matching that symbol text
+4. Return expansion with nested expansions if found

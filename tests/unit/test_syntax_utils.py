@@ -5,6 +5,7 @@ from lean_lsp_mcp.syntax_utils import (
     MacroExpansion,
     SyntaxRange,
     get_macro_expansion_at_position,
+    get_macro_expansion_by_text,
     get_all_macro_expansions,
     _extract_constants,
     _find_expansion_at_position,
@@ -310,3 +311,70 @@ class TestMacroExpansionModel:
         )
         assert outer.nested_expansions[0].original == "5 + 5"
         assert outer.nested_expansions[0].expanded == "HAdd.hAdd 5 5"
+
+
+class TestGetMacroExpansionByText:
+    """Tests for text-based macro expansion lookup."""
+
+    def test_exact_match(self):
+        """Test matching exact source text."""
+        trees = [
+            {
+                "type": "Command",
+                "children": [
+                    {
+                        "type": "MacroExpansion",
+                        "extra": "center\n===>\nb2",
+                        "children": [],
+                    }
+                ],
+            }
+        ]
+        result = get_macro_expansion_by_text(trees, "center")
+        assert result is not None
+        assert result.original == "center"
+        assert result.expanded == "b2"
+
+    def test_multiline_original_first_line_match(self):
+        """Test matching first line of multiline original."""
+        trees = [
+            {
+                "type": "Command",
+                "children": [
+                    {
+                        "type": "MacroExpansion",
+                        "extra": "double! 5\n-- comment\n===>\n5 + 5",
+                        "children": [],
+                    }
+                ],
+            }
+        ]
+        result = get_macro_expansion_by_text(trees, "double! 5")
+        assert result is not None
+        assert "double! 5" in result.original
+        assert result.expanded == "5 + 5"
+
+    def test_no_match(self):
+        """Test no match when source text not found."""
+        trees = [
+            {
+                "type": "Command",
+                "children": [
+                    {
+                        "type": "MacroExpansion",
+                        "extra": "foo\n===>\nbar",
+                        "children": [],
+                    }
+                ],
+            }
+        ]
+        result = get_macro_expansion_by_text(trees, "notfound")
+        assert result is None
+
+    def test_empty_source_text(self):
+        """Test empty source text returns None."""
+        trees = [{"type": "Command", "children": []}]
+        result = get_macro_expansion_by_text(trees, "")
+        assert result is None
+        result = get_macro_expansion_by_text(trees, "   ")
+        assert result is None

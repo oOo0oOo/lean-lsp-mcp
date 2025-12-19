@@ -60,7 +60,7 @@ from lean_lsp_mcp.models import (
     StateSearchResults,
     TermGoalState,
 )
-from lean_lsp_mcp.syntax_utils import get_macro_expansion_at_position
+from lean_lsp_mcp.syntax_utils import get_macro_expansion_by_text
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
@@ -804,17 +804,14 @@ def hover(
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
     # Get macro expansion info if available
-    # InfoTree uses Lean's internal positions which have a +1 line offset from
-    # 1-indexed file lines, and 0-indexed columns. Convert from user 1-indexed.
+    # InfoTree positions have variable offsets from file positions, so we match
+    # by source text extracted from the hover range instead of positions.
     macro_expansion = None
     try:
-        info_trees = client.get_info_trees(rel_path, parse=True)
-        if info_trees:
-            # line: 1-indexed + 1 for Lean's internal offset
-            # column: 1-indexed - 1 for 0-indexed
-            macro_expansion = get_macro_expansion_at_position(
-                info_trees, line + 1, column - 1
-            )
+        if symbol:  # Only look for expansion if we have a symbol
+            info_trees = client.get_info_trees(rel_path, parse=True)
+            if info_trees:
+                macro_expansion = get_macro_expansion_by_text(info_trees, symbol)
     except Exception:
         # Info tree extraction can fail for various reasons, don't break hover
         pass
