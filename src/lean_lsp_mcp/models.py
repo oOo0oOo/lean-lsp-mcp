@@ -140,6 +140,9 @@ class AttemptResult(BaseModel):
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics for this attempt"
     )
+    macro_expansion: Optional[MacroExpansion] = Field(
+        None, description="Macro expansion if snippet uses custom syntax"
+    )
 
 
 class BuildResult(BaseModel):
