@@ -15,6 +15,12 @@ Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
 lint = ["ruff>=0.2.0"]
 dev = ["ruff>=0.2.0", "pytest>=8.3", "anyio>=4.4", "pytest-asyncio>=0.23"]
 
+[tool.ruff]
+exclude = [
+    "tests/test_project/.lake",
+    "tests/mathlib_project/.lake",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]

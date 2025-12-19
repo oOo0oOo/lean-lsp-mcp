@@ -36,6 +36,23 @@ def main():
         type=str,
         help="Override loogle cache location (default: ~/.cache/lean-lsp-mcp/loogle)",
     )
+    parser.add_argument(
+        "--repl",
+        action="store_true",
+        help="Enable REPL integration for stateful code evaluation and tactic mode. "
+        "Auto-builds leanprover-community/repl on first use.",
+    )
+    parser.add_argument(
+        "--repl-cache-dir",
+        type=str,
+        help="Override REPL cache location (default: ~/.cache/lean-lsp-mcp/repl)",
+    )
+    parser.add_argument(
+        "--repl-timeout",
+        type=int,
+        default=60,
+        help="REPL command timeout in seconds (default: 60)",
+    )
     args = parser.parse_args()
 
     # Set env vars from CLI args (CLI takes precedence over env vars)
@@ -43,6 +60,12 @@ def main():
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:
         os.environ["LEAN_LOOGLE_CACHE_DIR"] = args.loogle_cache_dir
+    if args.repl:
+        os.environ["LEAN_REPL_ENABLED"] = "true"
+    if args.repl_cache_dir:
+        os.environ["LEAN_REPL_CACHE_DIR"] = args.repl_cache_dir
+    if args.repl_timeout:
+        os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
 
     mcp.settings.host = args.host
     mcp.settings.port = args.port

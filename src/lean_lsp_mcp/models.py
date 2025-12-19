@@ -108,6 +108,9 @@ class AttemptResult(BaseModel):
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics for this attempt"
     )
+    proof_state: Optional[int] = Field(
+        None, description="Proof state ID for continuing (tactic mode)"
+    )
 
 
 class BuildResult(BaseModel):
