@@ -26,6 +26,7 @@ from lean_lsp_mcp.client_utils import (
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
+from lean_lsp_mcp.syntax_utils import get_macro_expansion_at_position
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.models import (
     AttemptResult,
@@ -399,7 +400,9 @@ def _to_diagnostic_messages(
                 )
                 if expansion:
                     from_macro = True
-                    expanded_context = expansion.expanded[:200]  # Truncate for readability
+                    expanded_context = expansion.expanded[
+                        :200
+                    ]  # Truncate for readability
             except Exception:
                 pass
 

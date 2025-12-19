@@ -1,6 +1,5 @@
 """Tests for syntax_utils module - macro expansion extraction from InfoTrees."""
 
-import pytest
 from lean_lsp_mcp.syntax_utils import (
     MacroExpansion,
     SyntaxRange,
