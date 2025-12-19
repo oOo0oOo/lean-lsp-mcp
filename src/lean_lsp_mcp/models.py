@@ -4,6 +4,9 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+# Re-export syntax models for convenience
+from lean_lsp_mcp.syntax_utils import SyntaxRange, MacroExpansion
+
 
 class LocalSearchResult(BaseModel):
     name: str = Field(description="Declaration name")
@@ -43,6 +46,13 @@ class DiagnosticMessage(BaseModel):
     message: str = Field(description="Diagnostic message text")
     line: int = Field(description="Line (1-indexed)")
     column: int = Field(description="Column (1-indexed)")
+    # Macro expansion context
+    from_macro_expansion: bool = Field(
+        default=False, description="True if error originates from macro expansion"
+    )
+    expanded_context: Optional[str] = Field(
+        None, description="Expanded code that caused the error"
+    )
 
 
 class GoalState(BaseModel):
@@ -55,6 +65,10 @@ class GoalState(BaseModel):
     )
     goals_after: Optional[List[str]] = Field(
         None, description="Goals at line end (when column omitted)"
+    )
+    # Macro expansion for tactic
+    tactic_expansion: Optional[MacroExpansion] = Field(
+        None, description="Macro expansion if tactic uses custom syntax"
     )
 
 
@@ -71,6 +85,10 @@ class HoverInfo(BaseModel):
     info: str = Field(description="Type signature and documentation")
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics at this position"
+    )
+    # Macro expansion for custom syntax
+    macro_expansion: Optional[MacroExpansion] = Field(
+        None, description="Macro expansion if hovering over custom syntax"
     )
 
 
@@ -91,6 +109,17 @@ class OutlineEntry(BaseModel):
     )
     children: List["OutlineEntry"] = Field(
         default_factory=list, description="Nested declarations"
+    )
+    # Syntax metadata
+    is_macro: bool = Field(default=False, description="True if this is a macro definition")
+    is_notation: bool = Field(
+        default=False, description="True if this is a notation definition"
+    )
+    is_syntax_extension: bool = Field(
+        default=False, description="True if this is a syntax/elab definition"
+    )
+    macro_type: Optional[str] = Field(
+        None, description="Macro type: 'tactic', 'term', or 'command'"
     )
 
 
