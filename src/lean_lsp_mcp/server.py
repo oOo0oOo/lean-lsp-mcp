@@ -1043,11 +1043,26 @@ def _multi_attempt_lsp(
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
             goals = extract_goals_list(goal_result)
+
+            # Get macro expansion for the snippet if it uses custom syntax
+            macro_expansion = None
+            try:
+                info_trees = client.get_info_trees(rel_path, parse=True)
+                if info_trees:
+                    from lean_lsp_mcp.syntax_utils import get_macro_expansion_by_text
+
+                    macro_expansion = get_macro_expansion_by_text(
+                        info_trees, snippet_str
+                    )
+            except Exception:
+                pass  # Syntax expansion is optional
+
             results.append(
                 AttemptResult(
                     snippet=snippet_str,
                     goals=goals,
                     diagnostics=_to_diagnostic_messages(filtered_diag),
+                    macro_expansion=macro_expansion,
                 )
             )
 
