@@ -28,7 +28,7 @@ from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import ReplManager
-from lean_lsp_mcp import pool  # Kimina-style REPL pooling
+from lean_lsp_mcp.pool import Manager as PoolManager  # Kimina-style REPL pooling
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -99,7 +99,7 @@ class AppContext:
     repl_manager: ReplManager | None = None
     repl_enabled: bool = False
     # Kimina-style REPL pool (optional, for parallel execution)
-    pool_manager: "pool.Manager | None" = None
+    pool_manager: "PoolManager | None" = None
     pool_enabled: bool = False
 
 
@@ -109,7 +109,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_local_available = False
     repl_manager: ReplManager | None = None
     repl_enabled = False
-    pool_manager: pool.Manager | None = None
+    pool_manager: PoolManager | None = None
     pool_enabled = False
 
     try:
@@ -143,7 +143,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             if lean_project_path:
                 repl_path = os.environ.get("LEAN_REPL_PATH", "repl")
                 logger.info("REPL pool enabled, initializing...")
-                pool_manager = pool.Manager(
+                pool_manager = PoolManager(
                     repl_path=repl_path,
                     project_dir=str(lean_project_path),
                 )
