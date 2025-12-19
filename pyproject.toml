@@ -1,12 +1,12 @@
 [project]
 name = "lean-lsp-mcp"
-version = "0.17.0"
+version = "0.17.1"
 description = "Lean Theorem Prover MCP"
 authors = [{ name = "Oliver Dressler", email = "hey@oli.show" }]
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["leanclient==0.7.0", "mcp[cli]==1.24.0", "orjson>=3.11.1"]
+dependencies = ["leanclient==0.8.0", "mcp[cli]==1.25.0", "orjson>=3.11.1"]
 
 [project.urls]
 Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
