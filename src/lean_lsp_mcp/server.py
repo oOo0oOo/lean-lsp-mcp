@@ -41,6 +41,7 @@ from lean_lsp_mcp.models import (
     DiagnosticMessage,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
+    ExpansionVisualization,
     FileOutline,
     GoalState,
     HoverInfo,
@@ -1516,6 +1517,84 @@ async def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+@mcp.tool(
+    "lean_visualize_expansion",
+    annotations=ToolAnnotations(
+        title="Visualize Expansion",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def visualize_expansion(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> ExpansionVisualization:
+    """Generate SVG diagram of macro expansion at cursor position.
+
+    Returns an SVG visualization of how custom syntax expands, showing
+    the full expansion chain from user syntax to final Lean code.
+
+    Requires graphviz: pip install lean-lsp-mcp[viz]
+    """
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Get hover info to find the symbol text
+    hover = client.get_hover(rel_path, line - 1, column - 1)
+    check_lsp_response(hover, "get_hover", allow_none=True)
+
+    if not hover:
+        raise LeanToolError(f"No hover info at line {line}, column {column}")
+
+    # Extract symbol from hover range
+    symbol = None
+    if hover.get("range"):
+        try:
+            contents = get_file_contents(client.project_path, rel_path)
+            lines = contents.splitlines()
+            if line - 1 < len(lines):
+                start_col = hover["range"]["start"]["character"]
+                end_col = hover["range"]["end"]["character"]
+                symbol = lines[line - 1][start_col:end_col]
+        except Exception:
+            pass
+
+    if not symbol:
+        raise LeanToolError("Could not extract symbol at position")
+
+    # Get InfoTrees and find macro expansion
+    info_trees = client.get_info_trees(rel_path, parse=True)
+    if not info_trees:
+        raise LeanToolError("Could not retrieve InfoTrees")
+
+    expansion = get_macro_expansion_by_text(info_trees, symbol)
+    if not expansion:
+        raise LeanToolError(f"No macro expansion found for '{symbol}'")
+
+    # Generate visualization
+    try:
+        from lean_lsp_mcp.tree_viz import macro_expansion_to_dot, render_expansion_svg
+
+        dot = macro_expansion_to_dot(expansion)
+        svg = render_expansion_svg(expansion)
+    except ImportError as e:
+        raise LeanToolError(
+            f"Visualization requires graphviz: pip install lean-lsp-mcp[viz]. Error: {e}"
+        )
+    except Exception as e:
+        raise LeanToolError(f"Failed to generate visualization: {e}")
+
+    return ExpansionVisualization(svg=svg, dot=dot, expansion=expansion)
 
 
 @mcp.tool(

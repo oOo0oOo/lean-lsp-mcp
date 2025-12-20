@@ -15,6 +15,7 @@ Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
 yaml = ["PyYAML>=6.0"]
 lint = ["ruff>=0.2.0"]
 dev = ["ruff>=0.2.0", "pytest>=8.3", "anyio>=4.4", "pytest-asyncio>=0.23", "pytest-timeout>=2.3"]
+viz = ["graphviz>=0.20"]
 
 [tool.ruff]
 exclude = [

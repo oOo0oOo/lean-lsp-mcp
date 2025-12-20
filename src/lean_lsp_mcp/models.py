@@ -265,3 +265,11 @@ class ProofProfileResult(BaseModel):
     categories: dict[str, float] = Field(
         default_factory=dict, description="Cumulative time by category in ms"
     )
+
+
+class ExpansionVisualization(BaseModel):
+    """Result of macro expansion visualization."""
+
+    svg: str = Field(description="SVG diagram of expansion tree")
+    dot: str = Field(description="Graphviz DOT source (for debugging/customization)")
+    expansion: MacroExpansion = Field(description="The underlying expansion data")
