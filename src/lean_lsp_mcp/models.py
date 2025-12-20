@@ -237,3 +237,11 @@ class PremiseResults(BaseModel):
     items: List[PremiseResult] = Field(
         default_factory=list, description="List of premise results"
     )
+
+
+class ExpansionVisualization(BaseModel):
+    """Result of macro expansion visualization."""
+
+    svg: str = Field(description="SVG diagram of expansion tree")
+    dot: str = Field(description="Graphviz DOT source (for debugging/customization)")
+    expansion: MacroExpansion = Field(description="The underlying expansion data")
