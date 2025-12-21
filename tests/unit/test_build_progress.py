@@ -86,9 +86,10 @@ async def test_filters_trace_lines(build_mocks, patch_build):
 
     result = await lsp_build(ctx, lean_project_path="/fake", output_lines=100)
 
-    assert "trace:" not in result.output
-    assert "LEAN_PATH" not in result.output
-    assert "Built" in result.output
+    output_text = "\n".join(result.output)
+    assert "trace:" not in output_text
+    assert "LEAN_PATH" not in output_text
+    assert "Built" in output_text
 
 
 @pytest.mark.asyncio
@@ -102,7 +103,7 @@ async def test_output_truncation(build_mocks, patch_build):
     result = await lsp_build(ctx, lean_project_path="/fake", output_lines=5)
 
     # Should only have last 5 lines
-    assert len(result.output.strip().split("\n")) <= 5
+    assert len(result.output) <= 5
 
 
 @pytest.mark.asyncio
@@ -114,7 +115,7 @@ async def test_output_lines_zero(build_mocks, patch_build):
 
     result = await lsp_build(ctx, lean_project_path="/fake", output_lines=0)
 
-    assert result.output == ""
+    assert result.output == []
     assert result.success
 
 

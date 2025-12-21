@@ -284,7 +284,7 @@ async def lsp_build(
         if process.returncode != 0:
             return BuildResult(
                 success=False,
-                output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+                output=log_lines[-output_lines:] if output_lines else [],
                 errors=errors
                 or [f"Build failed with return code {process.returncode}"],
             )
@@ -300,14 +300,14 @@ async def lsp_build(
 
         return BuildResult(
             success=True,
-            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+            output=log_lines[-output_lines:] if output_lines else [],
             errors=[],
         )
 
     except Exception as e:
         return BuildResult(
             success=False,
-            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+            output=log_lines[-output_lines:] if output_lines else [],
             errors=[str(e)],
         )
 

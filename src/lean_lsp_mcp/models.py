@@ -112,7 +112,7 @@ class AttemptResult(BaseModel):
 
 class BuildResult(BaseModel):
     success: bool = Field(description="Whether build succeeded")
-    output: str = Field(description="Build output")
+    output: List[str] = Field(default_factory=list, description="Build output lines")
     errors: List[str] = Field(default_factory=list, description="Build errors if any")
 
 
