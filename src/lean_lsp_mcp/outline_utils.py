@@ -1,10 +1,10 @@
 import re
 from typing import Dict, List, Optional, Tuple
+
 from leanclient import LeanLSPClient
 from leanclient.utils import DocumentContentChange
 
 from lean_lsp_mcp.models import FileOutline, OutlineEntry
-
 
 METHOD_KIND = {6, "method"}
 KIND_TAGS = {"namespace": "Ns"}
@@ -41,6 +41,10 @@ def _get_info_trees(
             for line in sorted(symbol_by_line.keys(), reverse=True)
         ],
     )
+
+    # Force file reload to reset diagnostics after the insert/revert cycle.
+    client.open_file(path, force_reopen=True)
+
     return info_trees
 
 
