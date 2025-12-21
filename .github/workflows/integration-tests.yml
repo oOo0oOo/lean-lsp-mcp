@@ -1,0 +1,44 @@
+name: Integration Tests
+
+on:
+  schedule:
+    # Run weekly on Sundays at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    # Allow manual triggering
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+
+      - name: Add elan to PATH
+        run: echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Update lake dependencies
+        working-directory: tests/test_project
+        run: lake update --keep-toolchain
+
+      - name: Download Mathlib cache
+        working-directory: tests/test_project
+        run: lake exe cache get
+
+      - name: Build test project
+        working-directory: tests/test_project
+        run: lake build
+
+      - name: Run all tests
+        run: uv run pytest tests/ -v --timeout=300
