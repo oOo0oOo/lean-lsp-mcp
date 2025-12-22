@@ -26,6 +26,7 @@ from lean_lsp_mcp.client_utils import (
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
+from lean_lsp_mcp.syntax_utils import get_macro_expansion_at_position
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.models import (
     AttemptResult,
@@ -55,6 +56,8 @@ from lean_lsp_mcp.models import (
     StateSearchResults,
     TermGoalState,
 )
+from lean_lsp_mcp.syntax_utils import get_macro_expansion_by_text
+
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
@@ -374,21 +377,45 @@ def file_outline(
     return generate_outline_data(client, rel_path)
 
 
-def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
+def _to_diagnostic_messages(
+    diagnostics: List[Dict], info_trees: Optional[List[Dict]] = None
+) -> List[DiagnosticMessage]:
     result = []
     for diag in diagnostics:
         r = diag.get("fullRange", diag.get("range"))
         if r is None:
             continue
         severity_int = diag.get("severity", 1)
+        line = r["start"]["line"] + 1  # Convert to 1-indexed
+        column = r["start"]["character"] + 1
+
+        # Check if diagnostic is from macro expansion
+        from_macro = False
+        expanded_context = None
+        if info_trees:
+            try:
+                # Convert to InfoTree coordinates (1-indexed + 1 for line, 0-indexed for col)
+                expansion = get_macro_expansion_at_position(
+                    info_trees, line + 1, r["start"]["character"]
+                )
+                if expansion:
+                    from_macro = True
+                    expanded_context = expansion.expanded[
+                        :200
+                    ]  # Truncate for readability
+            except Exception:
+                pass
+
         result.append(
             DiagnosticMessage(
                 severity=DIAGNOSTIC_SEVERITY.get(
                     severity_int, f"unknown({severity_int})"
                 ),
                 message=diag.get("message", ""),
-                line=r["start"]["line"] + 1,
-                column=r["start"]["character"] + 1,
+                line=line,
+                column=column,
+                from_macro_expansion=from_macro,
+                expanded_context=expanded_context,
             )
         )
     return result
@@ -430,7 +457,7 @@ def diagnostic_messages(
     if declaration_name:
         decl_range = get_declaration_range(client, rel_path, declaration_name)
         if decl_range is None:
-            raise LeanToolError(f"Declaration '{declaration_name}' not found in file.")
+            raise LeanToolError(f"Declaration `{declaration_name}` not found in file.")
         start_line, end_line = decl_range
 
     # Convert 1-indexed to 0-indexed for leanclient
@@ -445,7 +472,15 @@ def diagnostic_messages(
     )
     check_lsp_response(diagnostics, "get_diagnostics")
 
-    return DiagnosticsResult(items=_to_diagnostic_messages(diagnostics))
+    # Get InfoTrees for macro context (only if there are diagnostics)
+    info_trees = None
+    if diagnostics:
+        try:
+            info_trees = client.get_info_trees(rel_path, parse=True)
+        except Exception:
+            pass
+
+    return DiagnosticsResult(items=_to_diagnostic_messages(diagnostics, info_trees))
 
 
 @mcp.tool(
@@ -470,6 +505,9 @@ def goal(
 
     Omit column to see goals_before (line start) and goals_after (line end),
     showing how the tactic transforms the state. "no goals" = proof complete.
+
+    If the tactic uses custom macro syntax, includes tactic_expansion showing
+    what the macro expands to (e.g., my_simp → simp [add_comm]).
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -487,6 +525,19 @@ def goal(
 
     line_context = lines[line - 1]
 
+    # Get tactic expansion if available
+    tactic_expansion = None
+    try:
+        info_trees = client.get_info_trees(rel_path, parse=True)
+        if info_trees:
+            # Use line start position for tactic expansion lookup
+            col_for_lookup = (column - 1) if column else 0
+            tactic_expansion = get_macro_expansion_at_position(
+                info_trees, line + 1, col_for_lookup
+            )
+    except Exception:
+        pass
+
     if column is None:
         column_end = len(line_context)
         column_start = next(
@@ -499,12 +550,15 @@ def goal(
             line_context=line_context,
             goals_before=extract_goals_list(goal_start),
             goals_after=extract_goals_list(goal_end),
+            tactic_expansion=tactic_expansion,
         )
     else:
         goal_result = client.get_goal(rel_path, line - 1, column - 1)
         check_lsp_response(goal_result, "get_goal", allow_none=True)
         return GoalState(
-            line_context=line_context, goals=extract_goals_list(goal_result)
+            line_context=line_context,
+            goals=extract_goals_list(goal_result),
+            tactic_expansion=tactic_expansion,
         )
 
 
@@ -570,7 +624,11 @@ def hover(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
 ) -> HoverInfo:
-    """Get type signature and docs for a symbol. Essential for understanding APIs."""
+    """Get type signature and docs for a symbol. Essential for understanding APIs.
+
+    If hovering over custom syntax (macros, notations), includes expansion info
+    showing how the syntax desugars (e.g., `n + m` → `HAdd.hAdd n m`).
+    """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -596,10 +654,24 @@ def hover(
     check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
+    # Get macro expansion info if available
+    # InfoTree positions have variable offsets from file positions, so we match
+    # by source text extracted from the hover range instead of positions.
+    macro_expansion = None
+    try:
+        if symbol:  # Only look for expansion if we have a symbol
+            info_trees = client.get_info_trees(rel_path, parse=True)
+            if info_trees:
+                macro_expansion = get_macro_expansion_by_text(info_trees, symbol)
+    except Exception:
+        # Info tree extraction can fail for various reasons, don't break hover
+        pass
+
     return HoverInfo(
         symbol=symbol,
         info=info,
         diagnostics=_to_diagnostic_messages(filtered),
+        macro_expansion=macro_expansion,
     )
 
 
@@ -781,11 +853,26 @@ def multi_attempt(
             # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
             goals = extract_goals_list(goal_result)
+
+            # Get macro expansion for the snippet if it uses custom syntax
+            macro_expansion = None
+            try:
+                info_trees = client.get_info_trees(rel_path, parse=True)
+                if info_trees:
+                    from lean_lsp_mcp.syntax_utils import get_macro_expansion_by_text
+
+                    macro_expansion = get_macro_expansion_by_text(
+                        info_trees, snippet_str
+                    )
+            except Exception:
+                pass  # Syntax expansion is optional
+
             results.append(
                 AttemptResult(
                     snippet=snippet_str,
                     goals=goals,
                     diagnostics=_to_diagnostic_messages(filtered_diag),
+                    macro_expansion=macro_expansion,
                 )
             )
 
