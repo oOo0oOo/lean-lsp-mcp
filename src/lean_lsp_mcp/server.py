@@ -89,6 +89,7 @@ from lean_lsp_mcp.utils import (
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
+    format_line,
     get_declaration_range,
     is_build_stderr,
 )
