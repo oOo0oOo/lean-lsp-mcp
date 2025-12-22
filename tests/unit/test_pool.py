@@ -90,22 +90,22 @@ class TestPoolSettings:
 
     def test_default_settings(self, monkeypatch):
         """Default settings are reasonable."""
-        monkeypatch.delenv("LEAN_MCP_MAX_REPLS", raising=False)
-        monkeypatch.delenv("LEAN_MCP_MAX_REPL_USES", raising=False)
-        monkeypatch.delenv("LEAN_MCP_MAX_REPL_MEM", raising=False)
+        monkeypatch.delenv("LEAN_REPL_WORKERS", raising=False)
+        monkeypatch.delenv("LEAN_REPL_MAX_REPL_USES", raising=False)
+        monkeypatch.delenv("LEAN_REPL_MEM", raising=False)
 
         settings = PoolSettings()
-        assert settings.max_repls >= 1
+        assert settings.workers >= 1
         assert settings.max_repl_uses == -1  # Unlimited
-        assert settings.max_repl_mem > 0  # Has some memory limit
+        assert settings.mem > 0  # Has some memory limit
 
     def test_env_override(self, monkeypatch):
         """Environment variables override defaults."""
-        monkeypatch.setenv("LEAN_MCP_MAX_REPLS", "4")
-        monkeypatch.setenv("LEAN_MCP_MAX_REPL_USES", "100")
-        monkeypatch.setenv("LEAN_MCP_MAX_REPL_MEM", "4G")  # Must use M or G suffix
+        monkeypatch.setenv("LEAN_REPL_WORKERS", "4")
+        monkeypatch.setenv("LEAN_REPL_MAX_REPL_USES", "100")
+        monkeypatch.setenv("LEAN_REPL_MEM", "4G")  # Must use M or G suffix
 
         settings = PoolSettings()
-        assert settings.max_repls == 4
+        assert settings.workers == 4
         assert settings.max_repl_uses == 100
-        assert settings.max_repl_mem == 4 * 1024  # 4G = 4096 MB
+        assert settings.mem == 4 * 1024  # 4G = 4096 MB

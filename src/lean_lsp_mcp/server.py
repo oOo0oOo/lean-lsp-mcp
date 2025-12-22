@@ -27,8 +27,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
-from lean_lsp_mcp.repl import ReplManager
-from lean_lsp_mcp.pool import Manager as PoolManager  # Kimina-style REPL pooling
+from lean_lsp_mcp.pool import Manager as PoolManager
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -96,10 +95,8 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
-    repl_manager: ReplManager | None = None
-    repl_enabled: bool = False
-    # Kimina-style REPL pool (optional, for parallel execution)
-    pool_manager: "PoolManager | None" = None
+    # REPL pool for efficient multi-attempt execution
+    pool_manager: PoolManager | None = None
     pool_enabled: bool = False
 
 
@@ -107,8 +104,6 @@ class AppContext:
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
-    repl_manager: ReplManager | None = None
-    repl_enabled = False
     pool_manager: PoolManager | None = None
     pool_enabled = False
 
@@ -132,14 +127,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
-        # Initialize REPL manager if enabled via env var or CLI
-        if os.environ.get("LEAN_REPL_ENABLED", "").lower() in ("1", "true", "yes"):
-            logger.info("REPL integration enabled")
-            repl_manager = ReplManager()
-            repl_enabled = True
-
-        # Initialize REPL pool if enabled (kimina-style parallel execution)
-        if os.environ.get("LEAN_POOL_ENABLED", "").lower() in ("1", "true", "yes"):
+        # Initialize REPL pool if enabled
+        # Env var: LEAN_REPL=1 (or "true", "yes")
+        if os.environ.get("LEAN_REPL", "").lower() in ("1", "true", "yes"):
             if lean_project_path:
                 repl_path = os.environ.get("LEAN_REPL_PATH", "repl")
                 logger.info("REPL pool enabled, initializing...")
@@ -149,9 +139,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 )
                 pool_enabled = True
                 logger.info(
-                    "REPL pool initialized: max_repls=%d, max_uses=%d",
+                    "REPL pool initialized: workers=%d, max_uses=%d, timeout=%ds",
                     pool_manager.max_repls,
                     pool_manager.max_repl_uses,
+                    pool_manager.command_timeout,
                 )
             else:
                 logger.warning("REPL pool requires LEAN_PROJECT_PATH to be set")
@@ -169,8 +160,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
-            repl_manager=repl_manager,
-            repl_enabled=repl_enabled,
             pool_manager=pool_manager,
             pool_enabled=pool_enabled,
         )
@@ -183,9 +172,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if loogle_manager:
             await loogle_manager.stop()
-
-        if repl_manager:
-            await repl_manager.stop_all()
 
         if pool_manager:
             await pool_manager.cleanup()
@@ -1503,24 +1489,8 @@ def hammer_premise(
 
 
 # ===========================================================================
-# REPL Tools
+# REPL Pool Utilities
 # ===========================================================================
-
-
-class ReplNotEnabledError(LeanToolError):
-    """REPL feature not enabled."""
-
-    pass
-
-
-def _get_repl_manager(ctx: Context) -> ReplManager:
-    """Get the REPL manager, raising if not enabled."""
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    if not app_ctx.repl_enabled or app_ctx.repl_manager is None:
-        raise ReplNotEnabledError(
-            "REPL not enabled. Start with --repl flag or set LEAN_REPL_ENABLED=true"
-        )
-    return app_ctx.repl_manager
 
 
 def _get_project_path(ctx: Context) -> Path:

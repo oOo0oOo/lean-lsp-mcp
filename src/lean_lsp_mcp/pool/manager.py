@@ -53,20 +53,21 @@ class Manager:
         *,
         repl_path: str,
         project_dir: str,
-        max_repls: int = pool_settings.max_repls,
-        max_repl_uses: int = pool_settings.max_repl_uses,
-        max_repl_mem: int = pool_settings.max_repl_mem,
-        max_wait: float = pool_settings.max_wait,
-        command_timeout: float = pool_settings.command_timeout,
+        max_repls: int | None = None,
+        max_repl_uses: int | None = None,
+        max_repl_mem: int | None = None,
+        max_wait: float | None = None,
+        command_timeout: float | None = None,
         init_repls: dict[str, int] | None = None,
     ) -> None:
         self.repl_path = repl_path
         self.project_dir = project_dir
-        self.max_repls = max_repls
-        self.max_repl_uses = max_repl_uses
-        self.max_repl_mem = max_repl_mem
-        self.max_wait = max_wait
-        self.command_timeout = command_timeout
+        # Use new settings names with fallback to old for compatibility
+        self.max_repls = max_repls if max_repls is not None else pool_settings.workers
+        self.max_repl_uses = max_repl_uses if max_repl_uses is not None else pool_settings.max_repl_uses
+        self.max_repl_mem = max_repl_mem if max_repl_mem is not None else pool_settings.mem
+        self.max_wait = max_wait if max_wait is not None else pool_settings.max_wait
+        self.command_timeout = command_timeout if command_timeout is not None else pool_settings.timeout
         self.init_repls = init_repls or {}
 
         self._lock: asyncio.Lock | None = None
@@ -75,10 +76,11 @@ class Manager:
         self._busy: set[Repl] = set()
 
         logger.info(
-            "REPL manager initialized with: MAX_REPLS=%d, MAX_REPL_USES=%d, MAX_REPL_MEM=%d MB",
-            max_repls,
-            max_repl_uses,
-            max_repl_mem,
+            "REPL pool initialized: workers=%d, max_uses=%d, mem=%d MB, timeout=%ds",
+            self.max_repls,
+            self.max_repl_uses,
+            self.max_repl_mem,
+            self.command_timeout,
         )
 
     def _ensure_lock(self) -> None:
