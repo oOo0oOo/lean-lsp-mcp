@@ -57,6 +57,18 @@ from lean_lsp_mcp.models import (
 )
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
+
+# Optional leansearch imports
+try:
+    from lean_lsp_mcp.leansearch import (
+        LeanSearchManager,
+        check_leansearch_available,
+    )
+    _LEANSEARCH_AVAILABLE, _LEANSEARCH_MESSAGE = check_leansearch_available()
+except ImportError:
+    _LEANSEARCH_AVAILABLE = False
+    _LEANSEARCH_MESSAGE = "leansearch dependencies not installed. Install with: pip install lean-lsp-mcp[leansearch]"
+    LeanSearchManager = None
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     LeanToolError,
@@ -68,6 +80,7 @@ from lean_lsp_mcp.utils import (
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
+    format_line,
     get_declaration_range,
 )
 
@@ -91,12 +104,16 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    leansearch_manager: "LeanSearchManager | None" = None
+    leansearch_available: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
+    leansearch_manager = None
+    leansearch_available = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -118,6 +135,15 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
+        # Initialize local leansearch if enabled and available
+        if os.environ.get("LEAN_LEANSEARCH_LOCAL", "").lower() in ("1", "true", "yes"):
+            if _LEANSEARCH_AVAILABLE and LeanSearchManager is not None:
+                logger.info("Local leansearch enabled, initializing...")
+                leansearch_manager = LeanSearchManager(project_root=lean_project_path)
+                leansearch_available = True
+            else:
+                logger.warning(f"Local leansearch not available: {_LEANSEARCH_MESSAGE}")
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -131,6 +157,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            leansearch_manager=leansearch_manager,
+            leansearch_available=leansearch_available,
         )
         yield context
     finally:
@@ -141,6 +169,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if loogle_manager:
             await loogle_manager.stop()
+
+        if leansearch_manager:
+            leansearch_manager.close()
 
 
 mcp_kwargs = dict(
@@ -1191,6 +1222,132 @@ def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+
+@mcp.tool("lean_local_semantic_search")
+async def local_semantic_search(
+    ctx: Context, query: str, num_results: int = 5
+) -> List[Dict] | str:
+    """Search local project declarations using semantic embeddings. No rate limits!
+
+    Similar to leansearch but runs locally on your project's declarations.
+    Uses hybrid semantic + keyword matching for better results.
+
+    Args:
+        query (str): Natural language search query (e.g., "sum of two even numbers")
+        num_results (int, optional): Max results. Defaults to 5.
+
+    Returns:
+        List[Dict] | str: Search results or error msg
+    """
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+
+    if not app_ctx.leansearch_available or not app_ctx.leansearch_manager:
+        return (
+            "Local semantic search not enabled. "
+            "Set LEAN_LEANSEARCH_LOCAL=1 and install with: pip install lean-lsp-mcp[leansearch]"
+        )
+
+    manager = app_ctx.leansearch_manager
+
+    # Update project path if changed
+    if app_ctx.lean_project_path and app_ctx.lean_project_path != manager.project_root:
+        manager.project_root = app_ctx.lean_project_path
+        manager._index = None
+        manager._ready = False
+
+    # Ensure indexed
+    if not await manager.ensure_indexed():
+        return "Failed to index project for semantic search."
+
+    try:
+        results = manager.search(query, num_results=num_results)
+        if not results:
+            return "No results found."
+
+        # Format results
+        formatted = []
+        for r in results:
+            formatted.append({
+                "name": r.get("name", ""),
+                "kind": r.get("kind", ""),
+                "module": r.get("module", ""),
+                "signature": r.get("signature", "")[:200],
+            })
+        return formatted
+    except Exception as e:
+        return f"Local semantic search error: {str(e)}"
+
+
+@mcp.tool("lean_local_premise_search")
+async def local_premise_search(
+    ctx: Context, file_path: str, line: int, column: int, num_results: int = 10
+) -> List[Dict] | str:
+    """Find relevant lemmas for a goal using local premise graph and embeddings. No rate limits!
+
+    Similar to state_search but uses local data from your project.
+    Combines premise graph analysis with semantic search.
+
+    Args:
+        file_path (str): Abs path to Lean file
+        line (int): Line number (1-indexed)
+        column (int): Column number (1-indexed)
+        num_results (int, optional): Max results. Defaults to 10.
+
+    Returns:
+        List[Dict] | str: Relevant lemmas or error msg
+    """
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+
+    if not app_ctx.leansearch_available or not app_ctx.leansearch_manager:
+        return (
+            "Local premise search not enabled. "
+            "Set LEAN_LEANSEARCH_LOCAL=1 and install with: pip install lean-lsp-mcp[leansearch]"
+        )
+
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        return "Invalid Lean file path: Unable to start LSP server or load file"
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    file_contents = client.get_file_content(rel_path)
+    goal = client.get_goal(rel_path, line - 1, column - 1)
+
+    f_line = format_line(file_contents, line, column)
+    if not goal or not goal.get("goals"):
+        return f"No goals found:\n{f_line}\nTry elsewhere?"
+
+    manager = app_ctx.leansearch_manager
+
+    # Update project path if changed
+    if app_ctx.lean_project_path and app_ctx.lean_project_path != manager.project_root:
+        manager.project_root = app_ctx.lean_project_path
+        manager._index = None
+        manager._ready = False
+
+    # Ensure indexed
+    if not await manager.ensure_indexed():
+        return "Failed to index project for premise search."
+
+    try:
+        goal_state = goal["goals"][0]
+        results = manager.search_by_goal(goal_state, num_results=num_results)
+
+        if not results:
+            return f"No premises found for goal:\n{f_line}"
+
+        # Format results
+        formatted = [{"goal": f_line}]
+        for r in results:
+            formatted.append({
+                "name": r.get("name", ""),
+                "kind": r.get("kind", ""),
+                "score": round(r.get("score", r.get("hybrid_score", 0)), 3),
+            })
+        return formatted
+    except Exception as e:
+        return f"Local premise search error: {str(e)}"
 
 
 if __name__ == "__main__":
