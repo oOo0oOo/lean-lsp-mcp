@@ -13,6 +13,7 @@ INSTRUCTIONS = """## General Rules
 - **lean_declaration_file**: Get declaration source. Use sparingly (large output).
 - **lean_run_code**: Run standalone snippet. Use rarely.
 - **lean_build**: Rebuild + restart LSP. Only if needed (new imports). SLOW!
+- **lean_profile_proof**: Profile a theorem for performance. Shows tactic hotspots. SLOW!
 
 ## Search Tools (rate limited)
 - **lean_leansearch** (3/30s): Natural language → mathlib
