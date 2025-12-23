@@ -1,10 +1,35 @@
 import os
+import re
 import secrets
 import sys
 import tempfile
 from typing import Any, List, Dict, Optional, Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+
+
+# Pattern to extract file paths from build stderr: "error: path/file.lean:line:col: message"
+BUILD_ERROR_FILE_PATTERN = re.compile(
+    r"^(?:error|warning):\s*([^\s:]+\.lean):\d+:\d+:",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def extract_failed_dependency_paths(message: str) -> List[str]:
+    """Extract unique file paths from lake build stderr output.
+
+    Returns sorted list of .lean file paths that had errors/warnings.
+    """
+    paths = set(BUILD_ERROR_FILE_PATTERN.findall(message))
+    return sorted(paths)
+
+
+def is_build_stderr(message: str) -> bool:
+    """Check if message looks like lake build stderr output."""
+    return (
+        "lake setup-file" in message
+        or BUILD_ERROR_FILE_PATTERN.search(message) is not None
+    )
 
 
 class LeanToolError(Exception):

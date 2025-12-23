@@ -4,12 +4,14 @@ import asyncio
 
 from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
+    extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
     format_diagnostics,
     format_line,
+    is_build_stderr,
 )
 
 
@@ -155,3 +157,59 @@ def test_format_diagnostics_line_filter() -> None:
     assert keep_all == ["l3c1-l3c4, severity: 1\nOnly on line three"]
     assert only_line_two == ["l3c1-l3c4, severity: 1\nOnly on line three"]
     assert other_line == []
+
+
+# Tests for build stderr parsing
+
+
+def test_extract_failed_dependency_paths_single_error() -> None:
+    message = "error: Urm/Composition.lean:982:24: Unknown constant `Option.map_some'`"
+    result = extract_failed_dependency_paths(message)
+    assert result == ["Urm/Composition.lean"]
+
+
+def test_extract_failed_dependency_paths_multiple_files() -> None:
+    message = """warning: Urm/Composition.lean:632:8: declaration uses 'sorry'
+error: Urm/Composition.lean:982:24: Unknown constant `Option.map_some'`
+error: Urm/Other.lean:100:5: type mismatch"""
+    result = extract_failed_dependency_paths(message)
+    assert result == ["Urm/Composition.lean", "Urm/Other.lean"]
+
+
+def test_extract_failed_dependency_paths_empty_message() -> None:
+    assert extract_failed_dependency_paths("") == []
+
+
+def test_extract_failed_dependency_paths_no_match() -> None:
+    message = "Some random text that doesn't match the pattern"
+    assert extract_failed_dependency_paths(message) == []
+
+
+def test_extract_failed_dependency_paths_with_lake_output() -> None:
+    """Test with realistic lake setup-file output."""
+    message = """`lake setup-file /path/to/file.lean` failed:
+
+stderr:
+✖ Building Urm.Composition
+error: Urm/Composition.lean:982:24: Unknown constant `Option.map_some'`
+warning: Urm/Composition.lean:632:8: declaration uses 'sorry'
+Failed to build module dependencies."""
+    result = extract_failed_dependency_paths(message)
+    assert result == ["Urm/Composition.lean"]
+
+
+def test_is_build_stderr_with_lake_setup() -> None:
+    assert is_build_stderr("`lake setup-file /path/to/file.lean` failed:")
+    assert is_build_stderr("lake setup-file somewhere in the message")
+
+
+def test_is_build_stderr_with_error_pattern() -> None:
+    assert is_build_stderr("error: Foo.lean:1:1: some error")
+    assert is_build_stderr("warning: Bar/Baz.lean:99:5: some warning")
+
+
+def test_is_build_stderr_negative() -> None:
+    assert not is_build_stderr("")
+    assert not is_build_stderr("Just a normal message")
+    assert not is_build_stderr("error: not a lean file")
+    assert not is_build_stderr("Something.lean but no line:col pattern")
