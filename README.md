@@ -150,7 +150,7 @@ Get a concise outline of a Lean file showing imports and declarations with type 
 
 #### lean_file_contents (DEPRECATED)
 
-Get the contents of a Lean file, optionally with line number annotations.
+Deprecated; prefer `lean_file_outline` or reading the file directly. Get the contents of a Lean file, optionally with line number annotations.
 
 #### lean_diagnostic_messages
 

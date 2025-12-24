@@ -361,13 +361,15 @@ async def lsp_build(
         openWorldHint=False,
     ),
 )
-@deprecated
+@deprecated(
+    "Use lean_file_outline / lean_declaration_file (or read the file directly). Will be removed soon."
+)
 def file_contents(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     annotate_lines: Annotated[bool, Field(description="Add line numbers")] = True,
 ) -> str:
-    """DEPRECATED. Get file contents with optional line numbers."""
+    """Get file contents with optional line numbers."""
     # Infer project path but do not start a client
     if file_path.endswith(".lean"):
         infer_project_path(ctx, file_path)  # Silently fails for non-project files
