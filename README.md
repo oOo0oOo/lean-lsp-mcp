@@ -369,13 +369,21 @@ Query: `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`
 ```
 </details>
 
-#### lean_state_search
+#### lean_state_search (DEPRECATED)
 
-Search for applicable theorems for the current proof goal using [premise-search.com](https://premise-search.com/).
+Search for applicable theorems for the current proof goal.
+
+This tool is deprecated because the public [premise-search.com](https://premise-search.com/) backend has been unreliable for a while. By default the tool is disabled; to use it you must self-host and set `LEAN_STATE_SEARCH_URL` to your instance.
+
+For most workflows prefer:
+
+- `lean_hammer_premise` (goal → suggested lemmas to try)
+- `lean_loogle` (type-pattern search)
+- `lean_leansearch` (natural-language search)
 
 [Github Repository](https://github.com/ruc-ai4math/Premise-Retrieval) | [Arxiv Paper](https://arxiv.org/abs/2501.13959)
 
-A self-hosted version is [available](https://github.com/ruc-ai4math/LeanStateSearch) and encouraged. You can set an environment variable `LEAN_STATE_SEARCH_URL` to point to your self-hosted instance. It defaults to `https://premise-search.com`.
+A self-hosted version is [available](https://github.com/ruc-ai4math/LeanStateSearch).
 
 Uses the first goal at a given line and column.
 Returns a list of relevant theorems.
@@ -441,7 +449,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
-- `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
+- `LEAN_STATE_SEARCH_URL`: URL for a self-hosted LeanStateSearch instance (required for deprecated `lean_state_search` tool).
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).

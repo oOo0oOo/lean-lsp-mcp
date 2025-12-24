@@ -1141,11 +1141,14 @@ async def leanfinder(
 @mcp.tool(
     "lean_state_search",
     annotations=ToolAnnotations(
-        title="State Search",
+        title="State Search (Deprecated)",
         readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=True,
     ),
+)
+@deprecated(
+    "The public premise-search.com API is unreliable; this tool may be removed. Prefer lean_hammer_premise, lean_loogle, or lean_leansearch."
 )
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 async def state_search(
@@ -1155,7 +1158,7 @@ async def state_search(
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> StateSearchResults:
-    """Find lemmas to close the goal at a position. Searches premise-search.com."""
+    """Find lemmas to close the goal at a position (requires self-hosted LeanStateSearch)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -1173,7 +1176,13 @@ async def state_search(
 
     goal_str = urllib.parse.quote(goal["goals"][0])
 
-    url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
+    url = os.getenv("LEAN_STATE_SEARCH_URL", "").strip()
+    if not url:
+        raise LeanToolError(
+            "lean_state_search is deprecated and disabled by default (public premise-search.com API is unreliable). "
+            "To use it, set LEAN_STATE_SEARCH_URL to a self-hosted LeanStateSearch instance. "
+            "Otherwise, prefer lean_hammer_premise / lean_loogle / lean_leansearch."
+        )
     req = urllib.request.Request(
         f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
         headers={"User-Agent": "lean-lsp-mcp/0.1"},
