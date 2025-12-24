@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Dict, List, Optional
 
 import orjson
 from leanclient import DocumentContentChange, LeanLSPClient
@@ -75,20 +75,25 @@ from lean_lsp_mcp.utils import (
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
 
-async def _urlopen_bytes(req: urllib.request.Request, timeout: float) -> bytes:
+async def _urlopen_json(req: urllib.request.Request, timeout: float):
     """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
 
-    def _do_request() -> bytes:
+    def _do_request():
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read()
+            return orjson.loads(response.read())
 
     return await asyncio.to_thread(_do_request)
 
 
-async def _urlopen_json(req: urllib.request.Request, timeout: float) -> Any:
-    """Fetch JSON via urllib in a thread and decode with orjson."""
-    raw = await _urlopen_bytes(req, timeout=timeout)
-    return orjson.loads(raw)
+async def _safe_report_progress(
+    ctx: Context, *, progress: int, total: int, message: str
+) -> None:
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:
+        return
+
+
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
 configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 logger = get_logger(__name__)
@@ -989,6 +994,9 @@ async def leansearch(
         method="POST",
     )
 
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message="Awaiting response from leansearch.net"
+    )
     results = await _urlopen_json(req, timeout=10)
 
     if not results or not results[0]:
@@ -1063,6 +1071,12 @@ async def loogle(
         )
     rate_limit.append(now)
 
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=10,
+        message="Awaiting response from loogle.lean-lang.org",
+    )
     result = await asyncio.to_thread(loogle_remote, query, num_results)
     if isinstance(result, str):
         raise LeanToolError(result)  # Error message from remote
@@ -1097,11 +1111,16 @@ async def leanfinder(
     )
 
     results: List[LeanFinderResult] = []
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=10,
+        message="Awaiting response from Lean Finder (Hugging Face)",
+    )
     data = await _urlopen_json(req, timeout=10)
     for result in data["results"]:
         if (
-            "https://leanprover-community.github.io/mathlib4_docs"
-            not in result["url"]
+            "https://leanprover-community.github.io/mathlib4_docs" not in result["url"]
         ):  # Only include mathlib4 results
             continue
         match = re.search(r"pattern=(.*?)#doc", result["url"])
@@ -1159,6 +1178,9 @@ async def state_search(
         method="GET",
     )
 
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
     results = await _urlopen_json(req, timeout=10)
 
     items = [StateSearchResult(name=r["name"]) for r in results]
@@ -1218,6 +1240,9 @@ async def hammer_premise(
         data=orjson.dumps(data),
     )
 
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
     results = await _urlopen_json(req, timeout=10)
 
     items = [PremiseResult(name=r["name"]) for r in results]
