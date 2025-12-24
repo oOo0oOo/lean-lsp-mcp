@@ -922,7 +922,7 @@ class LocalSearchError(Exception):
         openWorldHint=False,
     ),
 )
-def local_search(
+async def local_search(
     ctx: Context,
     query: Annotated[str, Field(description="Declaration name or prefix")],
     limit: Annotated[int, Field(description="Max matches", ge=1)] = 10,
@@ -954,8 +954,11 @@ def local_search(
         )
 
     try:
-        raw_results = lean_local_search(
-            query=query.strip(), limit=limit, project_root=resolved_root
+        raw_results = await asyncio.to_thread(
+            lean_local_search,
+            query=query.strip(),
+            limit=limit,
+            project_root=resolved_root,
         )
         results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
