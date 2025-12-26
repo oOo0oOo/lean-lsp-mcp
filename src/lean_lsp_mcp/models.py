@@ -1,6 +1,6 @@
 """Pydantic models for MCP tool structured outputs."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -66,11 +66,21 @@ class CompletionItem(BaseModel):
     detail: Optional[str] = Field(None, description="Additional detail")
 
 
+class WidgetInfo(BaseModel):
+    id: str = Field(description="Widget instance ID")
+    name: Optional[str] = Field(None, description="Widget type name (e.g. ProofWidgets.HtmlDisplay)")
+    javascript_hash: Optional[str] = Field(None, description="Hash for widget JS module")
+    props: Optional[Dict[str, Any]] = Field(None, description="Widget props (may contain html, images, etc.)")
+
+
 class HoverInfo(BaseModel):
     symbol: str = Field(description="The symbol being hovered")
     info: str = Field(description="Type signature and documentation")
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics at this position"
+    )
+    widgets: List[WidgetInfo] = Field(
+        default_factory=list, description="Widgets at this position (e.g. #png images)"
     )
 
 

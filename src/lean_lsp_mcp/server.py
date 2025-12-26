@@ -59,6 +59,7 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    WidgetInfo,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -724,6 +725,9 @@ def hover(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
+    include_widgets: Annotated[
+        bool, Field(description="Include widgets at position (e.g. #png images)")
+    ] = True,
 ) -> HoverInfo:
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -751,10 +755,28 @@ def hover(
     check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
+    # Fetch widgets at position (opinionated default: always include for AI visibility)
+    widgets: list[WidgetInfo] = []
+    if include_widgets:
+        try:
+            raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
+            for w in raw_widgets:
+                widgets.append(
+                    WidgetInfo(
+                        id=str(w.get("id", "unknown")),
+                        name=w.get("name?"),
+                        javascript_hash=w.get("javascriptHash"),
+                        props=w.get("props"),
+                    )
+                )
+        except Exception as e:
+            logger.debug(f"Failed to get widgets: {e}")
+
     return HoverInfo(
         symbol=symbol,
         info=info,
         diagnostics=_to_diagnostic_messages(filtered),
+        widgets=widgets,
     )
 
 
