@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import functools
 import logging.config
 import os
@@ -19,6 +20,7 @@ from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
+from mcp.server.fastmcp.utilities.types import Image
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -730,8 +732,11 @@ def hover(
     include_widgets: Annotated[
         bool, Field(description="Include widgets at position (e.g. #png images)")
     ] = True,
-) -> HoverInfo:
-    """Get type signature and docs for a symbol. Essential for understanding APIs."""
+) -> list:
+    """Get type signature and docs for a symbol. Essential for understanding APIs.
+
+    Returns structured HoverInfo plus any widget images as native MCP image content.
+    """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -757,27 +762,37 @@ def hover(
     check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
-    # Fetch widgets at position (opinionated default: always include for AI visibility)
+    # Collect widget info and images
     widgets: list[WidgetInfo] = []
+    native_images: list[Image] = []  # Images to return via MCP native image support
+
     if include_widgets:
         try:
             raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
             for w in raw_widgets:
                 props = w.get("props") or {}
-                images: list[WidgetImage] = []
+                widget_images: list[WidgetImage] = []
 
                 # 1. Extract any base64 images embedded in widget props
                 extracted = extract_images_from_props(props)
-                for mime, data in extracted:
-                    images.append(WidgetImage(mime_type=mime, data=data))
+                for mime, b64_data in extracted:
+                    widget_images.append(WidgetImage(mime_type=mime, data=b64_data))
+                    # Also add as native MCP image
+                    fmt = mime.split("/")[-1].replace("+xml", "")  # e.g. "png", "svg"
+                    native_images.append(
+                        Image(data=base64.b64decode(b64_data), format=fmt)
+                    )
 
                 # 2. If no embedded images, try rendering React components
-                if not images and props.get("html"):
+                if not widget_images and props.get("html"):
                     try:
                         rendered = render_widget_to_png(props)
                         if rendered:
-                            images.append(
+                            widget_images.append(
                                 WidgetImage(mime_type="image/png", data=rendered)
+                            )
+                            native_images.append(
+                                Image(data=base64.b64decode(rendered), format="png")
                             )
                     except Exception as e:
                         logger.debug(f"Failed to render widget: {e}")
@@ -788,18 +803,21 @@ def hover(
                         name=w.get("name?"),
                         javascript_hash=w.get("javascriptHash"),
                         props=props,
-                        images=images,
+                        images=widget_images,
                     )
                 )
         except Exception as e:
             logger.debug(f"Failed to get widgets: {e}")
 
-    return HoverInfo(
+    hover_result = HoverInfo(
         symbol=symbol,
         info=info,
         diagnostics=_to_diagnostic_messages(filtered),
         widgets=widgets,
     )
+
+    # Return HoverInfo (serialized as text) plus native images
+    return [hover_result, *native_images]
 
 
 @mcp.tool(
