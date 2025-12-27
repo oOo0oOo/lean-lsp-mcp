@@ -5,7 +5,6 @@ They are skipped if the REPL binary is not found.
 """
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
@@ -43,17 +42,6 @@ def repl_enabled_env(test_project_path: Path) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.slow
-async def test_pool_multi_attempt(
-    repl_enabled_env: dict[str, str],
-    test_project_path: Path,
-) -> None:
-    """Test multi_attempt with REPL pool."""
-    pytest.skip("REPL pool integration test not yet implemented - needs MCP client with pool env")
-    # TODO: Implement once we have a way to pass custom env to mcp_client_factory
-
-
-@pytest.mark.asyncio
 async def test_pool_manager_lifecycle(
     repl_enabled_env: dict[str, str],
     test_project_path: Path,
@@ -86,7 +74,7 @@ async def test_pool_manager_run_multi_attempt(
     test_project_path: Path,
 ) -> None:
     """Test running multi_attempt through pool manager."""
-    from lean_lsp_mcp.pool import Manager as PoolManager, NoAvailableReplError
+    from lean_lsp_mcp.pool import Manager as PoolManager
 
     repl_path = repl_enabled_env["LEAN_REPL_PATH"]
     project_dir = str(test_project_path)

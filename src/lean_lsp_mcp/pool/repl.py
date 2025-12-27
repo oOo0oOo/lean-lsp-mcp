@@ -140,27 +140,38 @@ class Repl:
         """Start the REPL subprocess."""
         self._loop = asyncio.get_running_loop()
 
-        def _preexec() -> None:
-            import resource
+        # Platform-specific subprocess options
+        kwargs: dict = {
+            "cwd": self.project_dir,
+            "env": os.environ,
+            "stdin": asyncio.subprocess.PIPE,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
 
-            # Memory limit (Linux only)
-            if platform.system() != "Darwin":
-                resource.setrlimit(
-                    resource.RLIMIT_AS, (self.max_memory_bytes, self.max_memory_bytes)
-                )
+        system = platform.system()
+        if system != "Windows":
+            # Unix-only: create new session for clean process group management
+            kwargs["start_new_session"] = True
 
-            os.setsid()
+            # Linux-only: set memory limit via preexec_fn
+            if system == "Linux":
+
+                def _preexec() -> None:
+                    import resource
+
+                    resource.setrlimit(
+                        resource.RLIMIT_AS,
+                        (self.max_memory_bytes, self.max_memory_bytes),
+                    )
+
+                kwargs["preexec_fn"] = _preexec
 
         self.proc = await asyncio.create_subprocess_exec(
             "lake",
             "env",
             self.repl_path,
-            cwd=self.project_dir,
-            env=os.environ,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            preexec_fn=_preexec,
+            **kwargs,
         )
 
         logger.info(f"[{self.uuid.hex[:8]}] Started REPL subprocess")

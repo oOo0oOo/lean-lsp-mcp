@@ -849,140 +849,6 @@ async def _multi_attempt_pool(
         return None
 
 
-async def _multi_attempt_repl(
-    ctx: Context,
-    file_path: str,
-    line: int,
-    snippets: List[str],
-    proof_state: int | None = None,
-) -> MultiAttemptResult | None:
-    """Try code snippets using REPL environment backtracking.
-
-    Key insight: Load base context once, then try each snippet from that same
-    environment. Each snippet is independent - they all fork from the same base.
-
-    This is more efficient than LSP (no file modifications) and supports
-    true backtracking (each attempt starts from identical state).
-
-    When proof_state is provided:
-    - Snippets are applied as tactics from that proof state
-    - Each attempt forks from the same proof_state
-    - Returns new proof_state IDs for chaining
-    """
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    if not app_ctx.repl_enabled or not app_ctx.repl_manager:
-        return None
-
-    manager = app_ctx.repl_manager
-    project_path = app_ctx.lean_project_path
-    if not project_path:
-        return None
-
-    try:
-        results: List[AttemptResult] = []
-
-        # Tactic mode: apply snippets as tactics from existing proof state
-        if proof_state is not None:
-            for snippet in snippets:
-                snippet_str = snippet.rstrip("\n")
-
-                # Apply tactic from the given proof state
-                response = await manager.run_tactic(
-                    project_path, snippet_str, proof_state=proof_state
-                )
-
-                # Convert messages to diagnostics format
-                diagnostics = [
-                    DiagnosticMessage(
-                        severity="error" if m.severity == "error" else "info",
-                        message=m.data,
-                        line=m.pos.line if m.pos else 0,
-                        column=m.pos.column if m.pos else 0,
-                    )
-                    for m in response.messages
-                ]
-
-                results.append(
-                    AttemptResult(
-                        snippet=snippet_str,
-                        goals=response.goals,
-                        diagnostics=diagnostics,
-                        proof_state=response.proofState,
-                    )
-                )
-
-            return MultiAttemptResult(items=results)
-
-        # Command mode: load base context and try each snippet
-        file_contents = get_file_contents(file_path)
-        if file_contents is None:
-            return None
-
-        lines = file_contents.splitlines()
-        if line > len(lines):
-            return None
-
-        # Load base context (everything up to the specified line)
-        base_code = "\n".join(lines[: line - 1])
-
-        # Load base into REPL to get environment ID
-        base_response = await manager.run_command(project_path, base_code)
-        base_env = base_response.env
-
-        if base_env is None:
-            # Check if there's an error in the base code
-            if base_response.messages:
-                logger.debug(f"Base code has errors: {base_response.messages}")
-            return None
-
-        for snippet in snippets:
-            snippet_str = snippet.rstrip("\n")
-
-            # Try this snippet from the base environment (true backtracking!)
-            # Each snippet runs from the same base_env, independent of others
-            response = await manager.run_command(
-                project_path, snippet_str, env=base_env
-            )
-
-            # Convert messages to diagnostics format
-            diagnostics = [
-                DiagnosticMessage(
-                    severity="error" if m.severity == "error" else "info",
-                    message=m.data,
-                    line=m.pos.line if m.pos else 0,
-                    column=m.pos.column if m.pos else 0,
-                )
-                for m in response.messages
-            ]
-
-            # Extract goals from sorries (if any)
-            goals = [s.goal for s in response.sorries] if response.sorries else []
-
-            # Get proof_state from first sorry if available (for chaining)
-            result_proof_state = None
-            if response.sorries:
-                result_proof_state = response.sorries[0].proofState
-
-            # Check for tactic-style goals in the response
-            if response.tactics:
-                for t in response.tactics:
-                    goals.extend(t.goals)
-
-            results.append(
-                AttemptResult(
-                    snippet=snippet_str,
-                    goals=goals,
-                    diagnostics=diagnostics,
-                    proof_state=result_proof_state,
-                )
-            )
-
-        return MultiAttemptResult(items=results)
-    except Exception as e:
-        logger.debug(f"REPL multi_attempt failed: {e}")
-        return None
-
-
 def _multi_attempt_lsp(
     ctx: Context,
     file_path: str,
@@ -1065,32 +931,24 @@ async def multi_attempt(
     - Trying alternative definitions: ["def foo := 1", "def foo := 2"]
     - Exploring proof strategies without file modifications
 
-    When proof_state is provided:
-    - Snippets are applied as tactics from that proof state
-    - Returns proof_state IDs in results for chaining
-
-    When LEAN_REPL_ENABLED=1:
+    When REPL pool is enabled:
     - Uses REPL environment backtracking (true fork from same state)
     - Pool manager with header caching for best performance
     - More efficient (no file I/O per attempt)
-    - Supports any Lean code, not just tactics
+    - Returns proof_state IDs in results for chaining
 
     Otherwise falls back to LSP file modification approach.
     """
-    # Priority 1: Pool manager with header caching (most efficient, no proof_state yet)
-    if proof_state is None:
-        result = await _multi_attempt_pool(ctx, file_path, line, snippets)
-        if result is not None:
-            return result
+    # proof_state continuation not yet supported
+    if proof_state is not None:
+        raise LeanToolError("proof_state continuation not yet implemented")
 
-    # Priority 2: REPL manager (supports proof_state, true backtracking)
-    result = await _multi_attempt_repl(ctx, file_path, line, snippets, proof_state)
+    # Priority 1: Pool manager with header caching (most efficient)
+    result = await _multi_attempt_pool(ctx, file_path, line, snippets)
     if result is not None:
         return result
 
-    # Priority 3: LSP approach (fallback, doesn't support proof_state)
-    if proof_state is not None:
-        raise LeanToolError("proof_state requires REPL mode (LEAN_REPL_ENABLED=1)")
+    # Priority 2: LSP approach (fallback)
     return _multi_attempt_lsp(ctx, file_path, line, snippets)
 
 
@@ -1486,26 +1344,6 @@ def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
-
-
-# ===========================================================================
-# REPL Pool Utilities
-# ===========================================================================
-
-
-def _get_project_path(ctx: Context) -> Path:
-    """Get the project path, raising if not set."""
-    project_path = ctx.request_context.lifespan_context.lean_project_path
-    if project_path is None:
-        raise LeanToolError(
-            "No Lean project path set. Call another tool first to set it up."
-        )
-    return project_path
-
-
-# NOTE: Low-level REPL tools (lean_repl_cmd, lean_repl_tactic, etc.) are intentionally
-# NOT exposed. The model should use lean_multi_attempt which handles REPL internally.
-# This keeps the API simple while still providing REPL's backtracking capabilities.
 
 
 if __name__ == "__main__":

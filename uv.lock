@@ -331,6 +331,7 @@ dependencies = [
     { name = "leanclient" },
     { name = "mcp", extra = ["cli"] },
     { name = "orjson" },
+    { name = "pydantic-settings" },
 ]
 
 [package.optional-dependencies]
@@ -350,6 +351,7 @@ requires-dist = [
     { name = "leanclient", specifier = "==0.8.0" },
     { name = "mcp", extras = ["cli"], specifier = "==1.25.0" },
     { name = "orjson", specifier = ">=3.11.1" },
+    { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.0" },

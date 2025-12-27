@@ -39,18 +39,16 @@ def main():
     parser.add_argument(
         "--repl",
         action="store_true",
-        help="Enable REPL integration for stateful code evaluation and tactic mode. "
-        "Auto-builds leanprover-community/repl on first use.",
+        help="Enable REPL pool for efficient multi-attempt with header caching.",
     )
     parser.add_argument(
-        "--repl-cache-dir",
-        type=str,
-        help="Override REPL cache location (default: ~/.cache/lean-lsp-mcp/repl)",
+        "--repl-workers",
+        type=int,
+        help="Max concurrent REPL workers (default: min(threads-2, 6))",
     )
     parser.add_argument(
         "--repl-timeout",
         type=int,
-        default=60,
         help="REPL command timeout in seconds (default: 60)",
     )
     args = parser.parse_args()
@@ -61,9 +59,9 @@ def main():
     if args.loogle_cache_dir:
         os.environ["LEAN_LOOGLE_CACHE_DIR"] = args.loogle_cache_dir
     if args.repl:
-        os.environ["LEAN_REPL_ENABLED"] = "true"
-    if args.repl_cache_dir:
-        os.environ["LEAN_REPL_CACHE_DIR"] = args.repl_cache_dir
+        os.environ["LEAN_REPL"] = "true"
+    if args.repl_workers:
+        os.environ["LEAN_REPL_WORKERS"] = str(args.repl_workers)
     if args.repl_timeout:
         os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
 
