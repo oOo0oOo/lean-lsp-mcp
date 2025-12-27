@@ -58,7 +58,7 @@ from lean_lsp_mcp.models import (
     WidgetInfo,
 )
 from lean_lsp_mcp.outline_utils import generate_outline_data
-from lean_lsp_mcp.render_utils import extract_images_from_props
+from lean_lsp_mcp.render_utils import extract_images_from_props, render_widget_to_png
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -609,12 +609,24 @@ def hover(
             raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
             for w in raw_widgets:
                 props = w.get("props") or {}
-                # Extract any base64 images embedded in widget props
+                images: list[WidgetImage] = []
+
+                # 1. Extract any base64 images embedded in widget props
                 extracted = extract_images_from_props(props)
-                images = [
-                    WidgetImage(mime_type=mime, data=data)
-                    for mime, data in extracted
-                ]
+                for mime, data in extracted:
+                    images.append(WidgetImage(mime_type=mime, data=data))
+
+                # 2. If no embedded images, try rendering React components
+                if not images and props.get("html"):
+                    try:
+                        rendered = render_widget_to_png(props)
+                        if rendered:
+                            images.append(
+                                WidgetImage(mime_type="image/png", data=rendered)
+                            )
+                    except Exception as e:
+                        logger.debug(f"Failed to render widget: {e}")
+
                 widgets.append(
                     WidgetInfo(
                         id=str(w.get("id", "unknown")),
