@@ -19,7 +19,14 @@ from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
-from mcp.types import ToolAnnotations
+from mcp.types import (
+    Annotations,
+    EmbeddedResource,
+    ResourceLink,
+    Role,
+    TextResourceContents,
+    ToolAnnotations,
+)
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
@@ -250,6 +257,36 @@ if auth_token:
 mcp = FastMCP(**mcp_kwargs)
 
 
+# ============================================================================
+# MCP Resources - Expose Lean files and state as readable resources
+# ============================================================================
+
+
+@mcp.resource(
+    "lean://file/{file_path}",
+    name="Lean File",
+    description="Read a Lean source file by absolute path",
+    mime_type="text/x-lean4",
+)
+def lean_file_resource(file_path: str) -> str:
+    """Read a Lean file as an MCP resource.
+
+    This allows clients to read Lean files using the MCP resource protocol
+    rather than tool calls, enabling resource subscriptions and caching.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise ValueError(f"File not found: {file_path}")
+    if not path.suffix == ".lean":
+        raise ValueError(f"Not a Lean file: {file_path}")
+    return path.read_text()
+
+
+# ============================================================================
+# Rate limiting and utility functions
+# ============================================================================
+
+
 def rate_limited(category: str, max_requests: int, per_seconds: int):
     def decorator(func):
         def _apply_rate_limit(args, kwargs):
@@ -332,12 +369,15 @@ async def lsp_build(
             "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
         )
 
+    await ctx.info(f"Starting build for project: {lean_project_path_obj}")
+
     log_lines: List[str] = []
     errors: List[str] = []
 
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
+            await ctx.debug("Closing existing LSP client before rebuild")
             ctx.request_context.lifespan_context.client = None
             client.close()
 
@@ -407,6 +447,8 @@ async def lsp_build(
         logger.info("Built project and re-started LSP client")
         ctx.request_context.lifespan_context.client = client
 
+        await ctx.info("Build completed successfully, LSP client restarted")
+
         return BuildResult(
             success=True,
             output="\n".join(log_lines[-output_lines:]) if output_lines else "",
@@ -414,6 +456,7 @@ async def lsp_build(
         )
 
     except Exception as e:
+        await ctx.error(f"Build failed: {e}")
         return BuildResult(
             success=False,
             output="\n".join(log_lines[-output_lines:]) if output_lines else "",
@@ -848,7 +891,7 @@ def declaration_file(
     symbol: Annotated[
         str, Field(description="Symbol (case sensitive, must be in file)")
     ],
-) -> DeclarationInfo:
+) -> list:
     """Get file where a symbol is declared. Symbol must be present in file first."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -886,7 +929,19 @@ def declaration_file(
 
     file_content = get_file_contents(abs_path)
 
-    return DeclarationInfo(file_path=str(abs_path), content=file_content)
+    # Return both the content and a ResourceLink for MCP clients that support it
+    declaration_info = DeclarationInfo(file_path=str(abs_path), content=file_content)
+
+    # Create a ResourceLink so clients can re-read the file via MCP resources
+    resource_link = ResourceLink(
+        type="resource_link",
+        uri=f"lean://file/{abs_path}",
+        name=f"Source: {symbol}",
+        description=f"Lean source file containing the declaration of {symbol}",
+        mimeType="text/x-lean4",
+    )
+
+    return [declaration_info, resource_link]
 
 
 async def _multi_attempt_repl(
