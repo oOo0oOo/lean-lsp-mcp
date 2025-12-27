@@ -20,7 +20,7 @@ from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
-from mcp.server.fastmcp.utilities.types import Image
+from mcp.server.fastmcp.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -68,7 +68,11 @@ from lean_lsp_mcp.models import (
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
-from lean_lsp_mcp.render_utils import extract_images_from_props, render_widget_to_png
+from lean_lsp_mcp.render_utils import (
+    extract_audio_from_props,
+    extract_images_from_props,
+    render_widget_to_png,
+)
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -762,9 +766,10 @@ def hover(
     check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
-    # Collect widget info and images
+    # Collect widget info and media
     widgets: list[WidgetInfo] = []
     native_images: list[Image] = []  # Images to return via MCP native image support
+    native_audio: list[Audio] = []  # Audio to return via MCP native audio support
 
     if include_widgets:
         try:
@@ -781,6 +786,14 @@ def hover(
                     fmt = mime.split("/")[-1].replace("+xml", "")  # e.g. "png", "svg"
                     native_images.append(
                         Image(data=base64.b64decode(b64_data), format=fmt)
+                    )
+
+                # 1b. Extract any base64 audio embedded in widget props
+                extracted_audio = extract_audio_from_props(props)
+                for mime, b64_data in extracted_audio:
+                    fmt = mime.split("/")[-1]  # e.g. "wav", "mp3", "mpeg"
+                    native_audio.append(
+                        Audio(data=base64.b64decode(b64_data), format=fmt)
                     )
 
                 # 2. If no embedded images, try rendering React components
@@ -816,8 +829,8 @@ def hover(
         widgets=widgets,
     )
 
-    # Return HoverInfo (serialized as text) plus native images
-    return [hover_result, *native_images]
+    # Return HoverInfo (serialized as text) plus native images and audio
+    return [hover_result, *native_images, *native_audio]
 
 
 @mcp.tool(
