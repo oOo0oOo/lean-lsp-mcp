@@ -54,9 +54,11 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    WidgetImage,
     WidgetInfo,
 )
 from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.render_utils import extract_images_from_props
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -606,12 +608,20 @@ def hover(
         try:
             raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
             for w in raw_widgets:
+                props = w.get("props") or {}
+                # Extract any base64 images embedded in widget props
+                extracted = extract_images_from_props(props)
+                images = [
+                    WidgetImage(mime_type=mime, data=data)
+                    for mime, data in extracted
+                ]
                 widgets.append(
                     WidgetInfo(
                         id=str(w.get("id", "unknown")),
                         name=w.get("name?"),
                         javascript_hash=w.get("javascriptHash"),
-                        props=w.get("props"),
+                        props=props,
+                        images=images,
                     )
                 )
         except Exception as e:
