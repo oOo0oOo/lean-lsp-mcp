@@ -85,9 +85,6 @@ def RateLimiter.record (limiter : RateLimiter) : IO Unit := do
 
 /-! ## Result Helpers -/
 
-def textResult (s : String) : ToolResult :=
-  { content := #[.text s], isError := false }
-
 def errorResult (s : String) : ToolResult :=
   { content := #[.text s], isError := true }
 
@@ -178,7 +175,7 @@ def loogleHandler (limiter : RateLimiter) (params : Json) : IO ToolResult := do
   | .ok json =>
     match json.getObjValAs? (Array Json) "hits" with
     | .ok hits =>
-      let items := hits.toList.take numResults |>.toArray |>.map fun h =>
+      let items := (hits.toSubarray 0 (min numResults hits.size)).toArray.map fun h =>
         let name := h.getObjValAs? String "name" |>.toOption |>.getD ""
         let type := h.getObjValAs? String "type" |>.toOption |>.getD ""
         let module := h.getObjValAs? String "module" |>.toOption |>.getD ""
@@ -312,21 +309,15 @@ structure SearchContext where
   leansearchLimiter : RateLimiter
   loogleLimiter : RateLimiter
   leanfinderLimiter : RateLimiter
-  stateSearchLimiter : RateLimiter
-  hammerLimiter : RateLimiter
 
 def SearchContext.new : IO SearchContext := do
   let leansearch ← RateLimiter.new 3 30
   let loogle ← RateLimiter.new 3 30
   let leanfinder ← RateLimiter.new 10 30
-  let stateSearch ← RateLimiter.new 3 30
-  let hammer ← RateLimiter.new 3 30
   return {
     leansearchLimiter := leansearch
     loogleLimiter := loogle
     leanfinderLimiter := leanfinder
-    stateSearchLimiter := stateSearch
-    hammerLimiter := hammer
   }
 
 end LeanMcp.Search
