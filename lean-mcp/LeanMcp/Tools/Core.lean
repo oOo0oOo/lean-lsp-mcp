@@ -61,9 +61,6 @@ where
 
 /-! ## Tool Result Helpers -/
 
-def textResult (s : String) : ToolResult :=
-  { content := #[.text s], isError := false }
-
 def errorResult (s : String) : ToolResult :=
   { content := #[.text s], isError := true }
 
@@ -224,7 +221,7 @@ def completionsHandler (ctx : ToolContext) (params : Json) : IO ToolResult := do
 
   let completions ← client.completions filePath line column
 
-  let items := completions.toList.take maxCompletions |>.toArray |>.map fun c =>
+  let items := (completions.toSubarray 0 (min maxCompletions completions.size)).toArray.map fun c =>
     let label := c.getObjValAs? String "label" |>.toOption |>.getD ""
     let kind := c.getObjValAs? Nat "kind" |>.toOption |>.map completionKindName
     let detail := c.getObjValAs? String "detail" |>.toOption
