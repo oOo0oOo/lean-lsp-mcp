@@ -6,6 +6,9 @@ INSTRUCTIONS = """## General Rules
 - **lean_goal**: Proof state at position. Omit `column` for before/after. "no goals" = done!
 - **lean_diagnostic_messages**: Compiler errors/warnings. "no goals to be solved" = remove tactics.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
+- **lean_widgets**: Panel widgets at a position (for #widget, etc.).
+- **lean_widget_source**: Fetch widget JS source from a widget instance.
+- **lean_interactive_diagnostics**: Interactive diagnostics or extracted widgets.
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
 - **lean_file_outline**: Token-efficient file skeleton (slow-ish).

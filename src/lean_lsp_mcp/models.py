@@ -1,6 +1,6 @@
 """Pydantic models for MCP tool structured outputs."""
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,33 @@ class StateSearchResult(BaseModel):
 
 class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
+
+
+class LeanWidgetInstance(BaseModel):
+    id: str = Field(description="Widget identifier")
+    javascriptHash: str = Field(description="Widget JavaScript hash")
+    props: Any = Field(description="Widget props payload")
+    range: Optional[dict] = Field(None, description="Range where the widget applies")
+    name: Optional[str] = Field(None, description="Optional widget display name")
+
+
+class WidgetInstancesResult(BaseModel):
+    items: List[LeanWidgetInstance] = Field(
+        default_factory=list, description="List of widget instances"
+    )
+
+
+class InteractiveDiagnosticsResult(BaseModel):
+    diagnostics: List[dict] = Field(
+        default_factory=list, description="Interactive diagnostics payloads"
+    )
+    widgets: List[LeanWidgetInstance] = Field(
+        default_factory=list, description="Widgets extracted from diagnostics"
+    )
+
+
+class WidgetSourceResult(BaseModel):
+    sourcetext: str = Field(description="Widget JavaScript source code")
 
 
 class DiagnosticMessage(BaseModel):
