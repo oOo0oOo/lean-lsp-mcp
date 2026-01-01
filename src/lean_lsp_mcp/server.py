@@ -50,10 +50,12 @@ from lean_lsp_mcp.models import (
     FileOutline,
     GoalState,
     HoverInfo,
+    InteractiveDiagnosticsResult,
     LeanFinderResult,
     LeanFinderResults,
     LeanSearchResult,
     LeanSearchResults,
+    LeanWidgetInstance,
     LocalSearchResult,
     LocalSearchResults,
     LoogleResult,
@@ -66,6 +68,8 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    WidgetInstancesResult,
+    WidgetSourceResult,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -593,6 +597,19 @@ def _process_diagnostics(
     )
 
 
+def _widget_from_dict(widget: Dict) -> LeanWidgetInstance:
+    name = widget.get("name")
+    if name is None and "name?" in widget:
+        name = widget.get("name?")
+    return LeanWidgetInstance(
+        id=str(widget.get("id", "")),
+        javascriptHash=str(widget.get("javascriptHash", "")),
+        props=widget.get("props"),
+        range=widget.get("range"),
+        name=name,
+    )
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -799,6 +816,135 @@ def hover(
         info=info,
         diagnostics=_to_diagnostic_messages(filtered),
     )
+
+
+@mcp.tool(
+    "lean_widgets",
+    annotations=ToolAnnotations(
+        title="Panel Widgets",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def widgets(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    max_widgets: Annotated[int, Field(description="Max widgets", ge=1)] = 32,
+) -> WidgetInstancesResult:
+    """Get panel widgets at a position."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
+    items = [_widget_from_dict(w) for w in raw_widgets][:max_widgets]
+    return WidgetInstancesResult(items=items)
+
+
+@mcp.tool(
+    "lean_widget_source",
+    annotations=ToolAnnotations(
+        title="Widget Source",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def widget_source(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    widget: Annotated[
+        Optional[Dict], Field(description="Widget instance (from lean_widgets)")
+    ] = None,
+    javascript_hash: Annotated[
+        Optional[int], Field(description="Widget JavaScript hash")
+    ] = None,
+) -> WidgetSourceResult:
+    """Get JavaScript source for a widget instance."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    if widget is None and javascript_hash is None:
+        raise LeanToolError(
+            "Provide a widget instance or javascript_hash to retrieve widget source."
+        )
+
+    widget_payload = dict(widget or {})
+    if javascript_hash is not None:
+        widget_payload["javascriptHash"] = str(javascript_hash)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    source = client.get_widget_source(rel_path, line - 1, column - 1, widget_payload)
+    return WidgetSourceResult(sourcetext=source.get("sourcetext", ""))
+
+
+@mcp.tool(
+    "lean_interactive_diagnostics",
+    annotations=ToolAnnotations(
+        title="Interactive Diagnostics",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def interactive_diagnostics(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    start_line: Annotated[
+        Optional[int], Field(description="Start line (1-indexed)", ge=1)
+    ] = None,
+    end_line: Annotated[
+        Optional[int], Field(description="End line (1-indexed, inclusive)", ge=1)
+    ] = None,
+    extract_widgets: Annotated[
+        bool, Field(description="Extract widgets instead of raw diagnostics")
+    ] = False,
+    max_items: Annotated[int, Field(description="Max items", ge=1)] = 64,
+) -> InteractiveDiagnosticsResult:
+    """Get interactive diagnostics or widgets for a file."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    start_line_0 = (start_line - 1) if start_line is not None else None
+    end_line_0 = end_line if end_line is not None else None
+
+    if extract_widgets:
+        widgets_raw = client.get_interactive_diagnostics(
+            rel_path,
+            start_line=start_line_0,
+            end_line=end_line_0,
+            extract_widgets=True,
+        )
+        widgets = [_widget_from_dict(w) for w in widgets_raw][:max_items]
+        return InteractiveDiagnosticsResult(diagnostics=[], widgets=widgets)
+
+    diagnostics = client.get_interactive_diagnostics(
+        rel_path,
+        start_line=start_line_0,
+        end_line=end_line_0,
+        extract_widgets=False,
+    )
+    diagnostics = diagnostics[:max_items]
+    return InteractiveDiagnosticsResult(diagnostics=diagnostics, widgets=[])
 
 
 @mcp.tool(
