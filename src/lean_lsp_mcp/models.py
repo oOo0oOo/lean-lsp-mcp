@@ -1,6 +1,6 @@
 """Pydantic models for MCP tool structured outputs."""
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,35 @@ class StateSearchResult(BaseModel):
 
 class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
+
+
+class LeanModuleInfo(BaseModel):
+    name: str = Field(description="Module name")
+    uri: str = Field(description="Module URI")
+    data: Optional[Any] = Field(None, description="Optional module metadata")
+
+
+class LeanImportKind(BaseModel):
+    isPrivate: bool = Field(description="Whether the import is private")
+    isAll: bool = Field(description="Whether the import uses `import all`")
+    metaKind: str = Field(description="Meta import kind (nonMeta, meta, full)")
+
+
+class LeanImport(BaseModel):
+    module: LeanModuleInfo = Field(description="Imported module")
+    kind: LeanImportKind = Field(description="Import flags")
+
+
+class ModuleHierarchyResult(BaseModel):
+    module: Optional[LeanModuleInfo] = Field(
+        None, description="Module info for the requested file"
+    )
+    imports: List[LeanImport] = Field(
+        default_factory=list, description="Modules imported by this module"
+    )
+    imported_by: List[LeanImport] = Field(
+        default_factory=list, description="Modules that import this module"
+    )
 
 
 class DiagnosticMessage(BaseModel):

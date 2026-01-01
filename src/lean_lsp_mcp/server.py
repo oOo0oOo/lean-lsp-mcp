@@ -34,7 +34,7 @@ from lean_lsp_mcp.client_utils import (
     setup_client_for_file,
     startup_client,
 )
-from lean_lsp_mcp.file_utils import get_file_contents
+from lean_lsp_mcp.file_utils import get_file_contents, get_relative_file_path
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import Repl, repl_enabled
@@ -54,11 +54,15 @@ from lean_lsp_mcp.models import (
     LeanFinderResults,
     LeanSearchResult,
     LeanSearchResults,
+    LeanImport,
+    LeanImportKind,
+    LeanModuleInfo,
     LocalSearchResult,
     LocalSearchResults,
     LoogleResult,
     LoogleResults,
     MultiAttemptResult,
+    ModuleHierarchyResult,
     PremiseResult,
     PremiseResults,
     ProofProfileResult,
@@ -526,6 +530,64 @@ def file_outline(
     return generate_outline_data(client, rel_path)
 
 
+@mcp.tool(
+    "lean_module_hierarchy",
+    annotations=ToolAnnotations(
+        title="Module Hierarchy",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def module_hierarchy(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    lean_project_path: Annotated[
+        Optional[str], Field(description="Override Lean project root")
+    ] = None,
+    include_imports: Annotated[
+        bool, Field(description="Include modules imported by this module")
+    ] = True,
+    include_imported_by: Annotated[
+        bool, Field(description="Include modules that import this module")
+    ] = False,
+) -> ModuleHierarchyResult:
+    """Get module hierarchy information for a Lean file."""
+    if lean_project_path:
+        project_path = Path(lean_project_path).resolve()
+        ctx.request_context.lifespan_context.lean_project_path = project_path
+        startup_client(ctx)
+        rel_path = get_relative_file_path(project_path, file_path)
+    else:
+        rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    module = client.prepare_module_hierarchy(rel_path)
+
+    if module is None:
+        return ModuleHierarchyResult(module=None, imports=[], imported_by=[])
+
+    imports: List[LeanImport] = []
+    imported_by: List[LeanImport] = []
+
+    if include_imports:
+        imports = _imports_from_list(client.get_module_imports(module))
+
+    if include_imported_by:
+        imported_by = _imports_from_list(client.get_module_imported_by(module))
+
+    return ModuleHierarchyResult(
+        module=_module_from_dict(module),
+        imports=imports,
+        imported_by=imported_by,
+    )
+
+
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
     """Convert LSP diagnostics to DiagnosticMessage models."""
     result = []
@@ -591,6 +653,36 @@ def _process_diagnostics(
         items=items,
         failed_dependencies=failed_deps,
     )
+
+
+def _module_from_dict(module: Dict | None) -> LeanModuleInfo | None:
+    if not module:
+        return None
+    return LeanModuleInfo(
+        name=module.get("name", ""),
+        uri=module.get("uri", ""),
+        data=module.get("data"),
+    )
+
+
+def _imports_from_list(raw_imports: List[Dict]) -> List[LeanImport]:
+    imports: List[LeanImport] = []
+    for item in raw_imports or []:
+        module = _module_from_dict(item.get("module"))
+        if module is None:
+            continue
+        kind = item.get("kind", {})
+        imports.append(
+            LeanImport(
+                module=module,
+                kind=LeanImportKind(
+                    isPrivate=bool(kind.get("isPrivate", False)),
+                    isAll=bool(kind.get("isAll", False)),
+                    metaKind=str(kind.get("metaKind", "")),
+                ),
+            )
+        )
+    return imports
 
 
 @mcp.tool(
