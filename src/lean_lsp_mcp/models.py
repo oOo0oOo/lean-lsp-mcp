@@ -54,7 +54,28 @@ class LeanImport(BaseModel):
     kind: LeanImportKind = Field(description="Import flags")
 
 
-class ModuleHierarchyResult(BaseModel):
+class ImportGraphEdge(BaseModel):
+    source: str = Field(description="Source module name")
+    target: str = Field(description="Target module name")
+    kind: LeanImportKind = Field(description="Import flags for this edge")
+
+
+class ImportGraph(BaseModel):
+    nodes: List[LeanModuleInfo] = Field(default_factory=list)
+    edges: List[ImportGraphEdge] = Field(default_factory=list)
+
+
+class ImportTreeNode(BaseModel):
+    module: LeanModuleInfo = Field(description="Module info for this node")
+    kind: Optional[LeanImportKind] = Field(
+        None, description="Import flags from the parent to this node"
+    )
+    children: List["ImportTreeNode"] = Field(
+        default_factory=list, description="Imported child modules"
+    )
+
+
+class LeanImportsResult(BaseModel):
     module: Optional[LeanModuleInfo] = Field(
         None, description="Module info for the requested file"
     )
@@ -64,6 +85,13 @@ class ModuleHierarchyResult(BaseModel):
     imported_by: List[LeanImport] = Field(
         default_factory=list, description="Modules that import this module"
     )
+    graph: Optional[ImportGraph] = Field(
+        None, description="Optional import graph view"
+    )
+    tree: Optional[ImportTreeNode] = Field(
+        None, description="Optional import tree view"
+    )
+    view: Optional[str] = Field(None, description="Selected view (graph or tree)")
 
 
 class DiagnosticMessage(BaseModel):

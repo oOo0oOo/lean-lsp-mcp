@@ -35,12 +35,15 @@ async def test_module_hierarchy_tool(
 
     async with mcp_client_factory() as client:
         result = await client.call_tool(
-            "lean_module_hierarchy",
+            "lean_imports",
             {
                 "file_path": str(target_file),
                 "lean_project_path": str(test_project_path),
                 "include_imports": True,
                 "include_imported_by": True,
+                "view": "graph",
+                "depth": 1,
+                "max_nodes": 128,
             },
         )
 
@@ -62,3 +65,27 @@ async def test_module_hierarchy_tool(
 
         imported_by = structured.get("imported_by")
         assert isinstance(imported_by, list), "Expected imported_by list"
+
+        graph = structured.get("graph")
+        assert isinstance(graph, dict), "Expected graph view in response"
+        assert isinstance(graph.get("nodes"), list)
+        assert isinstance(graph.get("edges"), list)
+        assert graph.get("nodes"), "Expected graph nodes"
+
+        tree_result = await client.call_tool(
+            "lean_imports",
+            {
+                "file_path": str(target_file),
+                "lean_project_path": str(test_project_path),
+                "include_imports": True,
+                "include_imported_by": False,
+                "view": "tree",
+                "depth": 1,
+                "max_nodes": 128,
+            },
+        )
+        tree_structured = tree_result.structuredContent
+        assert tree_structured is not None
+        tree = tree_structured.get("tree")
+        assert isinstance(tree, dict), "Expected tree view in response"
+        assert isinstance(tree.get("children"), list), "Expected tree children list"
