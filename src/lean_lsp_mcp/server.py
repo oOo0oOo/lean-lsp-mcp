@@ -565,9 +565,7 @@ def _rpc_call_with_retry(
     last_exc: Exception | None = None
     for _ in range(retries + 1):
         try:
-            return client._rpc_call(
-                uri, method, params, line=line, character=character
-            )
+            return client._rpc_call(uri, method, params, line=line, character=character)
         except Exception as exc:  # noqa: BLE001 - surface as tool error
             msg = str(exc)
             last_exc = exc
@@ -586,9 +584,7 @@ def _render_interactive_goal(goal: Dict) -> str:
         lines.append(f"case {user_name}")
 
     for hyp in goal.get("hyps", []) or []:
-        names = " ".join(
-            n for n in hyp.get("names", []) if isinstance(n, str) and n
-        )
+        names = " ".join(n for n in hyp.get("names", []) if isinstance(n, str) and n)
         hyp_type = tagged_text_to_plain(hyp.get("type", {}))
         value = hyp.get("val") if "val" in hyp else hyp.get("val?")
         if value is not None:

@@ -94,9 +94,7 @@ class InteractiveGoalsResult(BaseModel):
 
 
 class InteractiveTermGoalResult(BaseModel):
-    goal: Optional[dict] = Field(
-        None, description="Interactive term goal object"
-    )
+    goal: Optional[dict] = Field(None, description="Interactive term goal object")
     rendered: Optional[str] = Field(
         None, description="Plaintext rendering of the term goal"
     )
