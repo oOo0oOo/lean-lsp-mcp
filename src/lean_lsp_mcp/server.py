@@ -5,9 +5,10 @@ import re
 import time
 import urllib
 import uuid
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Dict, List, Optional
 
@@ -24,7 +25,7 @@ from lean_lsp_mcp.client_utils import (
     setup_client_for_file,
     startup_client,
 )
-from lean_lsp_mcp.file_utils import get_file_contents
+from lean_lsp_mcp.file_utils import get_file_contents, get_relative_file_path
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.models import (
@@ -43,6 +44,13 @@ from lean_lsp_mcp.models import (
     LeanFinderResults,
     LeanSearchResult,
     LeanSearchResults,
+    ImportGraph,
+    ImportGraphEdge,
+    ImportTreeNode,
+    LeanImport,
+    LeanImportKind,
+    LeanImportsResult,
+    LeanModuleInfo,
     LocalSearchResult,
     LocalSearchResults,
     LoogleResult,
@@ -81,6 +89,7 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+_IMPORTS_CACHE_MAX = int(os.environ.get("LEAN_IMPORTS_CACHE_MAX", "2048"))
 
 
 @dataclass
@@ -91,6 +100,8 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    imports_cache: OrderedDict = field(default_factory=OrderedDict)
+    imports_cache_max: int = 0
 
 
 @asynccontextmanager
@@ -131,6 +142,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            imports_cache_max=_IMPORTS_CACHE_MAX,
         )
         yield context
     finally:
@@ -374,6 +386,183 @@ def file_outline(
     return generate_outline_data(client, rel_path)
 
 
+@mcp.tool(
+    "lean_imports",
+    annotations=ToolAnnotations(
+        title="Imports",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def imports_tool(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    lean_project_path: Annotated[
+        Optional[str], Field(description="Override Lean project root")
+    ] = None,
+    include_imports: Annotated[
+        bool, Field(description="Include modules imported by this module")
+    ] = True,
+    include_imported_by: Annotated[
+        bool, Field(description="Include modules that import this module")
+    ] = False,
+    view: Annotated[
+        Optional[str], Field(description="Optional view: graph or tree")
+    ] = None,
+    direction: Annotated[
+        Optional[str],
+        Field(description="Direction for graph/tree: imports, imported_by, or both"),
+    ] = None,
+    depth: Annotated[
+        int, Field(description="Traversal depth for graph/tree", ge=0)
+    ] = 1,
+    max_nodes: Annotated[int, Field(description="Max nodes in graph/tree", ge=1)] = 512,
+) -> LeanImportsResult:
+    """Get module imports (plus optional graph/tree view) for a Lean file."""
+    if lean_project_path:
+        project_path = Path(lean_project_path).resolve()
+        ctx.request_context.lifespan_context.lean_project_path = project_path
+        startup_client(ctx)
+        rel_path = get_relative_file_path(project_path, file_path)
+    else:
+        rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    if view not in (None, "graph", "tree"):
+        raise LeanToolError("view must be one of: graph, tree")
+    if direction is not None and direction not in ("imports", "imported_by", "both"):
+        raise LeanToolError("direction must be one of: imports, imported_by, both")
+
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    client: LeanLSPClient = app_ctx.client
+    client.open_file(rel_path)
+    state = getattr(client, "opened_files", {}).get(rel_path)
+    version = state.version if state is not None else None
+
+    if view is not None and direction is None:
+        if include_imported_by and not include_imports:
+            direction = "imported_by"
+        elif include_imports and not include_imported_by:
+            direction = "imports"
+        elif include_imports and include_imported_by:
+            direction = "both"
+        else:
+            direction = "imports"
+
+    if view == "tree" and direction == "both":
+        raise LeanToolError("tree view does not support direction=both")
+
+    cache_key = (
+        str(app_ctx.lean_project_path),
+        rel_path,
+        version,
+        include_imports,
+        include_imported_by,
+        view,
+        direction,
+        depth,
+        max_nodes,
+    )
+    cached = _imports_cache_get(app_ctx, cache_key)
+    if cached is not None:
+        return cached
+
+    module = client.prepare_module_hierarchy(rel_path)
+
+    if module is None:
+        result = LeanImportsResult(
+            module=None,
+            imports=[],
+            imported_by=[],
+            graph=None,
+            tree=None,
+            view=view,
+            direction=direction,
+        )
+        _imports_cache_set(app_ctx, cache_key, result)
+        return result
+
+    imports: List[LeanImport] = []
+    imported_by: List[LeanImport] = []
+    graph: ImportGraph | None = None
+    tree: ImportTreeNode | None = None
+
+    if include_imports:
+        imports = _imports_from_list(client.get_module_imports(module))
+
+    if include_imported_by:
+        imported_by = _imports_from_list(client.get_module_imported_by(module))
+
+    if view == "graph":
+        graph = _build_import_graph(
+            client,
+            module,
+            depth=depth,
+            max_nodes=max_nodes,
+            direction=direction or "imports",
+        )
+    elif view == "tree":
+        tree = _build_import_tree(
+            client,
+            module,
+            depth=depth,
+            max_nodes=max_nodes,
+            direction=direction or "imports",
+        )
+
+    result = LeanImportsResult(
+        module=_module_from_dict(module),
+        imports=imports,
+        imported_by=imported_by,
+        graph=graph,
+        tree=tree,
+        view=view,
+        direction=direction,
+    )
+    _imports_cache_set(app_ctx, cache_key, result)
+    return result
+
+
+@mcp.tool(
+    "lean_module_hierarchy",
+    annotations=ToolAnnotations(
+        title="Module Hierarchy (Deprecated)",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@deprecated
+def module_hierarchy(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    lean_project_path: Annotated[
+        Optional[str], Field(description="Override Lean project root")
+    ] = None,
+    include_imports: Annotated[
+        bool, Field(description="Include modules imported by this module")
+    ] = True,
+    include_imported_by: Annotated[
+        bool, Field(description="Include modules that import this module")
+    ] = False,
+) -> LeanImportsResult:
+    """DEPRECATED. Use lean_imports instead."""
+    return imports_tool(
+        ctx,
+        file_path=file_path,
+        lean_project_path=lean_project_path,
+        include_imports=include_imports,
+        include_imported_by=include_imported_by,
+        view=None,
+        depth=1,
+        max_nodes=512,
+    )
+
+
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
     result = []
     for diag in diagnostics:
@@ -392,6 +581,181 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
             )
         )
     return result
+
+
+def _module_from_dict(module: Dict | None) -> LeanModuleInfo | None:
+    if not module:
+        return None
+    return LeanModuleInfo(
+        name=module.get("name", ""),
+        uri=module.get("uri", ""),
+        data=module.get("data"),
+    )
+
+
+def _imports_from_list(raw_imports: List[Dict]) -> List[LeanImport]:
+    imports: List[LeanImport] = []
+    for item in raw_imports or []:
+        module = _module_from_dict(item.get("module"))
+        if module is None:
+            continue
+        kind = item.get("kind", {})
+        imports.append(
+            LeanImport(
+                module=module,
+                kind=_import_kind_from_dict(kind),
+            )
+        )
+    return imports
+
+
+def _import_kind_from_dict(kind: Dict) -> LeanImportKind:
+    return LeanImportKind(
+        isPrivate=bool(kind.get("isPrivate", False)),
+        isAll=bool(kind.get("isAll", False)),
+        metaKind=str(kind.get("metaKind", "")),
+    )
+
+
+def _build_import_graph(
+    client: LeanLSPClient,
+    root_module: Dict,
+    depth: int,
+    max_nodes: int,
+    direction: str,
+) -> ImportGraph:
+    nodes: Dict[str, LeanModuleInfo] = {}
+    edges: List[ImportGraphEdge] = []
+    edge_keys: set[tuple[str, str, str]] = set()
+
+    if direction == "both":
+        directions = ("imports", "imported_by")
+    else:
+        directions = (direction,)
+
+    def add_node(module_dict: Dict) -> None:
+        module_info = _module_from_dict(module_dict)
+        if module_info is None:
+            return
+        if module_info.name not in nodes:
+            nodes[module_info.name] = module_info
+
+    add_node(root_module)
+
+    queue = deque([(root_module, 0)])
+    seen: set[str] = set()
+
+    while queue and len(nodes) < max_nodes:
+        module_dict, level = queue.popleft()
+        module_name = module_dict.get("name", "")
+        if not module_name or module_name in seen:
+            continue
+        seen.add(module_name)
+
+        if level >= depth:
+            continue
+
+        for relation in directions:
+            if relation == "imports":
+                raw_imports = client.get_module_imports(module_dict)
+            else:
+                raw_imports = client.get_module_imported_by(module_dict)
+
+            for item in raw_imports or []:
+                mod_dict = item.get("module", {})
+                kind_dict = item.get("kind", {})
+                mod_name = mod_dict.get("name", "")
+                if not mod_name:
+                    continue
+
+                if mod_name not in nodes and len(nodes) < max_nodes:
+                    add_node(mod_dict)
+
+                edge_key = (module_name, mod_name, relation)
+                if mod_name in nodes and edge_key not in edge_keys:
+                    edges.append(
+                        ImportGraphEdge(
+                            source=module_name,
+                            target=mod_name,
+                            kind=_import_kind_from_dict(kind_dict),
+                            direction=relation,
+                        )
+                    )
+                    edge_keys.add(edge_key)
+
+                if (
+                    mod_name not in seen
+                    and level + 1 <= depth
+                    and len(nodes) < max_nodes
+                ):
+                    queue.append((mod_dict, level + 1))
+
+    return ImportGraph(nodes=list(nodes.values()), edges=edges)
+
+
+def _build_import_tree(
+    client: LeanLSPClient,
+    root_module: Dict,
+    depth: int,
+    max_nodes: int,
+    direction: str,
+) -> ImportTreeNode:
+    seen: set[str] = set()
+    node_count = 0
+    fetch_neighbors = (
+        client.get_module_imports
+        if direction == "imports"
+        else client.get_module_imported_by
+    )
+
+    def build_node(
+        module_dict: Dict, level: int, kind: LeanImportKind | None
+    ) -> ImportTreeNode:
+        nonlocal node_count
+        module_info = _module_from_dict(module_dict)
+        if module_info is None:
+            module_info = LeanModuleInfo(name="", uri="", data=None)
+        node_count += 1
+        node = ImportTreeNode(module=module_info, kind=kind, children=[])
+
+        if level >= depth:
+            return node
+        if module_info.name in seen:
+            return node
+        seen.add(module_info.name)
+
+        raw_imports = fetch_neighbors(module_dict)
+        for item in raw_imports or []:
+            if node_count >= max_nodes:
+                break
+            mod_dict = item.get("module", {})
+            kind_dict = item.get("kind", {})
+            child = build_node(mod_dict, level + 1, _import_kind_from_dict(kind_dict))
+            node.children.append(child)
+
+        return node
+
+    return build_node(root_module, 0, None)
+
+
+def _imports_cache_get(app_ctx: AppContext, key: tuple) -> LeanImportsResult | None:
+    if app_ctx.imports_cache_max <= 0:
+        return None
+    cached = app_ctx.imports_cache.get(key)
+    if cached is not None:
+        app_ctx.imports_cache.move_to_end(key)
+    return cached
+
+
+def _imports_cache_set(
+    app_ctx: AppContext, key: tuple, value: LeanImportsResult
+) -> None:
+    if app_ctx.imports_cache_max <= 0:
+        return
+    app_ctx.imports_cache[key] = value
+    app_ctx.imports_cache.move_to_end(key)
+    while len(app_ctx.imports_cache) > app_ctx.imports_cache_max:
+        app_ctx.imports_cache.popitem(last=False)
 
 
 @mcp.tool(

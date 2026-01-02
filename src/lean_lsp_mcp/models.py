@@ -1,6 +1,6 @@
 """Pydantic models for MCP tool structured outputs."""
 
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -35,6 +35,65 @@ class StateSearchResult(BaseModel):
 
 class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
+
+
+class LeanModuleInfo(BaseModel):
+    name: str = Field(description="Module name")
+    uri: str = Field(description="Module URI")
+    data: Optional[Any] = Field(None, description="Optional module metadata")
+
+
+class LeanImportKind(BaseModel):
+    isPrivate: bool = Field(description="Whether the import is private")
+    isAll: bool = Field(description="Whether the import uses `import all`")
+    metaKind: str = Field(description="Meta import kind (nonMeta, meta, full)")
+
+
+class LeanImport(BaseModel):
+    module: LeanModuleInfo = Field(description="Imported module")
+    kind: LeanImportKind = Field(description="Import flags")
+
+
+class ImportGraphEdge(BaseModel):
+    source: str = Field(description="Source module name")
+    target: str = Field(description="Target module name")
+    kind: LeanImportKind = Field(description="Import flags for this edge")
+    direction: str = Field(description="Edge direction (imports or imported_by)")
+
+
+class ImportGraph(BaseModel):
+    nodes: List[LeanModuleInfo] = Field(default_factory=list)
+    edges: List[ImportGraphEdge] = Field(default_factory=list)
+
+
+class ImportTreeNode(BaseModel):
+    module: LeanModuleInfo = Field(description="Module info for this node")
+    kind: Optional[LeanImportKind] = Field(
+        None, description="Import flags from the parent to this node"
+    )
+    children: List["ImportTreeNode"] = Field(
+        default_factory=list, description="Imported child modules"
+    )
+
+
+class LeanImportsResult(BaseModel):
+    module: Optional[LeanModuleInfo] = Field(
+        None, description="Module info for the requested file"
+    )
+    imports: List[LeanImport] = Field(
+        default_factory=list, description="Modules imported by this module"
+    )
+    imported_by: List[LeanImport] = Field(
+        default_factory=list, description="Modules that import this module"
+    )
+    graph: Optional[ImportGraph] = Field(None, description="Optional import graph view")
+    tree: Optional[ImportTreeNode] = Field(
+        None, description="Optional import tree view"
+    )
+    view: Optional[str] = Field(None, description="Selected view (graph or tree)")
+    direction: Optional[str] = Field(
+        None, description="Direction used for graph/tree (imports, imported_by, both)"
+    )
 
 
 class DiagnosticMessage(BaseModel):
