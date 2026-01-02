@@ -208,6 +208,33 @@ def extract_range(content: str, range: dict) -> str:
     return content[start_offset:end_offset]
 
 
+def tagged_text_to_plain(tagged_text: Any) -> str:
+    """Flatten Lean TaggedText/InteractiveMessage into plain text."""
+    parts: List[str] = []
+
+    def walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            parts.append(node)
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if isinstance(node, dict):
+            text = node.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            for key in ("tag", "append", "children", "alt", "msg"):
+                if key in node:
+                    walk(node[key])
+            return
+
+    walk(tagged_text)
+    return "".join(parts)
+
+
 def find_start_position(content: str, query: str) -> dict | None:
     """Find the position of the query in the content.
 

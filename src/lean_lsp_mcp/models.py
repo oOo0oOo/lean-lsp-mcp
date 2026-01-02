@@ -81,6 +81,27 @@ class TermGoalState(BaseModel):
     )
 
 
+class InteractiveGoalsResult(BaseModel):
+    goals: List[dict] = Field(
+        default_factory=list, description="Interactive goal objects"
+    )
+    rendered: List[str] = Field(
+        default_factory=list, description="Plaintext rendering of each goal"
+    )
+    rendered_text: str = Field(
+        "", description="Combined plaintext rendering of all goals"
+    )
+
+
+class InteractiveTermGoalResult(BaseModel):
+    goal: Optional[dict] = Field(
+        None, description="Interactive term goal object"
+    )
+    rendered: Optional[str] = Field(
+        None, description="Plaintext rendering of the term goal"
+    )
+
+
 class OutlineEntry(BaseModel):
     name: str = Field(description="Declaration name")
     kind: str = Field(description="Declaration kind (Thm, Def, Class, Struct, Ns, Ex)")
