@@ -215,8 +215,8 @@ def tagged_text_to_plain(tagged_text: Any) -> str:
 
 def tagged_text_to_highlighted(
     tagged_text: Any,
-    highlight_start: str = "⟪",
-    highlight_end: str = "⟫",
+    highlight_start: str = "❰",
+    highlight_end: str = "❱",
     highlight_tag: str = "highlighted",
 ) -> str:
     """Flatten TaggedText and wrap highlight tags with markers."""
