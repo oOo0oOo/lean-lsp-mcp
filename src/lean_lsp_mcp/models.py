@@ -58,9 +58,7 @@ class ImportGraphEdge(BaseModel):
     source: str = Field(description="Source module name")
     target: str = Field(description="Target module name")
     kind: LeanImportKind = Field(description="Import flags for this edge")
-    direction: str = Field(
-        description="Edge direction (imports or imported_by)"
-    )
+    direction: str = Field(description="Edge direction (imports or imported_by)")
 
 
 class ImportGraph(BaseModel):
@@ -88,9 +86,7 @@ class LeanImportsResult(BaseModel):
     imported_by: List[LeanImport] = Field(
         default_factory=list, description="Modules that import this module"
     )
-    graph: Optional[ImportGraph] = Field(
-        None, description="Optional import graph view"
-    )
+    graph: Optional[ImportGraph] = Field(None, description="Optional import graph view")
     tree: Optional[ImportTreeNode] = Field(
         None, description="Optional import tree view"
     )

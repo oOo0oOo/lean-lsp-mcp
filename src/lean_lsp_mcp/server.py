@@ -412,16 +412,12 @@ def imports_tool(
     ] = None,
     direction: Annotated[
         Optional[str],
-        Field(
-            description="Direction for graph/tree: imports, imported_by, or both"
-        ),
+        Field(description="Direction for graph/tree: imports, imported_by, or both"),
     ] = None,
     depth: Annotated[
         int, Field(description="Traversal depth for graph/tree", ge=0)
     ] = 1,
-    max_nodes: Annotated[
-        int, Field(description="Max nodes in graph/tree", ge=1)
-    ] = 512,
+    max_nodes: Annotated[int, Field(description="Max nodes in graph/tree", ge=1)] = 512,
 ) -> LeanImportsResult:
     """Get module imports (plus optional graph/tree view) for a Lean file."""
     if lean_project_path:
@@ -712,7 +708,9 @@ def _build_import_tree(
         else client.get_module_imported_by
     )
 
-    def build_node(module_dict: Dict, level: int, kind: LeanImportKind | None) -> ImportTreeNode:
+    def build_node(
+        module_dict: Dict, level: int, kind: LeanImportKind | None
+    ) -> ImportTreeNode:
         nonlocal node_count
         module_info = _module_from_dict(module_dict)
         if module_info is None:
