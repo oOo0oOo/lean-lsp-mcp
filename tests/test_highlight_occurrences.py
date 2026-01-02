@@ -32,3 +32,6 @@ async def test_highlight_occurrences(
         rendered = structured.get("rendered_text")
         assert isinstance(rendered, str)
         assert "Nat" in rendered
+        highlighted = structured.get("highlighted_text")
+        assert isinstance(highlighted, str)
+        assert "[[Nat]]" in highlighted
