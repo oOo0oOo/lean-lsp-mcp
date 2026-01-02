@@ -6,7 +6,7 @@ INSTRUCTIONS = """## General Rules
 - **lean_goal**: Proof state at position. Omit `column` for before/after. "no goals" = done!
 - **lean_diagnostic_messages**: Compiler errors/warnings. "no goals to be solved" = remove tactics.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
-- **lean_highlight_occurrences**: Highlight matches inside interactive messages (returns plain and marked text).
+- **lean_highlight_occurrences**: Highlight matches inside interactive messages (returns plain text + ⟪...⟫ markers).
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
 - **lean_file_outline**: Token-efficient file skeleton (slow-ish).
