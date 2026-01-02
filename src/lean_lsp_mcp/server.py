@@ -410,6 +410,12 @@ def imports_tool(
     view: Annotated[
         Optional[str], Field(description="Optional view: graph or tree")
     ] = None,
+    direction: Annotated[
+        Optional[str],
+        Field(
+            description="Direction for graph/tree: imports, imported_by, or both"
+        ),
+    ] = None,
     depth: Annotated[
         int, Field(description="Traversal depth for graph/tree", ge=0)
     ] = 1,
@@ -432,12 +438,27 @@ def imports_tool(
 
     if view not in (None, "graph", "tree"):
         raise LeanToolError("view must be one of: graph, tree")
+    if direction is not None and direction not in ("imports", "imported_by", "both"):
+        raise LeanToolError("direction must be one of: imports, imported_by, both")
 
     app_ctx: AppContext = ctx.request_context.lifespan_context
     client: LeanLSPClient = app_ctx.client
     client.open_file(rel_path)
     state = getattr(client, "opened_files", {}).get(rel_path)
     version = state.version if state is not None else None
+
+    if view is not None and direction is None:
+        if include_imported_by and not include_imports:
+            direction = "imported_by"
+        elif include_imports and not include_imported_by:
+            direction = "imports"
+        elif include_imports and include_imported_by:
+            direction = "both"
+        else:
+            direction = "imports"
+
+    if view == "tree" and direction == "both":
+        raise LeanToolError("tree view does not support direction=both")
 
     cache_key = (
         str(app_ctx.lean_project_path),
@@ -446,6 +467,7 @@ def imports_tool(
         include_imports,
         include_imported_by,
         view,
+        direction,
         depth,
         max_nodes,
     )
@@ -463,6 +485,7 @@ def imports_tool(
             graph=None,
             tree=None,
             view=view,
+            direction=direction,
         )
         _imports_cache_set(app_ctx, cache_key, result)
         return result
@@ -479,9 +502,21 @@ def imports_tool(
         imported_by = _imports_from_list(client.get_module_imported_by(module))
 
     if view == "graph":
-        graph = _build_import_graph(client, module, depth=depth, max_nodes=max_nodes)
+        graph = _build_import_graph(
+            client,
+            module,
+            depth=depth,
+            max_nodes=max_nodes,
+            direction=direction or "imports",
+        )
     elif view == "tree":
-        tree = _build_import_tree(client, module, depth=depth, max_nodes=max_nodes)
+        tree = _build_import_tree(
+            client,
+            module,
+            depth=depth,
+            max_nodes=max_nodes,
+            direction=direction or "imports",
+        )
 
     result = LeanImportsResult(
         module=_module_from_dict(module),
@@ -490,6 +525,7 @@ def imports_tool(
         graph=graph,
         tree=tree,
         view=view,
+        direction=direction,
     )
     _imports_cache_set(app_ctx, cache_key, result)
     return result
@@ -590,9 +626,16 @@ def _build_import_graph(
     root_module: Dict,
     depth: int,
     max_nodes: int,
+    direction: str,
 ) -> ImportGraph:
     nodes: Dict[str, LeanModuleInfo] = {}
     edges: List[ImportGraphEdge] = []
+    edge_keys: set[tuple[str, str, str]] = set()
+
+    if direction == "both":
+        directions = ("imports", "imported_by")
+    else:
+        directions = (direction,)
 
     def add_node(module_dict: Dict) -> None:
         module_info = _module_from_dict(module_dict)
@@ -616,28 +659,40 @@ def _build_import_graph(
         if level >= depth:
             continue
 
-        raw_imports = client.get_module_imports(module_dict)
-        for item in raw_imports or []:
-            mod_dict = item.get("module", {})
-            kind_dict = item.get("kind", {})
-            mod_name = mod_dict.get("name", "")
-            if not mod_name:
-                continue
+        for relation in directions:
+            if relation == "imports":
+                raw_imports = client.get_module_imports(module_dict)
+            else:
+                raw_imports = client.get_module_imported_by(module_dict)
 
-            if mod_name not in nodes and len(nodes) < max_nodes:
-                add_node(mod_dict)
+            for item in raw_imports or []:
+                mod_dict = item.get("module", {})
+                kind_dict = item.get("kind", {})
+                mod_name = mod_dict.get("name", "")
+                if not mod_name:
+                    continue
 
-            if mod_name in nodes:
-                edges.append(
-                    ImportGraphEdge(
-                        source=module_name,
-                        target=mod_name,
-                        kind=_import_kind_from_dict(kind_dict),
+                if mod_name not in nodes and len(nodes) < max_nodes:
+                    add_node(mod_dict)
+
+                edge_key = (module_name, mod_name, relation)
+                if mod_name in nodes and edge_key not in edge_keys:
+                    edges.append(
+                        ImportGraphEdge(
+                            source=module_name,
+                            target=mod_name,
+                            kind=_import_kind_from_dict(kind_dict),
+                            direction=relation,
+                        )
                     )
-                )
+                    edge_keys.add(edge_key)
 
-            if mod_name not in seen and level + 1 <= depth and len(nodes) < max_nodes:
-                queue.append((mod_dict, level + 1))
+                if (
+                    mod_name not in seen
+                    and level + 1 <= depth
+                    and len(nodes) < max_nodes
+                ):
+                    queue.append((mod_dict, level + 1))
 
     return ImportGraph(nodes=list(nodes.values()), edges=edges)
 
@@ -647,9 +702,15 @@ def _build_import_tree(
     root_module: Dict,
     depth: int,
     max_nodes: int,
+    direction: str,
 ) -> ImportTreeNode:
     seen: set[str] = set()
     node_count = 0
+    fetch_neighbors = (
+        client.get_module_imports
+        if direction == "imports"
+        else client.get_module_imported_by
+    )
 
     def build_node(module_dict: Dict, level: int, kind: LeanImportKind | None) -> ImportTreeNode:
         nonlocal node_count
@@ -665,7 +726,7 @@ def _build_import_tree(
             return node
         seen.add(module_info.name)
 
-        raw_imports = client.get_module_imports(module_dict)
+        raw_imports = fetch_neighbors(module_dict)
         for item in raw_imports or []:
             if node_count >= max_nodes:
                 break

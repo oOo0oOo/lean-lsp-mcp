@@ -71,6 +71,9 @@ async def test_module_hierarchy_tool(
         assert isinstance(graph.get("nodes"), list)
         assert isinstance(graph.get("edges"), list)
         assert graph.get("nodes"), "Expected graph nodes"
+        assert structured.get("direction") == "both"
+        if graph.get("edges"):
+            assert "direction" in graph["edges"][0]
 
         tree_result = await client.call_tool(
             "lean_imports",
@@ -89,3 +92,4 @@ async def test_module_hierarchy_tool(
         tree = tree_structured.get("tree")
         assert isinstance(tree, dict), "Expected tree view in response"
         assert isinstance(tree.get("children"), list), "Expected tree children list"
+        assert tree_structured.get("direction") == "imports"
