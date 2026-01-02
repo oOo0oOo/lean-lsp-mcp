@@ -68,6 +68,8 @@ async def test_widget_tools(
             },
         )
         diag_structured = diagnostics_result.structuredContent
-        assert diag_structured is not None, "Expected structured content from diagnostics"
+        assert diag_structured is not None, (
+            "Expected structured content from diagnostics"
+        )
         assert isinstance(diag_structured.get("diagnostics"), list)
         assert isinstance(diag_structured.get("widgets"), list)
