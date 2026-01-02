@@ -80,6 +80,8 @@ from lean_lsp_mcp.utils import (
     find_start_position,
     get_declaration_range,
     is_build_stderr,
+    tagged_text_to_highlighted,
+    tagged_text_to_plain,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
@@ -577,32 +579,6 @@ def _rpc_call_with_retry(
         raise last_exc
 
 
-def _interactive_message_to_plain(message: Dict | List | str | None) -> str:
-    parts: List[str] = []
-
-    def walk(node: Any) -> None:
-        if node is None:
-            return
-        if isinstance(node, str):
-            parts.append(node)
-            return
-        if isinstance(node, list):
-            for item in node:
-                walk(item)
-            return
-        if isinstance(node, dict):
-            text = node.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-            for key in ("tag", "append", "children", "alt", "msg"):
-                if key in node:
-                    walk(node[key])
-            return
-
-    walk(message)
-    return "".join(parts)
-
-
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -871,8 +847,13 @@ def highlight_occurrences(
             f"RPC error during highlightMatches: {type(exc).__name__}: {exc or repr(exc)}"
         ) from exc
 
-    rendered_text = _interactive_message_to_plain(result)
-    return HighlightOccurrencesResult(message=result, rendered_text=rendered_text)
+    rendered_text = tagged_text_to_plain(result)
+    highlighted_text = tagged_text_to_highlighted(result)
+    return HighlightOccurrencesResult(
+        message=result,
+        rendered_text=rendered_text,
+        highlighted_text=highlighted_text,
+    )
 
 
 @mcp.tool(

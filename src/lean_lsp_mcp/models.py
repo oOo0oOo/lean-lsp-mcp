@@ -84,6 +84,9 @@ class TermGoalState(BaseModel):
 class HighlightOccurrencesResult(BaseModel):
     message: dict = Field(description="Highlighted interactive message payload")
     rendered_text: str = Field(description="Plaintext rendering of the message")
+    highlighted_text: str = Field(
+        description="Plaintext rendering with [[...]] marking highlighted spans"
+    )
 
 
 class OutlineEntry(BaseModel):

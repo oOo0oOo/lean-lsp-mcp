@@ -208,6 +208,99 @@ def extract_range(content: str, range: dict) -> str:
     return content[start_offset:end_offset]
 
 
+def tagged_text_to_plain(tagged_text: Any) -> str:
+    """Flatten Lean TaggedText/InteractiveMessage into plain text."""
+    return _tagged_text_to_text(tagged_text)
+
+
+def tagged_text_to_highlighted(
+    tagged_text: Any,
+    highlight_start: str = "[[",
+    highlight_end: str = "]]",
+    highlight_tag: str = "highlighted",
+) -> str:
+    """Flatten TaggedText and wrap highlight tags with markers."""
+    return _tagged_text_to_text(
+        tagged_text,
+        highlight_start=highlight_start,
+        highlight_end=highlight_end,
+        highlight_tag=highlight_tag,
+    )
+
+
+def _tagged_text_to_text(
+    tagged_text: Any,
+    *,
+    highlight_start: str | None = None,
+    highlight_end: str | None = None,
+    highlight_tag: str | None = None,
+) -> str:
+    parts: List[str] = []
+
+    def is_highlight_tag(tag_meta: Any) -> bool:
+        if highlight_tag is None:
+            return False
+        if isinstance(tag_meta, str):
+            return tag_meta == highlight_tag
+        if isinstance(tag_meta, dict):
+            tag_name = tag_meta.get("tag") or tag_meta.get("name")
+            return tag_name == highlight_tag
+        if isinstance(tag_meta, list) and tag_meta:
+            return tag_meta[0] == highlight_tag
+        return False
+
+    def looks_like_tagged_text(node: Any) -> bool:
+        return isinstance(node, dict) and any(
+            key in node for key in ("text", "append", "tag")
+        )
+
+    def walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            parts.append(node)
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if isinstance(node, dict):
+            if "text" in node:
+                text = node.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                return
+            if "append" in node:
+                walk(node.get("append"))
+                return
+            if "tag" in node:
+                tag_payload = node.get("tag")
+                if isinstance(tag_payload, list) and len(tag_payload) == 2:
+                    tag_meta, tag_body = tag_payload
+                    if (
+                        highlight_start is not None
+                        and highlight_end is not None
+                        and is_highlight_tag(tag_meta)
+                    ):
+                        parts.append(highlight_start)
+                        walk(tag_body)
+                        parts.append(highlight_end)
+                    else:
+                        walk(tag_body)
+                    return
+                if looks_like_tagged_text(tag_payload):
+                    walk(tag_payload)
+                    return
+                return
+            for key in ("children", "alt", "msg"):
+                if key in node:
+                    walk(node[key])
+            return
+
+    walk(tagged_text)
+    return "".join(parts)
+
+
 def find_start_position(content: str, query: str) -> dict | None:
     """Find the position of the query in the content.
 
