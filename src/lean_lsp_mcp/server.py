@@ -565,9 +565,7 @@ def _rpc_call_with_retry(
     last_exc: Exception | None = None
     for _ in range(retries + 1):
         try:
-            return client._rpc_call(
-                uri, method, params, line=line, character=character
-            )
+            return client._rpc_call(uri, method, params, line=line, character=character)
         except Exception as exc:  # noqa: BLE001 - surface as tool error
             msg = str(exc)
             last_exc = exc
@@ -806,7 +804,8 @@ def highlight_occurrences(
         Optional[Dict], Field(description="Interactive message payload")
     ] = None,
     text: Annotated[
-        Optional[str], Field(description="Plain text to highlight (converted to message)")
+        Optional[str],
+        Field(description="Plain text to highlight (converted to message)"),
     ] = None,
 ) -> HighlightOccurrencesResult:
     """Highlight occurrences inside an interactive message."""
