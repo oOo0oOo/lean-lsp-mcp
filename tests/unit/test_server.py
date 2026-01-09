@@ -115,8 +115,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rate_limit["test"] == [100]
 
 
-@pytest.mark.asyncio
-async def test_local_search_project_root_updates_context(
+def test_local_search_project_root_updates_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fake_result = [{"name": "foo", "kind": "def", "file": "Foo.lean"}]
@@ -136,7 +135,7 @@ async def test_local_search_project_root_updates_context(
 
     ctx = _make_ctx()
 
-    result = await server.local_search(
+    result = server.local_search(
         ctx=ctx, query=" foo ", limit=7, project_root=str(project_dir)
     )
 
@@ -155,8 +154,7 @@ async def test_local_search_project_root_updates_context(
     )
 
 
-@pytest.mark.asyncio
-async def test_local_search_requires_project_root_when_unset(
+def test_local_search_requires_project_root_when_unset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(server, "_RG_AVAILABLE", True)
@@ -166,6 +164,6 @@ async def test_local_search_requires_project_root_when_unset(
 
     # Now raises LocalSearchError instead of returning error string
     with pytest.raises(server.LocalSearchError) as exc_info:
-        await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
+        server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
