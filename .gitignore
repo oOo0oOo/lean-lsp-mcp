@@ -5,7 +5,7 @@ dist/
 *.egg-info/
 build/
 
-tests/test_project/
+tests/test_project/.lake/
 tests/mathlib_project/
 .pytest_cache/
 
