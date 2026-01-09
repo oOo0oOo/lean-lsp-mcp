@@ -65,15 +65,36 @@ from lean_lsp_mcp.utils import (
     OutputCapture,
     check_lsp_response,
     deprecated,
+    extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
     get_declaration_range,
+    is_build_stderr,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
+
+
+async def _urlopen_json(req: urllib.request.Request, timeout: float):
+    """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
+
+    def _do_request():
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return orjson.loads(response.read())
+
+    return await asyncio.to_thread(_do_request)
+
+
+async def _safe_report_progress(
+    ctx: Context, *, progress: int, total: int, message: str
+) -> None:
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:
+        return
 
 
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
@@ -165,8 +186,7 @@ mcp = FastMCP(**mcp_kwargs)
 
 def rate_limited(category: str, max_requests: int, per_seconds: int):
     def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def _apply_rate_limit(args, kwargs):
             ctx = kwargs.get("ctx")
             if ctx is None:
                 if not args:
@@ -182,11 +202,33 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
                 if timestamp > current_time - per_seconds
             ]
             if len(rate_limit[category]) >= max_requests:
-                return f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later."
+                return (
+                    False,
+                    f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later.",
+                )
             rate_limit[category].append(current_time)
-            return func(*args, **kwargs)
+            return True, None
 
-        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. " + wrapper.__doc__
+        if asyncio.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                allowed, msg = _apply_rate_limit(args, kwargs)
+                if not allowed:
+                    return msg
+                return await func(*args, **kwargs)
+
+        else:
+
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                allowed, msg = _apply_rate_limit(args, kwargs)
+                if not allowed:
+                    return msg
+                return func(*args, **kwargs)
+
+        doc = wrapper.__doc__ or ""
+        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. {doc}"
         return wrapper
 
     return decorator
@@ -376,6 +418,7 @@ def file_outline(
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
+    """Convert LSP diagnostics to DiagnosticMessage models."""
     result = []
     for diag in diagnostics:
         r = diag.get("fullRange", diag.get("range"))
@@ -393,6 +436,52 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
             )
         )
     return result
+
+
+def _process_diagnostics(
+    diagnostics: List[Dict], build_success: bool
+) -> DiagnosticsResult:
+    """Process diagnostics, extracting dependency paths from build stderr.
+
+    Args:
+        diagnostics: List of diagnostic dicts from leanclient
+        build_success: Whether the build succeeded (from leanclient.DiagnosticsResult.success)
+    """
+    items = []
+    failed_deps: List[str] = []
+
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if r is None:
+            continue
+
+        severity_int = diag.get("severity", 1)
+        message = diag.get("message", "")
+        line = r["start"]["line"] + 1
+        column = r["start"]["character"] + 1
+
+        # Check if this is a build failure at (1,1) - extract dependency paths, skip the item
+        if line == 1 and column == 1 and is_build_stderr(message):
+            failed_deps = extract_failed_dependency_paths(message)
+            continue  # Don't include the build stderr blob as a diagnostic item
+
+        # Normal diagnostic from the queried file
+        items.append(
+            DiagnosticMessage(
+                severity=DIAGNOSTIC_SEVERITY.get(
+                    severity_int, f"unknown({severity_int})"
+                ),
+                message=message,
+                line=line,
+                column=column,
+            )
+        )
+
+    return DiagnosticsResult(
+        success=build_success,
+        items=items,
+        failed_dependencies=failed_deps,
+    )
 
 
 @mcp.tool(
@@ -438,15 +527,14 @@ def diagnostic_messages(
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
-    diagnostics = client.get_diagnostics(
+    result = client.get_diagnostics(
         rel_path,
         start_line=start_line_0,
         end_line=end_line_0,
         inactivity_timeout=15.0,
     )
-    check_lsp_response(diagnostics, "get_diagnostics")
 
-    return DiagnosticsResult(items=_to_diagnostic_messages(diagnostics))
+    return _process_diagnostics(result.diagnostics, result.success)
 
 
 @mcp.tool(
@@ -881,7 +969,7 @@ class LocalSearchError(Exception):
         openWorldHint=False,
     ),
 )
-def local_search(
+async def local_search(
     ctx: Context,
     query: Annotated[str, Field(description="Declaration name or prefix")],
     limit: Annotated[int, Field(description="Max matches", ge=1)] = 10,
@@ -913,8 +1001,11 @@ def local_search(
         )
 
     try:
-        raw_results = lean_local_search(
-            query=query.strip(), limit=limit, project_root=resolved_root
+        raw_results = await asyncio.to_thread(
+            lean_local_search,
+            query=query.strip(),
+            limit=limit,
+            project_root=resolved_root,
         )
         results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
@@ -935,7 +1026,7 @@ def local_search(
     ),
 )
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(
+async def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -955,8 +1046,10 @@ def leansearch(
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=10) as response:
-        results = orjson.loads(response.read())
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message="Awaiting response from leansearch.net"
+    )
+    results = await _urlopen_json(req, timeout=10)
 
     if not results or not results[0]:
         return LeanSearchResults(items=[])
@@ -1030,7 +1123,13 @@ async def loogle(
         )
     rate_limit.append(now)
 
-    result = loogle_remote(query, num_results)
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=10,
+        message="Awaiting response from loogle.lean-lang.org",
+    )
+    result = await asyncio.to_thread(loogle_remote, query, num_results)
     if isinstance(result, str):
         raise LeanToolError(result)  # Error message from remote
     return LoogleResults(items=result)
@@ -1046,7 +1145,7 @@ async def loogle(
     ),
 )
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
-def leanfinder(
+async def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept or proof state")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -1064,23 +1163,27 @@ def leanfinder(
     )
 
     results: List[LeanFinderResult] = []
-    with urllib.request.urlopen(req, timeout=10) as response:
-        data = orjson.loads(response.read())
-        for result in data["results"]:
-            if (
-                "https://leanprover-community.github.io/mathlib4_docs"
-                not in result["url"]
-            ):  # Only include mathlib4 results
-                continue
-            match = re.search(r"pattern=(.*?)#doc", result["url"])
-            if match:
-                results.append(
-                    LeanFinderResult(
-                        full_name=match.group(1),
-                        formal_statement=result["formal_statement"],
-                        informal_statement=result["informal_statement"],
-                    )
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=10,
+        message="Awaiting response from Lean Finder (Hugging Face)",
+    )
+    data = await _urlopen_json(req, timeout=10)
+    for result in data["results"]:
+        if (
+            "https://leanprover-community.github.io/mathlib4_docs" not in result["url"]
+        ):  # Only include mathlib4 results
+            continue
+        match = re.search(r"pattern=(.*?)#doc", result["url"])
+        if match:
+            results.append(
+                LeanFinderResult(
+                    full_name=match.group(1),
+                    formal_statement=result["formal_statement"],
+                    informal_statement=result["informal_statement"],
                 )
+            )
 
     return LeanFinderResults(items=results)
 
@@ -1095,7 +1198,7 @@ def leanfinder(
     ),
 )
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
-def state_search(
+async def state_search(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
@@ -1127,8 +1230,10 @@ def state_search(
         method="GET",
     )
 
-    with urllib.request.urlopen(req, timeout=10) as response:
-        results = orjson.loads(response.read())
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
+    results = await _urlopen_json(req, timeout=10)
 
     items = [StateSearchResult(name=r["name"]) for r in results]
     return StateSearchResults(items=items)
@@ -1144,7 +1249,7 @@ def state_search(
     ),
 )
 @rate_limited("hammer_premise", max_requests=3, per_seconds=30)
-def hammer_premise(
+async def hammer_premise(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
@@ -1187,8 +1292,10 @@ def hammer_premise(
         data=orjson.dumps(data),
     )
 
-    with urllib.request.urlopen(req, timeout=10) as response:
-        results = orjson.loads(response.read())
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
+    results = await _urlopen_json(req, timeout=10)
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)

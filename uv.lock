@@ -325,7 +325,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.17.1"
+version = "0.17.2"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -347,7 +347,7 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
-    { name = "leanclient", specifier = "==0.8.0" },
+    { name = "leanclient", specifier = "==0.9.0" },
     { name = "mcp", extras = ["cli"], specifier = "==1.25.0" },
     { name = "orjson", specifier = ">=3.11.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
@@ -359,15 +359,15 @@ provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.8.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/24/1847125350534afa61fa1860c17dfaaa1ead85ae164ccdfc5d2e9db19950/leanclient-0.8.0.tar.gz", hash = "sha256:895294154b01af69370ec05880d2de95947c97bdb8dd8a4d07ae0a97b5ad8316", size = 1128165, upload-time = "2025-12-19T14:42:31.435Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/cf/9a36f03a4fbe76a15d7f65e1e1a26f90d300cb55f3c191b6a9756f1ce3fd/leanclient-0.9.0.tar.gz", hash = "sha256:525470f204734694d5aef419d1d18d84be2d331d155bf4052e645588a48cd18d", size = 1129915, upload-time = "2026-01-09T11:15:30.163Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/b7/7c55638e2073a44fd484f02c48468aa5389eacb0d6317cfb032c15e912f2/leanclient-0.8.0-py3-none-any.whl", hash = "sha256:a7ba245800b1f583680388f4a865fb8290c4d102802e879d5e9f9fc4f4ac1165", size = 39148, upload-time = "2025-12-19T14:42:28.384Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/63/8f409d1930296eba1b207cee26086bb3180a36db2fdb3c00470d9f836ec5/leanclient-0.9.0-py3-none-any.whl", hash = "sha256:286c26246591822882a689ddab898f6d2b5794ae67e44245a8dbd6438568ad0e", size = 39896, upload-time = "2026-01-09T11:15:28.463Z" },
 ]
 
 [[package]]
