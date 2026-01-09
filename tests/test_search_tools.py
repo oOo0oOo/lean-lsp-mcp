@@ -88,14 +88,10 @@ async def test_search_tools(
             },
             expect_error=True,
         )
-        if state_search.isError:
-            state_text = result_text(state_search).lower()
-            assert "deprecated" in state_text or "lean_state_search_url" in state_text
-        else:
-            # Now returns JSON array of StateSearchResult models
-            state_entry = _first_result_item(state_search)
-            if state_entry is not None:
-                assert "name" in state_entry
+        # Now returns JSON array of StateSearchResult models
+        state_entry = _first_result_item(state_search)
+        if state_entry is not None:
+            assert "name" in state_entry
 
         hammer = await client.call_tool(
             "lean_hammer_premise",

@@ -37,8 +37,15 @@ async def test_mathlib_file_roundtrip(
     target_file = _mathlib_file(test_project_path)
 
     async with mcp_client_factory() as mcp_client:
-        # Read file contents directly (tool is deprecated)
-        text = target_file.read_text(encoding="utf-8", errors="replace")
+        # Test reading file contents
+        contents = await mcp_client.call_tool(
+            "lean_file_contents",
+            {
+                "file_path": str(target_file),
+                "annotate_lines": False,
+            },
+        )
+        text = result_text(contents)
         assert "import Mathlib" in text
         assert "Nat" in text
 

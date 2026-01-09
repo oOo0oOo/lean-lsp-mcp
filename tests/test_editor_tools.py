@@ -37,7 +37,14 @@ async def test_editor_tools(
     editor_file: Path,
 ) -> None:
     async with mcp_client_factory() as client:
-        text = editor_file.read_text(encoding="utf-8")
+        contents = await client.call_tool(
+            "lean_file_contents",
+            {
+                "file_path": str(editor_file),
+                "annotate_lines": False,
+            },
+        )
+        text = result_text(contents)
         assert "sampleValue" in text
         lines = text.splitlines()
 
