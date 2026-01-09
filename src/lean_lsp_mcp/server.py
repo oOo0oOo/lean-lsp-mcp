@@ -64,11 +64,13 @@ from lean_lsp_mcp.utils import (
     OutputCapture,
     check_lsp_response,
     deprecated,
+    extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
     get_declaration_range,
+    is_build_stderr,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
@@ -415,6 +417,7 @@ def file_outline(
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
+    """Convert LSP diagnostics to DiagnosticMessage models."""
     result = []
     for diag in diagnostics:
         r = diag.get("fullRange", diag.get("range"))
@@ -432,6 +435,52 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
             )
         )
     return result
+
+
+def _process_diagnostics(
+    diagnostics: List[Dict], build_success: bool
+) -> DiagnosticsResult:
+    """Process diagnostics, extracting dependency paths from build stderr.
+
+    Args:
+        diagnostics: List of diagnostic dicts from leanclient
+        build_success: Whether the build succeeded (from leanclient.DiagnosticsResult.success)
+    """
+    items = []
+    failed_deps: List[str] = []
+
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if r is None:
+            continue
+
+        severity_int = diag.get("severity", 1)
+        message = diag.get("message", "")
+        line = r["start"]["line"] + 1
+        column = r["start"]["character"] + 1
+
+        # Check if this is a build failure at (1,1) - extract dependency paths, skip the item
+        if line == 1 and column == 1 and is_build_stderr(message):
+            failed_deps = extract_failed_dependency_paths(message)
+            continue  # Don't include the build stderr blob as a diagnostic item
+
+        # Normal diagnostic from the queried file
+        items.append(
+            DiagnosticMessage(
+                severity=DIAGNOSTIC_SEVERITY.get(
+                    severity_int, f"unknown({severity_int})"
+                ),
+                message=message,
+                line=line,
+                column=column,
+            )
+        )
+
+    return DiagnosticsResult(
+        success=build_success,
+        items=items,
+        failed_dependencies=failed_deps,
+    )
 
 
 @mcp.tool(
@@ -477,15 +526,14 @@ def diagnostic_messages(
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
-    diagnostics = client.get_diagnostics(
+    result = client.get_diagnostics(
         rel_path,
         start_line=start_line_0,
         end_line=end_line_0,
         inactivity_timeout=15.0,
     )
-    check_lsp_response(diagnostics, "get_diagnostics")
 
-    return DiagnosticsResult(items=_to_diagnostic_messages(diagnostics))
+    return _process_diagnostics(result.diagnostics, result.success)
 
 
 @mcp.tool(

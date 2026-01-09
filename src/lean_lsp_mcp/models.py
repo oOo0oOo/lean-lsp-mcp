@@ -134,10 +134,17 @@ class DeclarationInfo(BaseModel):
 
 
 class DiagnosticsResult(BaseModel):
-    """Wrapper for diagnostic messages list."""
+    """Wrapper for diagnostic messages list with build status."""
 
+    success: bool = Field(
+        True, description="True if the queried file/range has no errors"
+    )
     items: List[DiagnosticMessage] = Field(
         default_factory=list, description="List of diagnostic messages"
+    )
+    failed_dependencies: List[str] = Field(
+        default_factory=list,
+        description="File paths of dependencies that failed to build",
     )
 
 
