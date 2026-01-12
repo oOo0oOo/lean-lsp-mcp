@@ -325,7 +325,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.18.0"
+version = "0.19.0"
 source = { editable = "." }
 dependencies = [
     { name = "leanclient" },
@@ -348,7 +348,7 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
-    { name = "leanclient", specifier = "==0.9.1" },
+    { name = "leanclient", specifier = "==0.9.2" },
     { name = "mcp", extras = ["cli"], specifier = "==1.25.0" },
     { name = "orjson", specifier = ">=3.11.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
@@ -361,16 +361,16 @@ provides-extras = ["lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.9.1"
+version = "0.9.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "psutil" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/17/15/81b931d171245913dd68e125860dabeb4725f43e36c39cd01a2055635082/leanclient-0.9.1.tar.gz", hash = "sha256:11faffdde421d92fb370a076df9d3972ae99540d137f6d05a686edc451be812b", size = 1131850, upload-time = "2026-01-12T07:13:57.028Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/09/b36fd7cd37666c673929b7116522c9f1656032ae96f0f5cc657bf9458d85/leanclient-0.9.2.tar.gz", hash = "sha256:acb1a754d1a71d55c06242d728f7d976be0eed2f4647070546731b1ba838d57d", size = 1132287, upload-time = "2026-01-12T18:19:36.719Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/f3/2bd08178216cb2fa6646b546198c31dd690b53cc969425623cfecb45d34d/leanclient-0.9.1-py3-none-any.whl", hash = "sha256:8124d04a5cb60f0aa93d0189967af68028bc33aa437679ca71a4aa670599eb30", size = 40158, upload-time = "2026-01-12T07:13:55.043Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/a2/a4a3eac7d01b92794e20ad041767c7f668d4c491ec1b8f14ccff8bcc0d9d/leanclient-0.9.2-py3-none-any.whl", hash = "sha256:18236b07c1a403162b13f7544962c36adc5285db8a5c0a463d692dca69a86e8c", size = 40158, upload-time = "2026-01-12T18:19:34.663Z" },
 ]
 
 [[package]]
