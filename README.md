@@ -276,6 +276,27 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ```
 </details>
 
+#### lean_profile_proof
+
+Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated copy of the theorem and returns per-line timing data.
+
+<details>
+<summary>Example output (profiling a theorem using simp)</summary>
+
+```json
+{
+  "ms": 42.5,
+  "lines": [
+    {"line": 7, "ms": 38.2, "text": "simp [add_comm, add_assoc]"}
+  ],
+  "categories": {
+    "simp": 35.1,
+    "typeclass inference": 4.2
+  }
+}
+```
+</details>
+
 ### Local Search Tools
 
 #### lean_local_search

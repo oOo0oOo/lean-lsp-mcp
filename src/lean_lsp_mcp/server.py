@@ -50,6 +50,7 @@ from lean_lsp_mcp.models import (
     MultiAttemptResult,
     PremiseResult,
     PremiseResults,
+    ProofProfileResult,
     RunResult,
     StateSearchResult,
     StateSearchResults,
@@ -1298,6 +1299,56 @@ async def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+
+@mcp.tool(
+    "lean_profile_proof",
+    annotations=ToolAnnotations(
+        title="Profile Proof",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def profile_proof(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[
+        int, Field(description="Line where theorem starts (1-indexed)", ge=1)
+    ],
+    top_n: Annotated[
+        int, Field(description="Number of slowest lines to return", ge=1)
+    ] = 5,
+    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 60.0,
+) -> ProofProfileResult:
+    """Run `lean --profile` on a theorem. Returns per-line timing and categories."""
+    from lean_lsp_mcp.profile_utils import profile_theorem
+
+    # Get project path
+    lifespan = ctx.request_context.lifespan_context
+    project_path = lifespan.lean_project_path
+
+    if not project_path:
+        infer_project_path(ctx, file_path)
+        project_path = lifespan.lean_project_path
+
+    if not project_path:
+        raise LeanToolError("Lean project not found")
+
+    file_path_obj = Path(file_path)
+    if not file_path_obj.exists():
+        raise LeanToolError(f"File not found: {file_path}")
+
+    try:
+        return await profile_theorem(
+            file_path=file_path_obj,
+            theorem_line=line,
+            project_path=project_path,
+            timeout=timeout,
+            top_n=top_n,
+        )
+    except (ValueError, TimeoutError) as e:
+        raise LeanToolError(str(e)) from e
 
 
 if __name__ == "__main__":

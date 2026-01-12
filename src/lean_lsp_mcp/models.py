@@ -1,6 +1,7 @@
 """Pydantic models for MCP tool structured outputs."""
 
 from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -209,4 +210,24 @@ class PremiseResults(BaseModel):
 
     items: List[PremiseResult] = Field(
         default_factory=list, description="List of premise results"
+    )
+
+
+class LineProfile(BaseModel):
+    """Timing for a single source line."""
+
+    line: int = Field(description="Source line number (1-indexed)")
+    ms: float = Field(description="Time in milliseconds")
+    text: str = Field(description="Source line content (truncated)")
+
+
+class ProofProfileResult(BaseModel):
+    """Profiling result for a theorem."""
+
+    ms: float = Field(description="Total elaboration time in ms")
+    lines: List[LineProfile] = Field(
+        default_factory=list, description="Time per source line (>1% of total)"
+    )
+    categories: dict[str, float] = Field(
+        default_factory=dict, description="Cumulative time by category in ms"
     )

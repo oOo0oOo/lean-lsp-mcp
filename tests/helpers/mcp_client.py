@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,6 +89,11 @@ def result_text(result: CallToolResult) -> str:
     for block in result.content:
         segments.extend(_text_from_block(block))
     return "\n".join(segment for segment in segments if segment)
+
+
+def result_json(result: CallToolResult) -> dict[str, Any]:
+    """Parse tool result as JSON dict."""
+    return json.loads(result_text(result))
 
 
 def _text_from_block(block: ContentBlock) -> Iterable[str]:
