@@ -228,6 +228,6 @@ class ProofProfileResult(BaseModel):
     lines: List[LineProfile] = Field(
         default_factory=list, description="Time per source line (>1% of total)"
     )
-    categories: dict = Field(
+    categories: dict[str, float] = Field(
         default_factory=dict, description="Cumulative time by category in ms"
     )
