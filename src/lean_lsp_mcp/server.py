@@ -864,6 +864,7 @@ def _multi_attempt_lsp(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    original_content = get_file_contents(file_path)
 
     try:
         results: List[AttemptResult] = []
@@ -891,12 +892,13 @@ def _multi_attempt_lsp(
 
         return MultiAttemptResult(items=results)
     finally:
-        try:
-            client.close_files([rel_path])
-        except Exception as exc:
-            logger.warning(
-                "Failed to close `%s` after multi_attempt: %s", rel_path, exc
-            )
+        if original_content is not None:
+            try:
+                client.update_file_content(rel_path, original_content)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
 
 
 @mcp.tool(
