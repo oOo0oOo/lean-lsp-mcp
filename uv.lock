@@ -325,9 +325,10 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.19.0"
+version = "0.19.1"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "leanclient" },
     { name = "mcp", extra = ["cli"] },
     { name = "orjson" },
@@ -348,6 +349,7 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
+    { name = "certifi", specifier = ">=2024.0.0" },
     { name = "leanclient", specifier = "==0.9.2" },
     { name = "mcp", extras = ["cli"], specifier = "==1.25.0" },
     { name = "orjson", specifier = ">=3.11.1" },

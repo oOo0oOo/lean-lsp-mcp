@@ -8,12 +8,14 @@ import json
 import logging
 import os
 import shutil
+import ssl
 import subprocess
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+import certifi
 import orjson
 
 from lean_lsp_mcp.models import LoogleResult
@@ -35,7 +37,8 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
             f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
         )
-        with urllib.request.urlopen(req, timeout=10) as response:
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as response:
             results = orjson.loads(response.read())
         if "hits" not in results:
             return "No results found."
