@@ -142,9 +142,12 @@ class LoogleManager:
             self._run(["lake", "exe", "cache", "get"], timeout=600)
         except Exception as e:
             logger.warning(f"Cache download: {e}")
-        logger.info("Building loogle...")
+        logger.info("Building loogle (this may a few minutes)...")
         try:
-            return self._run(["lake", "build"], timeout=900).returncode == 0
+            result = self._run(["lake", "build"], timeout=900)
+            if result.returncode != 0:
+                logger.error(f"Build failed: {result.stderr[:1000]}")
+            return result.returncode == 0
         except Exception as e:
             logger.error(f"Build error: {e}")
             return False
