@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import logging.config
 import os
 import re
 import time
@@ -96,9 +97,31 @@ async def _safe_report_progress(
     except Exception:
         return
 
-
+_LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
-configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+if _LOG_FILE_CONFIG:
+    try:
+        if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
+            import yaml
+            with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            logging.config.dictConfig(cfg)
+        elif _LOG_FILE_CONFIG.endswith(".json"):
+            with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
+                cfg = orjson.loads(f.read())
+            logging.config.dictConfig(cfg)
+        else:
+            # .ini / fileConfig
+            logging.config.fileConfig(_LOG_FILE_CONFIG, disable_existing_loggers=False)
+    except Exception as e:
+        # fallback to LEAN_LOG_LEVEL so server still runs
+        # use the existing configure_logging helper to set level
+        logger = get_logger(__name__)  # temporary to emit the warning
+        logger.warning("Failed to load logging config %s: %s. Falling back to LEAN_LOG_LEVEL.", _LOG_FILE_CONFIG, e)
+        configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+else:
+    configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+
 logger = get_logger(__name__)
 
 
