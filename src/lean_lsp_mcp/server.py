@@ -116,9 +116,9 @@ if _LOG_FILE_CONFIG:
     except Exception as e:
         # fallback to LEAN_LOG_LEVEL so server still runs
         # use the existing configure_logging helper to set level
+        configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
         logger = get_logger(__name__)  # temporary to emit the warning
         logger.warning("Failed to load logging config %s: %s. Falling back to LEAN_LOG_LEVEL.", _LOG_FILE_CONFIG, e)
-        configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 else:
     configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 
