@@ -2,6 +2,7 @@ import asyncio
 import functools
 import os
 import re
+import ssl
 import time
 import urllib
 import uuid
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Dict, List, Optional
 
+import certifi
 import orjson
 from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
@@ -80,9 +82,10 @@ DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "
 
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
     """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
     def _do_request():
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as response:
             return orjson.loads(response.read())
 
     return await asyncio.to_thread(_do_request)
