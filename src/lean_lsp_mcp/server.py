@@ -184,10 +184,20 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         # Initialize REPL if enabled
         if repl_enabled():
             if lean_project_path:
-                logger.info("REPL enabled, initializing...")
-                repl = Repl(project_dir=str(lean_project_path))
-                repl_on = True
-                logger.info("REPL initialized: timeout=%ds", repl.timeout)
+                from lean_lsp_mcp.repl import find_repl_binary
+
+                repl_bin = find_repl_binary(str(lean_project_path))
+                if repl_bin:
+                    logger.info("REPL enabled, using: %s", repl_bin)
+                    repl = Repl(project_dir=str(lean_project_path), repl_path=repl_bin)
+                    repl_on = True
+                    logger.info("REPL initialized: timeout=%ds", repl.timeout)
+                else:
+                    logger.warning(
+                        "REPL enabled but binary not found. "
+                        'Add `require repl from git "https://github.com/leanprover-community/repl"` '
+                        "to lakefile and run `lake build repl`. Falling back to LSP."
+                    )
             else:
                 logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
 
@@ -914,7 +924,9 @@ async def _multi_attempt_repl(
             ]
             if pr.error:
                 diagnostics.append(
-                    DiagnosticMessage(severity="error", message=pr.error, line=0, column=0)
+                    DiagnosticMessage(
+                        severity="error", message=pr.error, line=0, column=0
+                    )
                 )
             results.append(
                 AttemptResult(

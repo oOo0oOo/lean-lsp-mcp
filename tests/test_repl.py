@@ -5,12 +5,33 @@ from pathlib import Path
 
 import pytest
 
-from lean_lsp_mcp.repl import Repl, _split_imports
+from lean_lsp_mcp.repl import Repl, _split_imports, find_repl_binary
 
 
 # =============================================================================
 # Unit Tests
 # =============================================================================
+
+
+def test_find_repl_binary_from_lake_packages(tmp_path: Path, monkeypatch):
+    """Auto-detect REPL in .lake/packages."""
+    monkeypatch.delenv("LEAN_REPL_PATH", raising=False)
+    repl_path = tmp_path / ".lake" / "packages" / "repl" / ".lake" / "build" / "bin"
+    repl_path.mkdir(parents=True)
+    (repl_path / "repl").touch()
+
+    found = find_repl_binary(str(tmp_path))
+    assert found == str(repl_path / "repl")
+
+
+def test_find_repl_binary_env_var_takes_precedence(tmp_path: Path, monkeypatch):
+    """LEAN_REPL_PATH env var takes precedence."""
+    custom = tmp_path / "custom_repl"
+    custom.touch()
+    monkeypatch.setenv("LEAN_REPL_PATH", str(custom))
+
+    found = find_repl_binary(str(tmp_path))
+    assert found == str(custom)
 
 
 @pytest.mark.parametrize(
@@ -151,7 +172,11 @@ theorem benchmark : 1 = 1 := by
         start = time.perf_counter()
         await client.call_tool(
             "lean_multi_attempt",
-            {"file_path": str(test_project_path / "BenchmarkTest.lean"), "line": 6, "snippets": tactics},
+            {
+                "file_path": str(test_project_path / "BenchmarkTest.lean"),
+                "line": 6,
+                "snippets": tactics,
+            },
         )
         lsp_cold = time.perf_counter() - start
 
@@ -159,7 +184,11 @@ theorem benchmark : 1 = 1 := by
         start = time.perf_counter()
         lsp_result = await client.call_tool(
             "lean_multi_attempt",
-            {"file_path": str(test_project_path / "BenchmarkTest.lean"), "line": 6, "snippets": tactics},
+            {
+                "file_path": str(test_project_path / "BenchmarkTest.lean"),
+                "line": 6,
+                "snippets": tactics,
+            },
         )
         lsp_warm = time.perf_counter() - start
 
@@ -171,14 +200,18 @@ theorem benchmark : 1 = 1 := by
     repl_per = repl_warm / len(tactics) * 1000
     lsp_per = lsp_warm / len(tactics) * 1000
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Tactics: {len(tactics)}")
-    print(f"REPL cold: {repl_cold:.2f}s | warm: {repl_warm*1000:.0f}ms ({repl_per:.0f}ms/tactic)")
-    print(f"LSP  cold: {lsp_cold:.2f}s | warm: {lsp_warm*1000:.0f}ms ({lsp_per:.0f}ms/tactic)")
+    print(
+        f"REPL cold: {repl_cold:.2f}s | warm: {repl_warm * 1000:.0f}ms ({repl_per:.0f}ms/tactic)"
+    )
+    print(
+        f"LSP  cold: {lsp_cold:.2f}s | warm: {lsp_warm * 1000:.0f}ms ({lsp_per:.0f}ms/tactic)"
+    )
     if repl_warm < lsp_warm:
-        print(f"REPL is {lsp_warm/repl_warm:.1f}x faster (warm)")
+        print(f"REPL is {lsp_warm / repl_warm:.1f}x faster (warm)")
     else:
-        print(f"LSP is {repl_warm/lsp_warm:.1f}x faster (warm)")
-    print(f"{'='*60}")
+        print(f"LSP is {repl_warm / lsp_warm:.1f}x faster (warm)")
+    print(f"{'=' * 60}")
 
     assert repl_success == lsp_success, "Results differ!"

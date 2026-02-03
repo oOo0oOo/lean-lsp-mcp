@@ -29,6 +29,39 @@ def repl_enabled() -> bool:
     return os.environ.get("LEAN_REPL", "").lower() in ("1", "true", "yes")
 
 
+def find_repl_binary(project_dir: str | None = None) -> str | None:
+    """Find REPL binary: env var > .lake/packages > PATH."""
+    import shutil
+    from pathlib import Path
+
+    # 1. Explicit env var
+    if path := os.environ.get("LEAN_REPL_PATH"):
+        return path if Path(path).exists() or shutil.which(path) else None
+
+    # 2. Auto-detect from .lake/packages (common location after `lake build`)
+    if project_dir:
+        candidates = [
+            Path(project_dir)
+            / ".lake"
+            / "packages"
+            / "repl"
+            / ".lake"
+            / "build"
+            / "bin"
+            / "repl",
+            Path(project_dir) / ".lake" / "build" / "bin" / "repl",
+        ]
+        for p in candidates:
+            if p.exists():
+                return str(p)
+
+    # 3. Fall back to PATH
+    if found := shutil.which("repl"):
+        return found
+
+    return None
+
+
 def _split_imports(code: str) -> tuple[str, str]:
     """Split code into (header with imports, body)."""
     lines = code.splitlines()
@@ -45,9 +78,9 @@ def _split_imports(code: str) -> tuple[str, str]:
 class Repl:
     """Lean REPL using tactic mode for fast multi-attempt."""
 
-    def __init__(self, project_dir: str):
+    def __init__(self, project_dir: str, repl_path: str | None = None):
         self.project_dir = project_dir
-        self.repl_path = os.environ.get("LEAN_REPL_PATH", "repl")
+        self.repl_path = repl_path or find_repl_binary(project_dir) or "repl"
         self.timeout = int(os.environ.get("LEAN_REPL_TIMEOUT", "60"))
         self.mem_mb = int(os.environ.get("LEAN_REPL_MEM_MB", "8192"))
         self._proc: asyncio.subprocess.Process | None = None
@@ -160,12 +193,19 @@ class Repl:
                 if not sorries:
                     # No sorry = no proof goal, check messages for errors
                     msgs = resp.get("messages", [])
-                    err = "; ".join(m.get("data", "") for m in msgs if m.get("severity") == "error")
-                    return [SnippetResult(error=err or "No proof goal found") for _ in snippets]
+                    err = "; ".join(
+                        m.get("data", "") for m in msgs if m.get("severity") == "error"
+                    )
+                    return [
+                        SnippetResult(error=err or "No proof goal found")
+                        for _ in snippets
+                    ]
 
                 proof_state = sorries[0].get("proofState")
                 if proof_state is None:
-                    return [SnippetResult(error="No proofState returned") for _ in snippets]
+                    return [
+                        SnippetResult(error="No proofState returned") for _ in snippets
+                    ]
 
                 # Run each tactic in tactic mode
                 results = []
@@ -183,11 +223,13 @@ class Repl:
                             goals = resp.get("goals", [])
                             messages = resp.get("messages", [])
                             proof_status = resp.get("proofStatus")
-                            results.append(SnippetResult(
-                                goals=goals,
-                                messages=messages,
-                                proof_status=proof_status,
-                            ))
+                            results.append(
+                                SnippetResult(
+                                    goals=goals,
+                                    messages=messages,
+                                    proof_status=proof_status,
+                                )
+                            )
                     except Exception as e:
                         results.append(SnippetResult(error=str(e)))
 

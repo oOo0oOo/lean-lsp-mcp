@@ -39,12 +39,7 @@ def main():
     parser.add_argument(
         "--repl",
         action="store_true",
-        help="Enable REPL pool for efficient multi-attempt with header caching.",
-    )
-    parser.add_argument(
-        "--repl-workers",
-        type=int,
-        help="Max concurrent REPL workers (default: min(threads-2, 6))",
+        help="Enable fast REPL-based multi-attempt (~5x faster). Requires Lean REPL.",
     )
     parser.add_argument(
         "--repl-timeout",
@@ -60,8 +55,6 @@ def main():
         os.environ["LEAN_LOOGLE_CACHE_DIR"] = args.loogle_cache_dir
     if args.repl:
         os.environ["LEAN_REPL"] = "true"
-    if args.repl_workers:
-        os.environ["LEAN_REPL_WORKERS"] = str(args.repl_workers)
     if args.repl_timeout:
         os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
 
