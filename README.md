@@ -462,6 +462,11 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
 - `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable REPL pooling for `lean_multi_attempt` (requires `LEAN_PROJECT_PATH`).
+- `LEAN_REPL_PATH`: Path to the `repl` binary (default: `repl` on PATH).
+- `LEAN_REPL_WORKERS`: Max concurrent REPL workers (default: `min(threads - 2, 6)`).
+- `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
+- `LEAN_REPL_MEM`: Max memory per worker, e.g. `8G` or `4096M` (default: 8G).
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.

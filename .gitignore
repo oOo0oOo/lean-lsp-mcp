@@ -12,5 +12,8 @@ tests/mathlib_project/
 # Local temp files
 .tmp/
 
+# Local clones for reference
+kimina-lean-server/
+lean-training-data/
 
 .github/copilot-instructions.md

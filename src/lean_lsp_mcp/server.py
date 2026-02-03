@@ -30,6 +30,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
+from lean_lsp_mcp.pool import Manager as PoolManager
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -59,6 +60,9 @@ from lean_lsp_mcp.models import (
     StateSearchResults,
     TermGoalState,
 )
+
+# REPL models not imported - low-level REPL tools not exposed to keep API simple.
+# The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
@@ -145,12 +149,17 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    # REPL pool for efficient multi-attempt execution
+    pool_manager: PoolManager | None = None
+    pool_enabled: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
+    pool_manager: PoolManager | None = None
+    pool_enabled = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -172,6 +181,26 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
+        # Initialize REPL pool if enabled
+        # Env var: LEAN_REPL=1 (or "true", "yes")
+        if os.environ.get("LEAN_REPL", "").lower() in ("1", "true", "yes"):
+            if lean_project_path:
+                repl_path = os.environ.get("LEAN_REPL_PATH", "repl")
+                logger.info("REPL pool enabled, initializing...")
+                pool_manager = PoolManager(
+                    repl_path=repl_path,
+                    project_dir=str(lean_project_path),
+                )
+                pool_enabled = True
+                logger.info(
+                    "REPL pool initialized: workers=%d, max_uses=%d, timeout=%ds",
+                    pool_manager.max_repls,
+                    pool_manager.max_repl_uses,
+                    pool_manager.command_timeout,
+                )
+            else:
+                logger.warning("REPL pool requires LEAN_PROJECT_PATH to be set")
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -185,6 +214,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            pool_manager=pool_manager,
+            pool_enabled=pool_enabled,
         )
         yield context
     finally:
@@ -195,6 +226,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if loogle_manager:
             await loogle_manager.stop()
+
+        if pool_manager:
+            await pool_manager.cleanup()
 
 
 mcp_kwargs = dict(
@@ -855,24 +889,94 @@ def declaration_file(
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
-@mcp.tool(
-    "lean_multi_attempt",
-    annotations=ToolAnnotations(
-        title="Multi-Attempt",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def multi_attempt(
+async def _multi_attempt_pool(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    snippets: Annotated[
-        List[str], Field(description="Tactics to try (3+ recommended)")
-    ],
+    file_path: str,
+    line: int,
+    snippets: List[str],
+) -> MultiAttemptResult | None:
+    """Try code snippets using pool manager with header caching.
+
+    This is the most efficient approach:
+    1. Split code into header (imports) and body
+    2. Acquire worker with matching header (reuses cached worker if available)
+    3. Load body to get base environment
+    4. Try each snippet from base (true backtracking)
+    5. Release worker back to pool
+    """
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.pool_enabled or not app_ctx.pool_manager:
+        return None
+
+    pool_manager = app_ctx.pool_manager
+
+    try:
+        # Read file and get base code
+        file_contents = get_file_contents(file_path)
+        if file_contents is None:
+            return None
+
+        lines = file_contents.splitlines()
+        if line > len(lines):
+            return None
+
+        base_code = "\n".join(lines[: line - 1])
+
+        # Use pool manager with header caching
+        pool_results = await pool_manager.run_multi_attempt(
+            base_code=base_code,
+            snippets=snippets,
+        )
+
+        # Convert pool results to AttemptResult format
+        results: List[AttemptResult] = []
+        for i, pr in enumerate(pool_results):
+            diagnostics: List[DiagnosticMessage] = []
+            if pr.messages:
+                for m in pr.messages:
+                    diagnostics.append(
+                        DiagnosticMessage(
+                            severity=m.get("severity", "info"),
+                            message=m.get("data", ""),
+                            line=m.get("pos", {}).get("line", 0),
+                            column=m.get("pos", {}).get("column", 0),
+                        )
+                    )
+
+            goals = pr.goals or []
+            if pr.error:
+                diagnostics.append(
+                    DiagnosticMessage(
+                        severity="error",
+                        message=pr.error,
+                        line=0,
+                        column=0,
+                    )
+                )
+
+            results.append(
+                AttemptResult(
+                    snippet=snippets[i].rstrip("\n"),
+                    goals=goals,
+                    diagnostics=diagnostics,
+                    proof_state=pr.proof_state,
+                )
+            )
+
+        return MultiAttemptResult(items=results)
+
+    except Exception as e:
+        logger.debug(f"Pool multi_attempt failed: {e}")
+        return None
+
+
+def _multi_attempt_lsp(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    snippets: List[str],
 ) -> MultiAttemptResult:
-    """Try multiple tactics without modifying file. Returns goal state for each."""
+    """Try tactics using LSP file modifications (fallback)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -881,25 +985,22 @@ def multi_attempt(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    original_content = get_file_contents(file_path)
 
     try:
         results: List[AttemptResult] = []
-        # Avoid mutating caller-provided snippets; normalize locally per attempt
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
             payload = f"{snippet_str}\n"
-            # Create a DocumentContentChange for the snippet
             change = DocumentContentChange(
                 payload,
                 [line - 1, 0],
                 [line, 0],
             )
-            # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
-            # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
             goals = extract_goals_list(goal_result)
             results.append(
@@ -912,12 +1013,66 @@ def multi_attempt(
 
         return MultiAttemptResult(items=results)
     finally:
-        try:
-            client.close_files([rel_path])
-        except Exception as exc:  # pragma: no cover - close failures only logged
-            logger.warning(
-                "Failed to close `%s` after multi_attempt: %s", rel_path, exc
-            )
+        if original_content is not None:
+            try:
+                client.update_file_content(rel_path, original_content)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
+
+
+@mcp.tool(
+    "lean_multi_attempt",
+    annotations=ToolAnnotations(
+        title="Multi-Attempt",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def multi_attempt(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    snippets: Annotated[
+        List[str],
+        Field(description="Code snippets to try (tactics, definitions, etc.)"),
+    ],
+    proof_state: Annotated[
+        int | None,
+        Field(
+            description="Proof state ID to continue from. If provided, snippets are applied as tactics."
+        ),
+    ] = None,
+) -> MultiAttemptResult:
+    """Try multiple code snippets from the same base context.
+
+    Each snippet is evaluated independently from the same starting point
+    (the file contents up to `line`). This enables:
+    - Testing different tactic approaches: ["simp", "ring", "omega"]
+    - Trying alternative definitions: ["def foo := 1", "def foo := 2"]
+    - Exploring proof strategies without file modifications
+
+    When REPL pool is enabled:
+    - Uses REPL environment backtracking (true fork from same state)
+    - Pool manager with header caching for best performance
+    - More efficient (no file I/O per attempt)
+    - Returns proof_state IDs in results for chaining
+
+    Otherwise falls back to LSP file modification approach.
+    """
+    # proof_state continuation not yet supported
+    if proof_state is not None:
+        raise LeanToolError("proof_state continuation not yet implemented")
+
+    # Priority 1: Pool manager with header caching (most efficient)
+    result = await _multi_attempt_pool(ctx, file_path, line, snippets)
+    if result is not None:
+        return result
+
+    # Priority 2: LSP approach (fallback)
+    return _multi_attempt_lsp(ctx, file_path, line, snippets)
 
 
 @mcp.tool(
