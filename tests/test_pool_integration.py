@@ -1,8 +1,5 @@
-"""Integration tests for REPL pool manager.
+"""Integration tests for REPL pool (requires REPL binary)."""
 
-These tests require a Lean project with REPL available.
-They are skipped if the REPL binary is not found.
-"""
 from __future__ import annotations
 
 import shutil
@@ -10,103 +7,42 @@ from pathlib import Path
 
 import pytest
 
+from lean_lsp_mcp.pool import PoolManager
 
-def _find_repl_binary(project_path: Path) -> Path | None:
-    """Find the REPL binary in the project or globally."""
-    # Check project-local REPL
-    local_repl = project_path / ".lake" / "build" / "bin" / "repl"
-    if local_repl.exists():
-        return local_repl
 
-    # Check if 'repl' is in PATH
-    if shutil.which("repl"):
-        return Path(shutil.which("repl"))  # type: ignore
-
-    return None
+def _find_repl(project: Path) -> Path | None:
+    local = project / ".lake" / "build" / "bin" / "repl"
+    if local.exists():
+        return local
+    found = shutil.which("repl")
+    return Path(found) if found else None
 
 
 @pytest.fixture
-def repl_enabled_env(test_project_path: Path) -> dict[str, str]:
-    """Environment with REPL pool enabled."""
-    repl_binary = _find_repl_binary(test_project_path)
-    if repl_binary is None:
-        pytest.skip("REPL binary not found; install via 'lake build repl' in test project")
-
-    return {
-        "LEAN_REPL": "1",
-        "LEAN_REPL_PATH": str(repl_binary),
-        "LEAN_PROJECT_PATH": str(test_project_path),
-        "LEAN_REPL_WORKERS": "2",
-        "LEAN_REPL_TIMEOUT": "30",
-    }
+def repl_env(test_project_path: Path, monkeypatch):
+    repl = _find_repl(test_project_path)
+    if not repl:
+        pytest.skip("REPL binary not found")
+    monkeypatch.setenv("LEAN_REPL_PATH", str(repl))
+    monkeypatch.setenv("LEAN_REPL_WORKERS", "1")
+    monkeypatch.setenv("LEAN_REPL_TIMEOUT", "30")
+    return test_project_path
 
 
 @pytest.mark.asyncio
-async def test_pool_manager_lifecycle(
-    repl_enabled_env: dict[str, str],
-    test_project_path: Path,
-) -> None:
-    """Test pool manager can start and stop cleanly."""
-    from lean_lsp_mcp.pool import Manager as PoolManager
-
-    repl_path = repl_enabled_env["LEAN_REPL_PATH"]
-    project_dir = str(test_project_path)
-
-    # Create manager
-    manager = PoolManager(
-        repl_path=repl_path,
-        project_dir=project_dir,
-        max_repls=2,
-        command_timeout=30,
-    )
-
-    # Check settings were applied
-    assert manager.max_repls == 2
-    assert manager.command_timeout == 30
-
-    # Clean up should work even before any REPLs started
+async def test_pool_manager_lifecycle(repl_env: Path) -> None:
+    manager = PoolManager(project_dir=str(repl_env))
+    assert manager.settings.workers == 1
     await manager.cleanup()
 
 
 @pytest.mark.asyncio
-async def test_pool_manager_run_multi_attempt(
-    repl_enabled_env: dict[str, str],
-    test_project_path: Path,
-) -> None:
-    """Test running multi_attempt through pool manager."""
-    from lean_lsp_mcp.pool import Manager as PoolManager
-
-    repl_path = repl_enabled_env["LEAN_REPL_PATH"]
-    project_dir = str(test_project_path)
-
-    manager = PoolManager(
-        repl_path=repl_path,
-        project_dir=project_dir,
-        max_repls=1,
-        command_timeout=60,
-    )
-
+async def test_pool_multi_attempt(repl_env: Path) -> None:
+    manager = PoolManager(project_dir=str(repl_env))
     try:
-        # Run a simple multi_attempt
-        base_code = """
-import Mathlib.Data.Nat.Basic
-
-theorem test_theorem : 1 + 1 = 2 := by
-"""
-        snippets = ["rfl", "simp", "decide"]
-
-        results = await manager.run_multi_attempt(
-            base_code=base_code,
-            snippets=snippets,
-            timeout=60,
-        )
-
-        # Should have one result per snippet
+        base_code = "theorem test : 1 + 1 = 2 := by\n"
+        results = await manager.run_multi_attempt(base_code, ["rfl", "simp", "decide"])
         assert len(results) == 3
-
-        # At least one should succeed (rfl works for 1+1=2)
-        success_count = sum(1 for r in results if r.error is None)
-        assert success_count >= 1, f"Expected at least one success, got results: {results}"
-
+        assert any(r.error is None for r in results)
     finally:
         await manager.cleanup()

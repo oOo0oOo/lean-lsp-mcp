@@ -30,7 +30,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
-from lean_lsp_mcp.pool import Manager as PoolManager
+from lean_lsp_mcp.pool import PoolManager, pool_enabled as pool_enabled_check
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -182,21 +182,15 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 logger.warning("Local loogle installation failed, will use remote API")
 
         # Initialize REPL pool if enabled
-        # Env var: LEAN_REPL=1 (or "true", "yes")
-        if os.environ.get("LEAN_REPL", "").lower() in ("1", "true", "yes"):
+        if pool_enabled_check():
             if lean_project_path:
-                repl_path = os.environ.get("LEAN_REPL_PATH", "repl")
                 logger.info("REPL pool enabled, initializing...")
-                pool_manager = PoolManager(
-                    repl_path=repl_path,
-                    project_dir=str(lean_project_path),
-                )
+                pool_manager = PoolManager(project_dir=str(lean_project_path))
                 pool_enabled = True
                 logger.info(
-                    "REPL pool initialized: workers=%d, max_uses=%d, timeout=%ds",
-                    pool_manager.max_repls,
-                    pool_manager.max_repl_uses,
-                    pool_manager.command_timeout,
+                    "REPL pool initialized: workers=%d, timeout=%ds",
+                    pool_manager.settings.workers,
+                    pool_manager.settings.timeout,
                 )
             else:
                 logger.warning("REPL pool requires LEAN_PROJECT_PATH to be set")
@@ -897,7 +891,6 @@ async def _multi_attempt_pool(
 ) -> MultiAttemptResult | None:
     """Try code snippets using pool manager with header caching.
 
-    This is the most efficient approach:
     1. Split code into header (imports) and body
     2. Acquire worker with matching header (reuses cached worker if available)
     3. Load body to get base environment
@@ -959,7 +952,6 @@ async def _multi_attempt_pool(
                     snippet=snippets[i].rstrip("\n"),
                     goals=goals,
                     diagnostics=diagnostics,
-                    proof_state=pr.proof_state,
                 )
             )
 
@@ -1037,35 +1029,10 @@ async def multi_attempt(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[
         List[str],
-        Field(description="Code snippets to try (tactics, definitions, etc.)"),
+        Field(description="Tactics to try (3+ recommended)"),
     ],
-    proof_state: Annotated[
-        int | None,
-        Field(
-            description="Proof state ID to continue from. If provided, snippets are applied as tactics."
-        ),
-    ] = None,
 ) -> MultiAttemptResult:
-    """Try multiple code snippets from the same base context.
-
-    Each snippet is evaluated independently from the same starting point
-    (the file contents up to `line`). This enables:
-    - Testing different tactic approaches: ["simp", "ring", "omega"]
-    - Trying alternative definitions: ["def foo := 1", "def foo := 2"]
-    - Exploring proof strategies without file modifications
-
-    When REPL pool is enabled:
-    - Uses REPL environment backtracking (true fork from same state)
-    - Pool manager with header caching for best performance
-    - More efficient (no file I/O per attempt)
-    - Returns proof_state IDs in results for chaining
-
-    Otherwise falls back to LSP file modification approach.
-    """
-    # proof_state continuation not yet supported
-    if proof_state is not None:
-        raise LeanToolError("proof_state continuation not yet implemented")
-
+    """Try multiple tactics without modifying file. Returns goal state for each."""
     # Priority 1: Pool manager with header caching (most efficient)
     result = await _multi_attempt_pool(ctx, file_path, line, snippets)
     if result is not None:

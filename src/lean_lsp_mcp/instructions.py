@@ -38,23 +38,4 @@ List tools return JSON arrays. Empty = `[]`.
 ## Error Handling
 Check `isError` in responses: `true` means failure (timeout/LSP error), while `[]` with `isError: false` means no results found.
 
-## REPL Tools (if enabled with --repl)
-Stateful code evaluation with environment backtracking.
-
-- **lean_multi_attempt**: Try multiple code snippets from the same base context.
-  - Pass `proof_state` to continue from a previous tactic result (for chaining).
-  - Returns `proof_state` IDs in results for subsequent calls.
-
-### Multi-Attempt Workflow
-```
-1. lean_multi_attempt(file, line, snippets=["simp", "ring", "omega"])
-   -> [{snippet: "simp", goals: [...], proof_state: 0}, ...]
-
-2. lean_multi_attempt(file, line, snippets=["exact h"], proof_state=0)
-   -> Continue from proof_state 0 (tactic chaining)
-```
-
-### Environment Backtracking
-Each snippet is evaluated independently from the same starting point.
-This enables exploring multiple approaches without file modifications.
 """

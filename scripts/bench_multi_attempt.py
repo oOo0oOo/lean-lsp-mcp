@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 from __future__ import annotations
 
 import argparse
@@ -21,14 +22,17 @@ from tests.helpers.test_project import ensure_test_project
 
 
 def _default_bench_file() -> str:
-    return textwrap.dedent(
-        """
+    return (
+        textwrap.dedent(
+            """
         import Mathlib
 
         theorem bench_add_comm (n m : Nat) : n + m = m + n := by
           sorry
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _ensure_bench_file(project_path: Path) -> tuple[Path, int]:
