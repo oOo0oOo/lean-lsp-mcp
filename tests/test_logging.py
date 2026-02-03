@@ -228,4 +228,3 @@ format=%(levelname)s:%(message)s
 
     content = Path(log_file).read_text(encoding="utf-8")
     assert "happy_path_ini" in content
-

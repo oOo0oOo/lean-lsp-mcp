@@ -100,12 +100,14 @@ async def _safe_report_progress(
     except Exception:
         return
 
+
 _LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
 if _LOG_FILE_CONFIG:
     try:
         if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
             import yaml
+
             with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             logging.config.dictConfig(cfg)
@@ -121,7 +123,11 @@ if _LOG_FILE_CONFIG:
         # use the existing configure_logging helper to set level
         configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
         logger = get_logger(__name__)  # temporary to emit the warning
-        logger.warning("Failed to load logging config %s: %s. Falling back to LEAN_LOG_LEVEL.", _LOG_FILE_CONFIG, e)
+        logger.warning(
+            "Failed to load logging config %s: %s. Falling back to LEAN_LOG_LEVEL.",
+            _LOG_FILE_CONFIG,
+            e,
+        )
 else:
     configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
 
