@@ -460,6 +460,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 ### Environment Variables
 
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
+- `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
 - `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
