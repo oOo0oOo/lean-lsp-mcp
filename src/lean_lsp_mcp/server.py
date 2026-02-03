@@ -30,6 +30,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
+from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -59,6 +60,9 @@ from lean_lsp_mcp.models import (
     StateSearchResults,
     TermGoalState,
 )
+
+# REPL models not imported - low-level REPL tools not exposed to keep API simple.
+# The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
@@ -145,12 +149,17 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    # REPL for efficient multi-attempt execution
+    repl: Repl | None = None
+    repl_enabled: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
+    repl: Repl | None = None
+    repl_on = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -172,6 +181,26 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
+        # Initialize REPL if enabled
+        if repl_enabled():
+            if lean_project_path:
+                from lean_lsp_mcp.repl import find_repl_binary
+
+                repl_bin = find_repl_binary(str(lean_project_path))
+                if repl_bin:
+                    logger.info("REPL enabled, using: %s", repl_bin)
+                    repl = Repl(project_dir=str(lean_project_path), repl_path=repl_bin)
+                    repl_on = True
+                    logger.info("REPL initialized: timeout=%ds", repl.timeout)
+                else:
+                    logger.warning(
+                        "REPL enabled but binary not found. "
+                        'Add `require repl from git "https://github.com/leanprover-community/repl"` '
+                        "to lakefile and run `lake build repl`. Falling back to LSP."
+                    )
+            else:
+                logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -185,6 +214,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            repl=repl,
+            repl_enabled=repl_on,
         )
         yield context
     finally:
@@ -195,6 +226,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
         if loogle_manager:
             await loogle_manager.stop()
+
+        if repl:
+            await repl.close()
 
 
 mcp_kwargs = dict(
@@ -855,24 +889,65 @@ def declaration_file(
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
-@mcp.tool(
-    "lean_multi_attempt",
-    annotations=ToolAnnotations(
-        title="Multi-Attempt",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def multi_attempt(
+async def _multi_attempt_repl(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    snippets: Annotated[
-        List[str], Field(description="Tactics to try (3+ recommended)")
-    ],
+    file_path: str,
+    line: int,
+    snippets: List[str],
+) -> MultiAttemptResult | None:
+    """Try tactics using REPL (fast path)."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.repl_enabled or not app_ctx.repl:
+        return None
+
+    try:
+        content = get_file_contents(file_path)
+        if content is None:
+            return None
+        lines = content.splitlines()
+        if line > len(lines):
+            return None
+
+        base_code = "\n".join(lines[: line - 1])
+        repl_results = await app_ctx.repl.run_snippets(base_code, snippets)
+
+        results = []
+        for snippet, pr in zip(snippets, repl_results):
+            diagnostics = [
+                DiagnosticMessage(
+                    severity=m.get("severity", "info"),
+                    message=m.get("data", ""),
+                    line=m.get("pos", {}).get("line", 0),
+                    column=m.get("pos", {}).get("column", 0),
+                )
+                for m in (pr.messages or [])
+            ]
+            if pr.error:
+                diagnostics.append(
+                    DiagnosticMessage(
+                        severity="error", message=pr.error, line=0, column=0
+                    )
+                )
+            results.append(
+                AttemptResult(
+                    snippet=snippet.rstrip("\n"),
+                    goals=pr.goals or [],
+                    diagnostics=diagnostics,
+                )
+            )
+        return MultiAttemptResult(items=results)
+    except Exception as e:
+        logger.debug(f"REPL multi_attempt failed: {e}")
+        return None
+
+
+def _multi_attempt_lsp(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    snippets: List[str],
 ) -> MultiAttemptResult:
-    """Try multiple tactics without modifying file. Returns goal state for each."""
+    """Try tactics using LSP file modifications (fallback)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -881,25 +956,22 @@ def multi_attempt(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    original_content = get_file_contents(file_path)
 
     try:
         results: List[AttemptResult] = []
-        # Avoid mutating caller-provided snippets; normalize locally per attempt
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
             payload = f"{snippet_str}\n"
-            # Create a DocumentContentChange for the snippet
             change = DocumentContentChange(
                 payload,
                 [line - 1, 0],
                 [line, 0],
             )
-            # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
-            # Use the snippet text length without any trailing newline for the column
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
             goals = extract_goals_list(goal_result)
             results.append(
@@ -912,12 +984,41 @@ def multi_attempt(
 
         return MultiAttemptResult(items=results)
     finally:
-        try:
-            client.close_files([rel_path])
-        except Exception as exc:  # pragma: no cover - close failures only logged
-            logger.warning(
-                "Failed to close `%s` after multi_attempt: %s", rel_path, exc
-            )
+        if original_content is not None:
+            try:
+                client.update_file_content(rel_path, original_content)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
+
+
+@mcp.tool(
+    "lean_multi_attempt",
+    annotations=ToolAnnotations(
+        title="Multi-Attempt",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def multi_attempt(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    snippets: Annotated[
+        List[str],
+        Field(description="Tactics to try (3+ recommended)"),
+    ],
+) -> MultiAttemptResult:
+    """Try multiple tactics without modifying file. Returns goal state for each."""
+    # Priority 1: REPL
+    result = await _multi_attempt_repl(ctx, file_path, line, snippets)
+    if result is not None:
+        return result
+
+    # Priority 2: LSP approach (fallback)
+    return _multi_attempt_lsp(ctx, file_path, line, snippets)
 
 
 @mcp.tool(

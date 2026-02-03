@@ -243,8 +243,10 @@ l1c1-l1c6, severity: 3
 
 #### lean_multi_attempt
 
-Attempt multiple lean code snippets on a line and return goal state and diagnostics for each snippet.
-This tool is useful to screen different proof attempts before using the most promising one.
+Attempt multiple tactics on a line and return goal state and diagnostics for each.
+Useful to screen different proof attempts before committing to one.
+
+When `LEAN_REPL=true`, uses the REPL tactic mode for up to 5x faster execution (see [Environment Variables](#environment-variables)).
 
 <details>
 <summary>Example output (attempting `rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]` and `by_contra h_neq`)</summary>
@@ -462,6 +464,10 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
 - `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` (~5x faster, see [REPL Setup](#repl-setup)).
+- `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
+- `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
+- `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
@@ -521,6 +527,36 @@ uvx lean-lsp-mcp --transport streamable-http
 ```
 
 Clients should then include the token in the `Authorization` header.
+
+### REPL Setup
+
+Enable fast REPL-based `lean_multi_attempt` (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode.
+
+**1. Add REPL to your Lean project's `lakefile.toml`:**
+
+```toml
+[[require]]
+name = "repl"
+git = "https://github.com/leanprover-community/repl"
+rev = "v4.25.0"  # Match your Lean version
+```
+
+**2. Build it:**
+
+```bash
+lake build repl
+```
+
+**3. Enable via CLI or environment variable:**
+
+```bash
+uvx lean-lsp-mcp --repl
+
+# Or via environment variable
+export LEAN_REPL=true
+```
+
+The REPL binary is auto-detected from `.lake/packages/repl/`. Falls back to LSP if not found.
 
 ### Local Loogle
 
