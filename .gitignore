@@ -15,5 +15,6 @@ tests/mathlib_project/
 # Local clones for reference
 kimina-lean-server/
 lean-training-data/
+references/
 
 .github/copilot-instructions.md

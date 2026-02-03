@@ -30,7 +30,7 @@ from lean_lsp_mcp.client_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
-from lean_lsp_mcp.pool import PoolManager, pool_enabled as pool_enabled_check
+from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -149,17 +149,17 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
-    # REPL pool for efficient multi-attempt execution
-    pool_manager: PoolManager | None = None
-    pool_enabled: bool = False
+    # REPL for efficient multi-attempt execution
+    repl: Repl | None = None
+    repl_enabled: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_manager: LoogleManager | None = None
     loogle_local_available = False
-    pool_manager: PoolManager | None = None
-    pool_enabled = False
+    repl: Repl | None = None
+    repl_on = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -181,19 +181,15 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("Local loogle installation failed, will use remote API")
 
-        # Initialize REPL pool if enabled
-        if pool_enabled_check():
+        # Initialize REPL if enabled
+        if repl_enabled():
             if lean_project_path:
-                logger.info("REPL pool enabled, initializing...")
-                pool_manager = PoolManager(project_dir=str(lean_project_path))
-                pool_enabled = True
-                logger.info(
-                    "REPL pool initialized: workers=%d, timeout=%ds",
-                    pool_manager.settings.workers,
-                    pool_manager.settings.timeout,
-                )
+                logger.info("REPL enabled, initializing...")
+                repl = Repl(project_dir=str(lean_project_path))
+                repl_on = True
+                logger.info("REPL initialized: timeout=%ds", repl.timeout)
             else:
-                logger.warning("REPL pool requires LEAN_PROJECT_PATH to be set")
+                logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
 
         context = AppContext(
             lean_project_path=lean_project_path,
@@ -208,8 +204,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
-            pool_manager=pool_manager,
-            pool_enabled=pool_enabled,
+            repl=repl,
+            repl_enabled=repl_on,
         )
         yield context
     finally:
@@ -221,8 +217,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         if loogle_manager:
             await loogle_manager.stop()
 
-        if pool_manager:
-            await pool_manager.cleanup()
+        if repl:
+            await repl.close()
 
 
 mcp_kwargs = dict(
@@ -889,19 +885,17 @@ async def _multi_attempt_pool(
     line: int,
     snippets: List[str],
 ) -> MultiAttemptResult | None:
-    """Try code snippets using pool manager with header caching.
+    """Try code snippets using REPL with caching.
 
     1. Split code into header (imports) and body
-    2. Acquire worker with matching header (reuses cached worker if available)
-    3. Load body to get base environment
-    4. Try each snippet from base (true backtracking)
-    5. Release worker back to pool
+    2. Run with cached header if possible
+    3. Cache body for fast tactic iteration
     """
     app_ctx: AppContext = ctx.request_context.lifespan_context
-    if not app_ctx.pool_enabled or not app_ctx.pool_manager:
+    if not app_ctx.repl_enabled or not app_ctx.repl:
         return None
 
-    pool_manager = app_ctx.pool_manager
+    repl = app_ctx.repl
 
     try:
         # Read file and get base code
@@ -915,15 +909,15 @@ async def _multi_attempt_pool(
 
         base_code = "\n".join(lines[: line - 1])
 
-        # Use pool manager with header caching
-        pool_results = await pool_manager.run_multi_attempt(
+        # Use REPL with caching
+        repl_results = await repl.run_snippets(
             base_code=base_code,
             snippets=snippets,
         )
 
-        # Convert pool results to AttemptResult format
+        # Convert to AttemptResult format
         results: List[AttemptResult] = []
-        for i, pr in enumerate(pool_results):
+        for i, pr in enumerate(repl_results):
             diagnostics: List[DiagnosticMessage] = []
             if pr.messages:
                 for m in pr.messages:
