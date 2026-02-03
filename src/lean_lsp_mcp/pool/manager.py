@@ -142,7 +142,7 @@ class PoolManager:
 
     async def cleanup(self) -> None:
         async with self._cond:
-            for repl in self._free + list(self._busy):
-                asyncio.create_task(repl.close())
+            repls = self._free + list(self._busy)
             self._free.clear()
             self._busy.clear()
+        await asyncio.gather(*(r.close() for r in repls), return_exceptions=True)

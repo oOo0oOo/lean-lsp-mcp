@@ -106,15 +106,28 @@ class Repl:
         )
 
     async def close(self) -> None:
-        if self.proc:
-            if self.proc.stdin:
-                self.proc.stdin.close()
-            try:
-                if platform.system() != "Windows":
-                    os.killpg(os.getpgid(self.proc.pid), 9)
-                else:
-                    self.proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
-            await self.proc.wait()
-            logger.debug("Closed REPL %x", id(self))
+        if not self.proc:
+            return
+        proc = self.proc
+        self.proc = None
+
+        # Kill process
+        try:
+            if platform.system() != "Windows":
+                os.killpg(os.getpgid(proc.pid), 9)
+            else:
+                proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+        # Wait for exit and transport cleanup
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+
+        # Close transport to prevent __del__ warning
+        if hasattr(proc, "_transport") and proc._transport:
+            proc._transport.close()
+
+        logger.debug("Closed REPL %x", id(self))
