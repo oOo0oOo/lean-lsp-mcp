@@ -573,6 +573,9 @@ uv run pytest tests
 - Ax-Prover: A Deep Reasoning Agentic Framework for Theorem Proving in Mathematics and Quantum Physics [arxiv](https://arxiv.org/abs/2510.12787)
 - Numina-Lean-Agent: An Open and General Agentic Reasoning System for Formal Mathematics [arxiv](https://arxiv.org/abs/2601.14027) [github](https://github.com/project-numina/numina-lean-agent)
 
+## Talks
+
+lean-lsp-mcp: Tools for agentic interaction with Lean (Lean Together 2026) [youtube](https://www.youtube.com/watch?v=uttbYaTaF-E)
 
 ## Related Projects
 
