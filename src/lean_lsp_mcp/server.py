@@ -879,80 +879,53 @@ def declaration_file(
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
-async def _multi_attempt_pool(
+async def _multi_attempt_repl(
     ctx: Context,
     file_path: str,
     line: int,
     snippets: List[str],
 ) -> MultiAttemptResult | None:
-    """Try code snippets using REPL with caching.
-
-    1. Split code into header (imports) and body
-    2. Run with cached header if possible
-    3. Cache body for fast tactic iteration
-    """
+    """Try tactics using REPL (fast path)."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.repl_enabled or not app_ctx.repl:
         return None
 
-    repl = app_ctx.repl
-
     try:
-        # Read file and get base code
-        file_contents = get_file_contents(file_path)
-        if file_contents is None:
+        content = get_file_contents(file_path)
+        if content is None:
             return None
-
-        lines = file_contents.splitlines()
+        lines = content.splitlines()
         if line > len(lines):
             return None
 
         base_code = "\n".join(lines[: line - 1])
+        repl_results = await app_ctx.repl.run_snippets(base_code, snippets)
 
-        # Use REPL with caching
-        repl_results = await repl.run_snippets(
-            base_code=base_code,
-            snippets=snippets,
-        )
-
-        # Convert to AttemptResult format
-        results: List[AttemptResult] = []
-        for i, pr in enumerate(repl_results):
-            diagnostics: List[DiagnosticMessage] = []
-            if pr.messages:
-                for m in pr.messages:
-                    diagnostics.append(
-                        DiagnosticMessage(
-                            severity=m.get("severity", "info"),
-                            message=m.get("data", ""),
-                            line=m.get("pos", {}).get("line", 0),
-                            column=m.get("pos", {}).get("column", 0),
-                        )
-                    )
-
-            goals = pr.goals or []
+        results = []
+        for snippet, pr in zip(snippets, repl_results):
+            diagnostics = [
+                DiagnosticMessage(
+                    severity=m.get("severity", "info"),
+                    message=m.get("data", ""),
+                    line=m.get("pos", {}).get("line", 0),
+                    column=m.get("pos", {}).get("column", 0),
+                )
+                for m in (pr.messages or [])
+            ]
             if pr.error:
                 diagnostics.append(
-                    DiagnosticMessage(
-                        severity="error",
-                        message=pr.error,
-                        line=0,
-                        column=0,
-                    )
+                    DiagnosticMessage(severity="error", message=pr.error, line=0, column=0)
                 )
-
             results.append(
                 AttemptResult(
-                    snippet=snippets[i].rstrip("\n"),
-                    goals=goals,
+                    snippet=snippet.rstrip("\n"),
+                    goals=pr.goals or [],
                     diagnostics=diagnostics,
                 )
             )
-
         return MultiAttemptResult(items=results)
-
     except Exception as e:
-        logger.debug(f"Pool multi_attempt failed: {e}")
+        logger.debug(f"REPL multi_attempt failed: {e}")
         return None
 
 
@@ -1027,8 +1000,8 @@ async def multi_attempt(
     ],
 ) -> MultiAttemptResult:
     """Try multiple tactics without modifying file. Returns goal state for each."""
-    # Priority 1: Pool manager with header caching (most efficient)
-    result = await _multi_attempt_pool(ctx, file_path, line, snippets)
+    # Priority 1: REPL
+    result = await _multi_attempt_repl(ctx, file_path, line, snippets)
     if result is not None:
         return result
 
