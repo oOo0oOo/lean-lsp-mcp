@@ -25,6 +25,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+
       - name: Install Python dependencies
         run: uv sync --extra dev
 
