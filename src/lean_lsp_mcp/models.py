@@ -38,6 +38,15 @@ class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
 
 
+class SemanticSearchResult(BaseModel):
+    name: str = Field(description="Declaration name")
+    kind: str = Field(description="Declaration kind")
+    file: str = Field(description="Relative file path")
+    line: int = Field(description="Line number (1-indexed)")
+    score: float = Field(description="Similarity score")
+    snippet: str = Field(description="Matched declaration snippet")
+
+
 class DiagnosticMessage(BaseModel):
     severity: str = Field(description="error, warning, info, or hint")
     message: str = Field(description="Diagnostic message text")
@@ -210,6 +219,14 @@ class PremiseResults(BaseModel):
 
     items: List[PremiseResult] = Field(
         default_factory=list, description="List of premise results"
+    )
+
+
+class SemanticSearchResults(BaseModel):
+    """Wrapper for semantic search results list."""
+
+    items: List[SemanticSearchResult] = Field(
+        default_factory=list, description="List of semantic search results"
     )
 
 

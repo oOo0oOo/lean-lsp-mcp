@@ -56,6 +56,8 @@ from lean_lsp_mcp.models import (
     PremiseResults,
     ProofProfileResult,
     RunResult,
+    SemanticSearchResult,
+    SemanticSearchResults,
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
@@ -65,6 +67,7 @@ from lean_lsp_mcp.models import (
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
+from lean_lsp_mcp.semantic_search import local_semantic_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     LeanToolError,
@@ -1147,6 +1150,72 @@ async def local_search(
         return LocalSearchResults(items=results)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
+
+
+@mcp.tool(
+    "lean_local_semantic_search",
+    annotations=ToolAnnotations(
+        title="Local Semantic Search",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def local_semantic_search_tool(
+    ctx: Context,
+    query: Annotated[str, Field(description="Natural language query")],
+    limit: Annotated[int, Field(description="Max matches", ge=1)] = 10,
+    project_root: Annotated[
+        Optional[str], Field(description="Project root (inferred if omitted)")
+    ] = None,
+    model_name: Annotated[
+        Optional[str], Field(description="Embedding model name override")
+    ] = None,
+    rebuild: Annotated[
+        bool, Field(description="Force rebuild semantic index")
+    ] = False,
+) -> SemanticSearchResults:
+    """Semantic search over local declarations using embeddings."""
+    if project_root:
+        root = Path(project_root).expanduser().resolve()
+    else:
+        root = ctx.request_context.lifespan_context.lean_project_path
+
+    if root is None:
+        raise LeanToolError(
+            "Lean project path not set. Provide project_root or call a file-based tool first."
+        )
+
+    model = model_name or os.environ.get(
+        "LEAN_SEMANTIC_SEARCH_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+    )
+    force_rebuild = rebuild or os.environ.get("LEAN_SEMANTIC_SEARCH_REBUILD", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    results = await asyncio.to_thread(
+        local_semantic_search,
+        query=query.strip(),
+        project_root=root,
+        limit=limit,
+        model_name=model,
+        rebuild=force_rebuild,
+    )
+
+    items = [
+        SemanticSearchResult(
+            name=item.name,
+            kind=item.kind,
+            file=item.file,
+            line=item.line,
+            score=score,
+            snippet=item.snippet,
+        )
+        for item, score in results
+    ]
+    return SemanticSearchResults(items=items)
 
 
 @mcp.tool(
