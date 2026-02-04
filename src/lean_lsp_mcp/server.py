@@ -600,6 +600,21 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
+    if not result.diagnostics and result.success:
+        content = get_file_contents(file_path)
+        if content and content.strip():
+            client.open_file(
+                rel_path,
+                dependency_build_mode="once",
+                force_reopen=True,
+            )
+            result = client.get_diagnostics(
+                rel_path,
+                start_line=start_line_0,
+                end_line=end_line_0,
+                inactivity_timeout=15.0,
+            )
+
     return _process_diagnostics(result.diagnostics, result.success)
 
 
