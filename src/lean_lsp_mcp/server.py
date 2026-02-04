@@ -631,9 +631,7 @@ def diagnostic_messages(
         except Exception:
             pass
 
-    return _process_diagnostics(
-        diagnostics, result.success, info_trees=info_trees
-    )
+    return _process_diagnostics(diagnostics, result.success, info_trees=info_trees)
 
 
 @mcp.tool(
@@ -1517,6 +1515,7 @@ async def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
 
 @mcp.tool(
     "lean_visualize_expansion",

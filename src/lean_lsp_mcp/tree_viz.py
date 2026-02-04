@@ -54,7 +54,7 @@ def _build_node_label(expansion: MacroExpansion, is_leaf: bool = False) -> str:
 
     # Main text: the original syntax
     original = _escape_html_label(expansion.original)
-    parts.append(f'<b>{original}</b>')
+    parts.append(f"<b>{original}</b>")
 
     # Syntax kind in blue
     if expansion.syntax_kind:
@@ -115,7 +115,7 @@ def macro_expansion_to_dot(expansion: MacroExpansion) -> str:
                 node_id[0] += 1
                 expanded_label = _escape_html_label(exp.expanded)
                 lines.append(
-                    f'    n{expanded_id} [label=<{expanded_label}>, '
+                    f"    n{expanded_id} [label=<{expanded_label}>, "
                     f'fillcolor="{COLORS["node_bg"]}", style="rounded,filled,dashed"];'
                 )
                 lines.append(f"    n{current_id} -> n{expanded_id};")

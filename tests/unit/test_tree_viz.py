@@ -62,7 +62,9 @@ class TestNodeLabel:
 
     def test_with_syntax_kind(self):
         """Syntax kind is shown in blue."""
-        exp = MacroExpansion(original="double! 5", expanded="5 + 5", syntax_kind="double!")
+        exp = MacroExpansion(
+            original="double! 5", expanded="5 + 5", syntax_kind="double!"
+        )
         label = _build_node_label(exp, is_leaf=False)
         assert "double!" in label
         assert COLORS["syntax_kind"] in label
@@ -129,8 +131,12 @@ class TestDotGeneration:
     def test_deeply_nested_expansion(self):
         """Deeply nested expansion generates full tree."""
         level3 = MacroExpansion(original="(4 : Pos)", expanded="Pos.mk 4")
-        level2 = MacroExpansion(original="b2", expanded="(4 : Pos)", nested_expansions=[level3])
-        level1 = MacroExpansion(original="center", expanded="b2", nested_expansions=[level2])
+        level2 = MacroExpansion(
+            original="b2", expanded="(4 : Pos)", nested_expansions=[level3]
+        )
+        level1 = MacroExpansion(
+            original="center", expanded="b2", nested_expansions=[level2]
+        )
 
         dot = macro_expansion_to_dot(level1)
 
@@ -167,7 +173,9 @@ class TestSvgRendering:
     @pytest.fixture
     def nested_expansion(self):
         inner = MacroExpansion(original="b2", expanded="(4 : Pos)")
-        return MacroExpansion(original="center", expanded="b2", nested_expansions=[inner])
+        return MacroExpansion(
+            original="center", expanded="b2", nested_expansions=[inner]
+        )
 
     def test_render_svg_import_error(self, simple_expansion):
         """render_expansion_svg raises ImportError if graphviz not installed."""
