@@ -23,7 +23,11 @@ class DummyResponse:
 
 
 def _make_ctx() -> types.SimpleNamespace:
-    lifespan_context = types.SimpleNamespace(rate_limit={"leanexplore": []})
+    lifespan_context = types.SimpleNamespace(
+        rate_limit={"leanexplore": []},
+        leanexplore_local_enabled=False,
+        leanexplore_service=None,
+    )
     request_context = types.SimpleNamespace(lifespan_context=lifespan_context)
     return types.SimpleNamespace(request_context=request_context)
 
