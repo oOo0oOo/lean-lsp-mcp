@@ -68,16 +68,25 @@ class CompletionItem(BaseModel):
 
 class WidgetImage(BaseModel):
     """Extracted image from widget props."""
+
     mime_type: str = Field(description="MIME type (e.g. image/png)")
     data: str = Field(description="Base64-encoded image data")
 
 
 class WidgetInfo(BaseModel):
     id: str = Field(description="Widget instance ID")
-    name: Optional[str] = Field(None, description="Widget type name (e.g. ProofWidgets.HtmlDisplay)")
-    javascript_hash: Optional[str] = Field(None, description="Hash for widget JS module")
-    props: Optional[Dict[str, Any]] = Field(None, description="Widget props (may contain html, images, etc.)")
-    images: List["WidgetImage"] = Field(default_factory=list, description="Extracted base64 images from widget")
+    name: Optional[str] = Field(
+        None, description="Widget type name (e.g. ProofWidgets.HtmlDisplay)"
+    )
+    javascript_hash: Optional[str] = Field(
+        None, description="Hash for widget JS module"
+    )
+    props: Optional[Dict[str, Any]] = Field(
+        None, description="Widget props (may contain html, images, etc.)"
+    )
+    images: List["WidgetImage"] = Field(
+        default_factory=list, description="Extracted base64 images from widget"
+    )
 
 
 class HoverInfo(BaseModel):

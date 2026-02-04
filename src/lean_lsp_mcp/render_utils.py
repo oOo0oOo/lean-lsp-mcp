@@ -220,8 +220,20 @@ def proofwidget_to_html(pw: Any) -> str:
 
             # Self-closing tags
             void_tags = {
-                "br", "hr", "img", "input", "meta", "link",
-                "area", "base", "col", "embed", "param", "source", "track", "wbr"
+                "br",
+                "hr",
+                "img",
+                "input",
+                "meta",
+                "link",
+                "area",
+                "base",
+                "col",
+                "embed",
+                "param",
+                "source",
+                "track",
+                "wbr",
             }
             if tag.lower() in void_tags and not child_html:
                 return f"<{tag}{attr_str} />"
@@ -369,14 +381,16 @@ def _build_recharts_html(widget_props: dict, width: int, height: int) -> str:
     for i, y_key in enumerate(y_keys[:5]):
         color = colors[i % len(colors)]
         points = [{"x": d.get(x_key, 0), "y": d.get(y_key, 0)} for d in data]
-        datasets_js.append({
-            "label": y_key,
-            "data": points,
-            "borderColor": color,
-            "backgroundColor": color,
-            "fill": False,
-            "tension": 0.1
-        })
+        datasets_js.append(
+            {
+                "label": y_key,
+                "data": points,
+                "borderColor": color,
+                "backgroundColor": color,
+                "fill": False,
+                "tension": 0.1,
+            }
+        )
 
     chart_data = _serialize_for_js({"datasets": datasets_js})
 
@@ -433,6 +447,7 @@ new Chart(ctx, {{
 def _serialize_for_js(obj: Any) -> str:
     """Serialize Python object to JS-compatible JSON string."""
     import json
+
     return json.dumps(obj)
 
 
