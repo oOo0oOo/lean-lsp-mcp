@@ -630,9 +630,7 @@ def diagnostic_messages(
         except Exception:
             pass
 
-    return _process_diagnostics(
-        diagnostics, result.success, info_trees=info_trees
-    )
+    return _process_diagnostics(diagnostics, result.success, info_trees=info_trees)
 
 
 @mcp.tool(
