@@ -570,7 +570,8 @@ def _collect_diagnostics_snapshot(
             state = client.opened_files.get(rel_path)
             if state is not None:
                 ready = (
-                    state.is_line_range_complete(start_line, end_line) and state.is_ready()
+                    state.is_line_range_complete(start_line, end_line)
+                    and state.is_ready()
                     if use_range
                     else state.is_ready()
                 )
