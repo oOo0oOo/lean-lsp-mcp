@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import functools
 import logging.config
 import os
@@ -19,14 +20,7 @@ from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
-from mcp.types import (
-    Annotations,
-    EmbeddedResource,
-    ResourceLink,
-    Role,
-    TextResourceContents,
-    ToolAnnotations,
-)
+from mcp.types import ResourceLink, ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
@@ -341,6 +335,11 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
     return decorator
 
 
+async def _maybe_await(result):
+    if inspect.isawaitable(result):
+        await result
+
+
 @mcp.tool(
     "lean_build",
     annotations=ToolAnnotations(
@@ -373,7 +372,7 @@ async def lsp_build(
             "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
         )
 
-    await ctx.info(f"Starting build for project: {lean_project_path_obj}")
+    await _maybe_await(ctx.info(f"Starting build for project: {lean_project_path_obj}"))
 
     log_lines: List[str] = []
     errors: List[str] = []
@@ -381,7 +380,7 @@ async def lsp_build(
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
-            await ctx.debug("Closing existing LSP client before rebuild")
+            await _maybe_await(ctx.debug("Closing existing LSP client before rebuild"))
             ctx.request_context.lifespan_context.client = None
             client.close()
 
@@ -451,7 +450,9 @@ async def lsp_build(
         logger.info("Built project and re-started LSP client")
         ctx.request_context.lifespan_context.client = client
 
-        await ctx.info("Build completed successfully, LSP client restarted")
+        await _maybe_await(
+            ctx.info("Build completed successfully, LSP client restarted")
+        )
 
         return BuildResult(
             success=True,
