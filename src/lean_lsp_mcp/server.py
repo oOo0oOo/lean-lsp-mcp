@@ -59,6 +59,8 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    TryThisResults,
+    TryThisSuggestion,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -550,6 +552,18 @@ def _process_diagnostics(
     )
 
 
+def _extract_try_this(message: str) -> List[str]:
+    marker = "Try this:"
+    idx = message.find(marker)
+    if idx < 0:
+        return []
+    tail = message[idx + len(marker) :].strip()
+    if not tail:
+        return []
+    lines = [line.strip() for line in tail.splitlines() if line.strip()]
+    return lines or [tail]
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -601,6 +615,78 @@ def diagnostic_messages(
     )
 
     return _process_diagnostics(result.diagnostics, result.success)
+
+
+@mcp.tool(
+    "lean_try_this",
+    annotations=ToolAnnotations(
+        title="TryThis Suggestions",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def try_this_suggestions(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    start_line: Annotated[
+        Optional[int], Field(description="Filter from line", ge=1)
+    ] = None,
+    end_line: Annotated[
+        Optional[int], Field(description="Filter to line", ge=1)
+    ] = None,
+    declaration_name: Annotated[
+        Optional[str], Field(description="Filter to declaration (slow)")
+    ] = None,
+) -> TryThisResults:
+    """Extract TryThis suggestions from diagnostics for a Lean file."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    if declaration_name:
+        decl_range = get_declaration_range(client, rel_path, declaration_name)
+        if decl_range is None:
+            raise LeanToolError(f"Declaration '{declaration_name}' not found in file.")
+        start_line, end_line = decl_range
+
+    start_line_0 = (start_line - 1) if start_line is not None else None
+    end_line_0 = (end_line - 1) if end_line is not None else None
+
+    result = client.get_diagnostics(
+        rel_path,
+        start_line=start_line_0,
+        end_line=end_line_0,
+        inactivity_timeout=15.0,
+    )
+
+    items: List[TryThisSuggestion] = []
+    for diag in result.diagnostics:
+        message = diag.get("message", "")
+        suggestions = _extract_try_this(message)
+        if not suggestions:
+            continue
+        r = diag.get("fullRange", diag.get("range"))
+        if r is None:
+            continue
+        line = r["start"]["line"] + 1
+        column = r["start"]["character"] + 1
+        for suggestion in suggestions:
+            items.append(
+                TryThisSuggestion(
+                    suggestion=suggestion,
+                    line=line,
+                    column=column,
+                    message=message,
+                )
+            )
+
+    return TryThisResults(items=items)
 
 
 @mcp.tool(

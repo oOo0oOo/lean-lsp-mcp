@@ -38,6 +38,13 @@ class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
 
 
+class TryThisSuggestion(BaseModel):
+    suggestion: str = Field(description="Suggested code from TryThis")
+    line: int = Field(description="Line (1-indexed)")
+    column: int = Field(description="Column (1-indexed)")
+    message: str = Field(description="Original diagnostic message")
+
+
 class DiagnosticMessage(BaseModel):
     severity: str = Field(description="error, warning, info, or hint")
     message: str = Field(description="Diagnostic message text")
@@ -210,6 +217,14 @@ class PremiseResults(BaseModel):
 
     items: List[PremiseResult] = Field(
         default_factory=list, description="List of premise results"
+    )
+
+
+class TryThisResults(BaseModel):
+    """Wrapper for TryThis suggestions list."""
+
+    items: List[TryThisSuggestion] = Field(
+        default_factory=list, description="List of TryThis suggestions"
     )
 
 
