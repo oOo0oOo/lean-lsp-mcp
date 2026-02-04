@@ -156,7 +156,9 @@ async def test_search_tools(
         if not (
             os.getenv("LEAN_EXPLORE_API_KEY") or os.getenv("LEAN_EXPLORE_BASE_URL")
         ):
-            pytest.skip("LeanExplore not configured (set LEAN_EXPLORE_API_KEY or LEAN_EXPLORE_BASE_URL)")
+            pytest.skip(
+                "LeanExplore not configured (set LEAN_EXPLORE_API_KEY or LEAN_EXPLORE_BASE_URL)"
+            )
 
         leanexplore = await client.call_tool(
             "lean_leanexplore_search",
@@ -165,4 +167,6 @@ async def test_search_tools(
         )
         leanexplore_entry = _first_result_item(leanexplore)
         if leanexplore_entry is not None:
-            assert {"id", "statement_text", "source_file"} <= set(leanexplore_entry.keys())
+            assert {"id", "statement_text", "source_file"} <= set(
+                leanexplore_entry.keys()
+            )
