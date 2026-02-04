@@ -190,7 +190,9 @@ def test_diagnostic_messages_reopen_on_empty(
         def open_file(self, path, dependency_build_mode="never", force_reopen=False):
             self.open_calls.append((dependency_build_mode, force_reopen))
 
-        def get_diagnostics(self, path, start_line=None, end_line=None, inactivity_timeout=15.0):
+        def get_diagnostics(
+            self, path, start_line=None, end_line=None, inactivity_timeout=15.0
+        ):
             self.diag_calls += 1
             if self.diag_calls == 1:
                 return DummyResult([], True)
