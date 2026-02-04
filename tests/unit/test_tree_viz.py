@@ -2,7 +2,7 @@
 
 import pytest
 
-from lean_lsp_mcp.syntax_utils import MacroExpansion, SyntaxRange
+from lean_lsp_mcp.syntax_utils import MacroExpansion
 from lean_lsp_mcp.tree_viz import (
     COLORS,
     _build_node_label,
