@@ -2,12 +2,13 @@
 
 import asyncio
 import json
+import ssl
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir
+from lean_lsp_mcp.loogle import LoogleManager, _loogle_ssl_context, get_cache_dir
 
 
 class TestGetCacheDir:
@@ -25,6 +26,27 @@ class TestGetCacheDir:
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("LEAN_LOOGLE_CACHE_DIR", "/custom")
         assert get_cache_dir() == Path("/custom")
+
+
+class TestLoogleSSLContext:
+    def test_default_context(self, monkeypatch):
+        monkeypatch.delenv("LEAN_LOOGLE_INSECURE", raising=False)
+        monkeypatch.delenv("LEAN_LOOGLE_CA_BUNDLE", raising=False)
+        ctx = _loogle_ssl_context()
+        assert isinstance(ctx, ssl.SSLContext)
+
+    def test_insecure_context(self, monkeypatch):
+        monkeypatch.setenv("LEAN_LOOGLE_INSECURE", "1")
+        monkeypatch.delenv("LEAN_LOOGLE_CA_BUNDLE", raising=False)
+        ctx = _loogle_ssl_context()
+        assert ctx.verify_mode == ssl.CERT_NONE
+        assert ctx.check_hostname is False
+
+    def test_invalid_ca_bundle(self, monkeypatch):
+        monkeypatch.delenv("LEAN_LOOGLE_INSECURE", raising=False)
+        monkeypatch.setenv("LEAN_LOOGLE_CA_BUNDLE", "/missing/ca.pem")
+        with pytest.raises(ValueError):
+            _loogle_ssl_context()
 
 
 class TestLoogleManager:

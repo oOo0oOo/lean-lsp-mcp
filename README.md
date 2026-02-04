@@ -473,6 +473,8 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
+- `LEAN_LOOGLE_CA_BUNDLE`: Path to a custom CA bundle for loogle HTTPS requests.
+- `LEAN_LOOGLE_INSECURE`: Set to `true`, `1`, or `yes` to disable SSL verification for loogle (not recommended).
 
 You can also often set these environment variables in your MCP client configuration:
 <details>

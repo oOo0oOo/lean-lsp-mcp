@@ -10,6 +10,7 @@ import os
 import shutil
 import ssl
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -30,6 +31,24 @@ def get_cache_dir() -> Path:
     return Path(xdg) / "lean-lsp-mcp" / "loogle"
 
 
+def _loogle_ssl_context() -> ssl.SSLContext:
+    insecure = os.environ.get("LEAN_LOOGLE_INSECURE", "").lower() in ("1", "true", "yes")
+    if insecure:
+        logger.warning(
+            "LEAN_LOOGLE_INSECURE set: disabling SSL verification for loogle requests."
+        )
+        return ssl._create_unverified_context()
+
+    ca_bundle = os.environ.get("LEAN_LOOGLE_CA_BUNDLE", "").strip()
+    if ca_bundle:
+        ca_path = Path(ca_bundle)
+        if not ca_path.is_file():
+            raise ValueError(f"LEAN_LOOGLE_CA_BUNDLE not found: {ca_bundle}")
+        return ssl.create_default_context(cafile=str(ca_path))
+
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     """Query the remote loogle API."""
     try:
@@ -37,9 +56,17 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
             f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
             headers={"User-Agent": "lean-lsp-mcp/0.1"},
         )
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as response:
-            results = orjson.loads(response.read())
+        ssl_ctx = _loogle_ssl_context()
+        try:
+            with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as response:
+                results = orjson.loads(response.read())
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                return (
+                    "loogle error:\nSSL certificate verification failed. "
+                    "Set LEAN_LOOGLE_CA_BUNDLE or LEAN_LOOGLE_INSECURE=1."
+                )
+            raise
         if "hits" not in results:
             return "No results found."
         hits = results["hits"][:num_results]
@@ -51,6 +78,11 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
             )
             for r in hits
         ]
+    except ssl.SSLCertVerificationError:
+        return (
+            "loogle error:\nSSL certificate verification failed. "
+            "Set LEAN_LOOGLE_CA_BUNDLE or LEAN_LOOGLE_INSECURE=1."
+        )
     except Exception as e:
         return f"loogle error:\n{e}"
 
