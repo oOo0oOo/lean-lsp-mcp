@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 from typing import AsyncContextManager
 
@@ -151,3 +152,17 @@ async def test_search_tools(
         else:
             finder_text = result_text(finder_informal)
             assert finder_text and len(finder_text) > 0
+
+        if not (
+            os.getenv("LEAN_EXPLORE_API_KEY") or os.getenv("LEAN_EXPLORE_BASE_URL")
+        ):
+            pytest.skip("LeanExplore not configured (set LEAN_EXPLORE_API_KEY or LEAN_EXPLORE_BASE_URL)")
+
+        leanexplore = await client.call_tool(
+            "lean_leanexplore_search",
+            {"query": "natural numbers", "limit": 3},
+            expect_error=True,
+        )
+        leanexplore_entry = _first_result_item(leanexplore)
+        if leanexplore_entry is not None:
+            assert {"id", "statement_text", "source_file"} <= set(leanexplore_entry.keys())

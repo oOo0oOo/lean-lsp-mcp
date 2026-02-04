@@ -30,6 +30,24 @@ class LeanFinderResult(BaseModel):
     informal_statement: str = Field(description="Natural language description")
 
 
+class LeanExploreResult(BaseModel):
+    id: int = Field(description="LeanExplore statement group identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    source_file: str = Field(description="Source file path for the statement group")
+    range_start_line: int = Field(
+        description="Start line of the statement group in the source file"
+    )
+    statement_text: str = Field(description="Canonical Lean statement text")
+    docstring: Optional[str] = Field(
+        None, description="Docstring associated with the statement group"
+    )
+    informal_description: Optional[str] = Field(
+        None, description="Informal description of the statement group"
+    )
+
+
 class StateSearchResult(BaseModel):
     name: str = Field(description="Theorem/lemma name")
 
@@ -194,6 +212,14 @@ class LeanFinderResults(BaseModel):
 
     items: List[LeanFinderResult] = Field(
         default_factory=list, description="List of Lean Finder results"
+    )
+
+
+class LeanExploreResults(BaseModel):
+    """Wrapper for LeanExplore results list."""
+
+    items: List[LeanExploreResult] = Field(
+        default_factory=list, description="List of LeanExplore results"
     )
 
 

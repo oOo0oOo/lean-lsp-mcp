@@ -36,6 +36,7 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         assert context.lean_project_path is None
         assert context.client is None
         assert context.rate_limit == {
+            "leanexplore": [],
             "leansearch": [],
             "loogle": [],
             "leanfinder": [],
