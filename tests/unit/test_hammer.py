@@ -80,7 +80,9 @@ class TestHammerManager:
         assert manager._find_container_tool() is None
 
     def test_is_available_with_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(shutil, "which", lambda x: "/usr/bin/docker" if x == "docker" else None)
+        monkeypatch.setattr(
+            shutil, "which", lambda x: "/usr/bin/docker" if x == "docker" else None
+        )
         manager = HammerManager()
         assert manager.is_available() is True
 
