@@ -133,7 +133,9 @@ def _load_index(index_dir: Path, prefix: str):
     return items, embeddings, latest_mtime
 
 
-def _save_index(index_dir: Path, prefix: str, items, embeddings, latest_mtime: float) -> None:
+def _save_index(
+    index_dir: Path, prefix: str, items, embeddings, latest_mtime: float
+) -> None:
     index_dir.mkdir(parents=True, exist_ok=True)
     meta_path = index_dir / f"{prefix}.json"
     vec_path = index_dir / f"{prefix}.npy"
@@ -195,9 +197,7 @@ def local_semantic_search(
     if items is None or latest_mtime is None or current_mtime > latest_mtime:
         model = _load_model(model_name)
         np = _require_numpy()
-        texts = [
-            f"{item.name} {item.kind} {item.snippet}" for item in current_items
-        ]
+        texts = [f"{item.name} {item.kind} {item.snippet}" for item in current_items]
         if not texts:
             return []
         embeddings = model.encode(texts, normalize_embeddings=True)

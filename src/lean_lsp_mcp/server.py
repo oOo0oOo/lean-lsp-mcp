@@ -1171,9 +1171,7 @@ async def local_semantic_search_tool(
     model_name: Annotated[
         Optional[str], Field(description="Embedding model name override")
     ] = None,
-    rebuild: Annotated[
-        bool, Field(description="Force rebuild semantic index")
-    ] = False,
+    rebuild: Annotated[bool, Field(description="Force rebuild semantic index")] = False,
 ) -> SemanticSearchResults:
     """Semantic search over local declarations using embeddings."""
     if project_root:
@@ -1189,7 +1187,9 @@ async def local_semantic_search_tool(
     model = model_name or os.environ.get(
         "LEAN_SEMANTIC_SEARCH_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
     )
-    force_rebuild = rebuild or os.environ.get("LEAN_SEMANTIC_SEARCH_REBUILD", "").lower() in (
+    force_rebuild = rebuild or os.environ.get(
+        "LEAN_SEMANTIC_SEARCH_REBUILD", ""
+    ).lower() in (
         "1",
         "true",
         "yes",
