@@ -426,7 +426,7 @@ async def _run_build(
 
         if clean:
             await _safe_report_progress(
-                progress=1, total=16, message="Running `lake clean`"
+                ctx, progress=1, total=16, message="Running `lake clean`"
             )
             clean_proc = await asyncio.create_subprocess_exec(
                 "lake", "clean", cwd=lean_project_path_obj
@@ -434,7 +434,7 @@ async def _run_build(
             await clean_proc.wait()
 
         await _safe_report_progress(
-            progress=2, total=16, message="Running `lake exe cache get`"
+            ctx, progress=2, total=16, message="Running `lake exe cache get`"
         )
         cache_proc = await asyncio.create_subprocess_exec(
             "lake", "exe", "cache", "get", cwd=lean_project_path_obj
@@ -466,6 +466,7 @@ async def _run_build(
                 r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
             ):
                 await _safe_report_progress(
+                    ctx,
                     progress=int(m.group(1)),
                     total=int(m.group(2)),
                     message=m.group(3) or "Building",
