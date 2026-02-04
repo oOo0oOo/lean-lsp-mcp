@@ -72,6 +72,7 @@ try:
         LeanSearchManager,
         check_leansearch_available,
     )
+
     _LEANSEARCH_AVAILABLE, _LEANSEARCH_MESSAGE = check_leansearch_available()
 except ImportError:
     _LEANSEARCH_AVAILABLE = False
@@ -1569,12 +1570,14 @@ async def local_semantic_search(
         # Format results
         formatted = []
         for r in results:
-            formatted.append({
-                "name": r.get("name", ""),
-                "kind": r.get("kind", ""),
-                "module": r.get("module", ""),
-                "signature": r.get("signature", "")[:200],
-            })
+            formatted.append(
+                {
+                    "name": r.get("name", ""),
+                    "kind": r.get("kind", ""),
+                    "module": r.get("module", ""),
+                    "signature": r.get("signature", "")[:200],
+                }
+            )
         return formatted
     except Exception as e:
         return f"Local semantic search error: {str(e)}"
@@ -1641,11 +1644,13 @@ async def local_premise_search(
         # Format results
         formatted = [{"goal": f_line}]
         for r in results:
-            formatted.append({
-                "name": r.get("name", ""),
-                "kind": r.get("kind", ""),
-                "score": round(r.get("score", r.get("hybrid_score", 0)), 3),
-            })
+            formatted.append(
+                {
+                    "name": r.get("name", ""),
+                    "kind": r.get("kind", ""),
+                    "score": round(r.get("score", r.get("hybrid_score", 0)), 3),
+                }
+            )
         return formatted
     except Exception as e:
         return f"Local premise search error: {str(e)}"
