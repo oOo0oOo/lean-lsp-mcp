@@ -32,7 +32,11 @@ def get_cache_dir() -> Path:
 
 
 def _loogle_ssl_context() -> ssl.SSLContext:
-    insecure = os.environ.get("LEAN_LOOGLE_INSECURE", "").lower() in ("1", "true", "yes")
+    insecure = os.environ.get("LEAN_LOOGLE_INSECURE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if insecure:
         logger.warning(
             "LEAN_LOOGLE_INSECURE set: disabling SSL verification for loogle requests."
