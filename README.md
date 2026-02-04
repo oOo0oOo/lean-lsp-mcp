@@ -21,7 +21,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
-* **External Search Tools**: Use `LeanSearch`, `Loogle`, `Lean Finder`, `Lean Hammer` and `Lean State Search` to find relevant theorems and definitions.
+* **External Search Tools**: Use `LeanExplore`, `LeanSearch`, `Loogle`, `Lean Finder`, `Lean Hammer` and `Lean State Search` to find relevant theorems and definitions.
 * **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
@@ -314,6 +314,17 @@ Currently most external tools are separately **rate limited to 3 requests per 30
 
 Please cite the original authors of these tools if you use them!
 
+#### lean_leanexplore_search
+
+Search Lean declarations via [LeanExplore](https://www.leanexplore.com).
+
+[Docs](https://kellyjdavis.github.io/lean-explore)
+
+- Uses the LeanExplore API by default (`https://www.leanexplore.com/api/v1`).
+- Set `LEAN_EXPLORE_API_KEY` for hosted API access.
+- **Local backend support**: run `leanexplore data fetch`, then `leanexplore http serve --backend local`, and set `LEAN_EXPLORE_BASE_URL` to `http://localhost:8001/api/v1`.
+- Related tools: `lean_leanexplore_get_by_id`, `lean_leanexplore_dependencies` (dependency/citation lookup).
+
 #### lean_leansearch
 
 Search for theorems in Mathlib using [leansearch.net](https://leansearch.net) (natural language search).
@@ -469,6 +480,8 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_EXPLORE_API_KEY`: API key for LeanExplore hosted API access.
+- `LEAN_EXPLORE_BASE_URL`: Base URL for LeanExplore API (default: `https://www.leanexplore.com/api/v1`). Use `http://localhost:8001/api/v1` for the local backend.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).

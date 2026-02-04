@@ -45,6 +45,8 @@ from lean_lsp_mcp.models import (
     HoverInfo,
     LeanFinderResult,
     LeanFinderResults,
+    LeanExploreResult,
+    LeanExploreResults,
     LeanSearchResult,
     LeanSearchResults,
     LocalSearchResult,
@@ -205,6 +207,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path=lean_project_path,
             client=None,
             rate_limit={
+                "leanexplore": [],
                 "leansearch": [],
                 "loogle": [],
                 "leanfinder": [],
@@ -1147,6 +1150,135 @@ async def local_search(
         return LocalSearchResults(items=results)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
+
+
+def _leanexplore_base_url() -> str:
+    base_url = os.environ.get("LEAN_EXPLORE_BASE_URL", "").strip()
+    if not base_url:
+        base_url = "https://www.leanexplore.com/api/v1"
+    return base_url.rstrip("/")
+
+
+def _leanexplore_headers() -> Dict[str, str]:
+    headers = {"User-Agent": "lean-lsp-mcp/0.1"}
+    api_key = os.environ.get("LEAN_EXPLORE_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _leanexplore_request_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers=_leanexplore_headers(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return orjson.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise LeanToolError(
+                "LeanExplore authentication failed. Set LEAN_EXPLORE_API_KEY or "
+                "use a local LEAN_EXPLORE_BASE_URL."
+            ) from exc
+        if exc.code == 404:
+            raise LeanToolError("LeanExplore resource not found.") from exc
+        raise LeanToolError(f"LeanExplore API error: HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise LeanToolError(f"LeanExplore API request failed: {exc.reason}") from exc
+    except (orjson.JSONDecodeError, ValueError) as exc:
+        raise LeanToolError("LeanExplore returned invalid JSON.") from exc
+
+
+def _leanexplore_parse_item(item: dict) -> LeanExploreResult:
+    primary = item.get("primary_declaration") or {}
+    lean_name = None
+    if isinstance(primary, dict):
+        lean_name = primary.get("lean_name")
+    statement_text = (
+        item.get("statement_text") or item.get("display_statement_text") or ""
+    )
+    return LeanExploreResult(
+        id=int(item.get("id")),
+        lean_name=lean_name,
+        source_file=item.get("source_file", ""),
+        range_start_line=int(item.get("range_start_line", 0)),
+        statement_text=statement_text,
+        docstring=item.get("docstring"),
+        informal_description=item.get("informal_description"),
+    )
+
+
+@mcp.tool(
+    "lean_leanexplore_search",
+    annotations=ToolAnnotations(
+        title="LeanExplore Search",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+def leanexplore_search(
+    ctx: Context,
+    query: Annotated[str, Field(description="Search query")],
+    package_filters: Annotated[
+        Optional[List[str]],
+        Field(description="Optional list of package filters"),
+    ] = None,
+    limit: Annotated[int, Field(description="Max results", ge=1)] = 10,
+) -> LeanExploreResults:
+    """Search Lean declarations via LeanExplore (API or local backend)."""
+    params: List[tuple[str, str]] = [("q", query.strip())]
+    if package_filters:
+        params.extend([("pkg", pkg) for pkg in package_filters])
+
+    query_string = urllib.parse.urlencode(params, doseq=True)
+    url = f"{_leanexplore_base_url()}/search?{query_string}"
+    data = _leanexplore_request_json(url)
+    results = data.get("results", [])
+    items = [_leanexplore_parse_item(item) for item in results[:limit]]
+    return LeanExploreResults(items=items)
+
+
+@mcp.tool(
+    "lean_leanexplore_get_by_id",
+    annotations=ToolAnnotations(
+        title="LeanExplore Get by ID",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+def leanexplore_get_by_id(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group ID")],
+) -> LeanExploreResult:
+    """Fetch a LeanExplore statement group by ID."""
+    url = f"{_leanexplore_base_url()}/statement_groups/{group_id}"
+    data = _leanexplore_request_json(url)
+    return _leanexplore_parse_item(data)
+
+
+@mcp.tool(
+    "lean_leanexplore_dependencies",
+    annotations=ToolAnnotations(
+        title="LeanExplore Dependencies",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+def leanexplore_dependencies(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group ID")],
+    limit: Annotated[int, Field(description="Max results", ge=1)] = 10,
+) -> LeanExploreResults:
+    """Fetch dependency (citation) groups for a LeanExplore statement group."""
+    url = f"{_leanexplore_base_url()}/statement_groups/{group_id}/dependencies"
+    data = _leanexplore_request_json(url)
+    results = data.get("citations", [])
+    items = [_leanexplore_parse_item(item) for item in results[:limit]]
+    return LeanExploreResults(items=items)
 
 
 @mcp.tool(
