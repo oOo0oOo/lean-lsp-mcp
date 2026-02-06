@@ -7,6 +7,7 @@ import ssl
 import time
 import urllib
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -23,7 +24,10 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    CLIENT_LOCK,
+    ensure_open_file,
     infer_project_path,
+    mark_files_closed,
     setup_client_for_file,
     startup_client,
 )
@@ -145,8 +149,9 @@ _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 class AppContext:
     lean_project_path: Path | None
     client: LeanLSPClient | None
-    rate_limit: Dict[str, List[int]]
+    rate_limit: Dict[str, deque[int]]
     lean_search_available: bool
+    open_files: set[str]
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
     # REPL for efficient multi-attempt execution
@@ -205,13 +210,14 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path=lean_project_path,
             client=None,
             rate_limit={
-                "leansearch": [],
-                "loogle": [],
-                "leanfinder": [],
-                "lean_state_search": [],
-                "hammer_premise": [],
+                "leansearch": deque(),
+                "loogle": deque(),
+                "leanfinder": deque(),
+                "lean_state_search": deque(),
+                "hammer_premise": deque(),
             },
             lean_search_available=_RG_AVAILABLE,
+            open_files=set(),
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
             repl=repl,
@@ -262,17 +268,16 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
                 ctx = args[0]
             rate_limit = ctx.request_context.lifespan_context.rate_limit
             current_time = int(time.time())
-            rate_limit[category] = [
-                timestamp
-                for timestamp in rate_limit[category]
-                if timestamp > current_time - per_seconds
-            ]
-            if len(rate_limit[category]) >= max_requests:
+            timestamps = rate_limit.setdefault(category, deque())
+            cutoff = current_time - per_seconds
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.popleft()
+            if len(timestamps) >= max_requests:
                 return (
                     False,
                     f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later.",
                 )
-            rate_limit[category].append(current_time)
+            timestamps.append(current_time)
             return True, None
 
         if asyncio.iscoroutinefunction(func):
@@ -338,7 +343,9 @@ async def lsp_build(
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
-            ctx.request_context.lifespan_context.client = None
+            with CLIENT_LOCK:
+                ctx.request_context.lifespan_context.client = None
+                ctx.request_context.lifespan_context.open_files = set()
             client.close()
 
         if clean:
@@ -405,7 +412,9 @@ async def lsp_build(
             )
 
         logger.info("Built project and re-started LSP client")
-        ctx.request_context.lifespan_context.client = client
+        with CLIENT_LOCK:
+            ctx.request_context.lifespan_context.client = client
+            ctx.request_context.lifespan_context.open_files = set()
 
         return BuildResult(
             success=True,
@@ -479,8 +488,9 @@ def file_outline(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path)
+    return generate_outline_data(client, rel_path, open_file=False)
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
@@ -579,8 +589,8 @@ def diagnostic_messages(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
 
     # If declaration_name is provided, get its range and use that for filtering
     if declaration_name:
@@ -632,8 +642,8 @@ def goal(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     content = client.get_file_content(rel_path)
     lines = content.splitlines()
 
@@ -687,8 +697,8 @@ def term_goal(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     content = client.get_file_content(rel_path)
     lines = content.splitlines()
 
@@ -732,8 +742,8 @@ def hover(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
     check_lsp_response(hover_info, "get_hover", allow_none=True)
@@ -781,8 +791,8 @@ def completions(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     content = client.get_file_content(rel_path)
     raw_completions = client.get_completions(rel_path, line - 1, column - 1)
     check_lsp_response(raw_completions, "get_completions")
@@ -856,8 +866,8 @@ def declaration_file(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     orig_file_content = client.get_file_content(rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file
@@ -954,8 +964,8 @@ def _multi_attempt_lsp(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    opened_here = ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     original_content = get_file_contents(file_path)
 
     try:
@@ -990,6 +1000,26 @@ def _multi_attempt_lsp(
             except Exception as exc:
                 logger.warning(
                     "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
+
+        if opened_here:
+            try:
+                client.close_files([rel_path])
+                mark_files_closed(ctx, [rel_path])
+            except Exception as exc:  # pragma: no cover - close failures only logged
+                logger.warning(
+                    "Failed to close `%s` after multi_attempt: %s", rel_path, exc
+                )
+        else:
+            # We modified the open document via update_file. If we didn't open it in this
+            # scope, leave it open but resync its contents from disk to avoid leaking
+            # edits into other tools.
+            try:
+                with CLIENT_LOCK:
+                    client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:  # pragma: no cover - resync failures only logged
+                logger.warning(
+                    "Failed to resync `%s` after multi_attempt: %s", rel_path, exc
                 )
 
 
@@ -1064,14 +1094,14 @@ def run_code(
                 raise LeanToolError("Failed to initialize Lean client for run_code.")
 
         assert client is not None
-        client.open_file(rel_path)
-        opened_file = True
+        opened_file = ensure_open_file(ctx, rel_path)
         raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
         check_lsp_response(raw_diagnostics, "get_diagnostics")
     finally:
         if opened_file:
             try:
                 client.close_files([rel_path])
+                mark_files_closed(ctx, [rel_path])
             except Exception as exc:
                 logger.warning("Failed to close `%s` after run_code: %s", rel_path, exc)
         try:
@@ -1249,7 +1279,8 @@ async def loogle(
     # Fall back to remote (with rate limiting)
     rate_limit = app_ctx.rate_limit["loogle"]
     now = int(time.time())
-    rate_limit[:] = [t for t in rate_limit if now - t < 30]
+    while rate_limit and now - rate_limit[0] >= 30:
+        rate_limit.popleft()
     if len(rate_limit) >= 3:
         raise LeanToolError(
             "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
@@ -1345,8 +1376,8 @@ async def state_search(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
@@ -1399,8 +1430,8 @@ async def hammer_premise(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
+    ensure_open_file(ctx, rel_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
