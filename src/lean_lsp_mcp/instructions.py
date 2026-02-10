@@ -8,6 +8,7 @@ INSTRUCTIONS = """## General Rules
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
+- **lean_local_semantic_search**: Local semantic search over declarations (requires optional deps).
 - **lean_file_outline**: Token-efficient file skeleton (slow-ish).
 - **lean_multi_attempt**: Test tactics without editing: `["simp", "ring", "omega"]`
 - **lean_declaration_file**: Get declaration source. Use sparingly (large output).
@@ -24,6 +25,7 @@ INSTRUCTIONS = """## General Rules
 
 ## Search Decision Tree
 1. "Does X exist locally?" -> lean_local_search
+1. "Find semantically related local declarations" -> lean_local_semantic_search
 2. "I need a lemma that says X" -> lean_leansearch
 3. "Find lemma with type pattern" -> lean_loogle
 4. "What's the Lean name for concept X?" -> lean_leanfinder
