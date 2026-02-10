@@ -567,6 +567,22 @@ def _widget_from_dict(widget: Dict) -> LeanWidgetInstance:
     )
 
 
+def _normalize_widget_hash(value: object) -> str:
+    """Normalize widget hash-like values to a non-empty string."""
+    normalized = str(value).strip()
+    return normalized
+
+
+def _extract_widget_hash(widget_payload: Dict) -> str:
+    """Extract a widget hash from known keys, returning empty string if missing."""
+    hash_value = widget_payload.get("javascriptHash")
+    if hash_value is None and "javascript_hash" in widget_payload:
+        hash_value = widget_payload.get("javascript_hash")
+    if hash_value is None:
+        return ""
+    return _normalize_widget_hash(hash_value)
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -801,7 +817,11 @@ def widgets(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
-    items = [_widget_from_dict(w) for w in raw_widgets][:max_widgets]
+    if raw_widgets is None:
+        return WidgetInstancesResult(items=[])
+    items = [_widget_from_dict(w) for w in raw_widgets if isinstance(w, dict)][
+        :max_widgets
+    ]
     return WidgetInstancesResult(items=items)
 
 
@@ -823,7 +843,7 @@ def widget_source(
         Optional[Dict], Field(description="Widget instance (from lean_widgets)")
     ] = None,
     javascript_hash: Annotated[
-        Optional[int], Field(description="Widget JavaScript hash")
+        Optional[str], Field(description="Widget JavaScript hash")
     ] = None,
 ) -> WidgetSourceResult:
     """Get JavaScript source for a widget instance."""
@@ -840,12 +860,24 @@ def widget_source(
 
     widget_payload = dict(widget or {})
     if javascript_hash is not None:
-        widget_payload["javascriptHash"] = str(javascript_hash)
+        widget_payload["javascriptHash"] = _normalize_widget_hash(javascript_hash)
+    javascript_hash_value = _extract_widget_hash(widget_payload)
+    if not javascript_hash_value:
+        raise LeanToolError(
+            "Widget payload must include a non-empty javascriptHash or javascript_hash."
+        )
+    widget_payload["javascriptHash"] = javascript_hash_value
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     source = client.get_widget_source(rel_path, line - 1, column - 1, widget_payload)
-    return WidgetSourceResult(sourcetext=source.get("sourcetext", ""))
+    check_lsp_response(source, "get_widget_source")
+    if not isinstance(source, dict):
+        raise LeanToolError("Invalid widget source response from Lean RPC.")
+    sourcetext = source.get("sourcetext")
+    if not isinstance(sourcetext, str):
+        raise LeanToolError("Widget source response missing sourcetext.")
+    return WidgetSourceResult(sourcetext=sourcetext)
 
 
 @mcp.tool(
@@ -872,6 +904,13 @@ def interactive_diagnostics(
     max_items: Annotated[int, Field(description="Max items", ge=1)] = 64,
 ) -> InteractiveDiagnosticsResult:
     """Get interactive diagnostics or widgets for a file."""
+    if (start_line is None) != (end_line is None):
+        raise LeanToolError(
+            "Provide both start_line and end_line together, or omit both."
+        )
+    if start_line is not None and end_line is not None and start_line > end_line:
+        raise LeanToolError("start_line must be <= end_line.")
+
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -891,7 +930,9 @@ def interactive_diagnostics(
             end_line=end_line_0,
             extract_widgets=True,
         )
-        widgets = [_widget_from_dict(w) for w in widgets_raw][:max_items]
+        widgets = [_widget_from_dict(w) for w in widgets_raw if isinstance(w, dict)][
+            :max_items
+        ]
         return InteractiveDiagnosticsResult(diagnostics=[], widgets=widgets)
 
     diagnostics = client.get_interactive_diagnostics(
@@ -900,7 +941,7 @@ def interactive_diagnostics(
         end_line=end_line_0,
         extract_widgets=False,
     )
-    diagnostics = diagnostics[:max_items]
+    diagnostics = [d for d in diagnostics if isinstance(d, dict)][:max_items]
     return InteractiveDiagnosticsResult(diagnostics=diagnostics, widgets=[])
 
 
