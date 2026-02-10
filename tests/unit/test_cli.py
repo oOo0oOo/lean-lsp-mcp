@@ -13,7 +13,8 @@ def test_main_sets_security_env_flags(monkeypatch):
         "LEAN_MCP_TOOL_DESCRIPTIONS",
         "LEAN_MCP_TOOL_DESCRIPTIONS_FILE",
     ]:
-        monkeypatch.delenv(key, raising=False)
+        # Track these keys through monkeypatch so main() assignments are restored.
+        monkeypatch.setenv(key, "__original__")
 
     captured: dict[str, str] = {}
 
