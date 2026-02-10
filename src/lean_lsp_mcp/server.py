@@ -1181,6 +1181,28 @@ def _leanexplore_use_local_backend() -> bool:
     return flag in ("1", "true", "yes")
 
 
+def _leanexplore_default_rerank_top() -> int | None:
+    raw = os.environ.get("LEAN_EXPLORE_RERANK_TOP", "").strip()
+    if not raw:
+        return 50
+    lowered = raw.lower()
+    if lowered in ("none", "off", "disabled", "disable", "null"):
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise LeanToolError(
+            "Invalid LEAN_EXPLORE_RERANK_TOP value. "
+            "Use an integer >= 0 or disable with `none`."
+        ) from exc
+    if value < 0:
+        raise LeanToolError(
+            "Invalid LEAN_EXPLORE_RERANK_TOP value. "
+            "Use an integer >= 0 or disable with `none`."
+        )
+    return value
+
+
 def _leanexplore_get_local_service(app_ctx: AppContext):
     if app_ctx.leanexplore_service is not None:
         return app_ctx.leanexplore_service
@@ -1199,14 +1221,20 @@ def _leanexplore_get_local_service(app_ctx: AppContext):
         root_cause = import_errors[-1] if import_errors else None
         raise LeanToolError(
             "LeanExplore local backend requested but lean-explore is not installed. "
-            "Install it and the local data toolchain (leanexplore data fetch)."
+            "Install with `uv add 'lean-explore[local]'` and fetch data via "
+            "`lean-explore data fetch`."
         ) from root_cause
 
     try:
         app_ctx.leanexplore_service = LeanExploreLocalService()
     except Exception as exc:
+        details = str(exc).strip()
+        if details:
+            details = f" ({details})"
         raise LeanToolError(
-            f"LeanExplore local backend failed to initialize: {exc}"
+            "LeanExplore local backend failed to initialize"
+            f"{details}. Ensure `lean-explore[local]` is installed and run "
+            "`lean-explore data fetch`."
         ) from exc
 
     return app_ctx.leanexplore_service
@@ -1306,26 +1334,35 @@ async def _leanexplore_local_search(
     query: str,
     package_filters: List[str] | None,
     limit: int,
+    rerank_top: int | None,
 ) -> object:
     search_fn = getattr(service, "search", None)
     if search_fn is None:
         raise LeanToolError("LeanExplore local backend does not expose `search`.")
 
     attempts: List[dict[str, object]] = []
+
+    def add_attempt(kwargs: dict[str, object]) -> None:
+        if kwargs not in attempts:
+            attempts.append(kwargs)
+
+    package_variants: List[dict[str, object]] = [{}]
     if package_filters is not None:
-        attempts.append(
-            {"query": query, "package_filters": package_filters, "limit": limit}
-        )
-        attempts.append({"query": query, "packages": package_filters, "limit": limit})
-        attempts.append(
-            {
-                "query": query,
-                "packages": package_filters,
-                "limit": limit,
-                "rerank_top": 50,
-            }
-        )
-    attempts.append({"query": query, "limit": limit})
+        package_variants = [
+            {"package_filters": package_filters},
+            {"packages": package_filters},
+        ]
+
+    for package_kwargs in package_variants:
+        with_rerank = {"query": query, "limit": limit, **package_kwargs}
+        if rerank_top is not None:
+            with_rerank["rerank_top"] = rerank_top
+        add_attempt(with_rerank)
+        add_attempt({"query": query, "limit": limit, **package_kwargs})
+
+    if rerank_top is not None:
+        add_attempt({"query": query, "limit": limit, "rerank_top": rerank_top})
+    add_attempt({"query": query, "limit": limit})
 
     last_exc: TypeError | None = None
     for kwargs in attempts:
@@ -1532,10 +1569,23 @@ async def leanexplore_search(
         Optional[List[str]],
         Field(description="Optional list of package filters"),
     ] = None,
+    rerank_top: Annotated[
+        Optional[int],
+        Field(
+            description=(
+                "Local backend only: number of candidates to rerank. "
+                "Defaults to 50; use 0 to disable reranking."
+            ),
+            ge=0,
+        ),
+    ] = None,
     limit: Annotated[int, Field(description="Max results", ge=1)] = 10,
 ) -> LeanExploreResults:
     """Search Lean declarations via LeanExplore (API or local backend)."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
+    resolved_rerank_top = (
+        _leanexplore_default_rerank_top() if rerank_top is None else rerank_top
+    )
 
     if app_ctx.leanexplore_local_enabled:
         service = _leanexplore_get_local_service(app_ctx)
@@ -1545,6 +1595,7 @@ async def leanexplore_search(
                 query=query.strip(),
                 package_filters=package_filters,
                 limit=limit,
+                rerank_top=resolved_rerank_top,
             )
         except Exception as exc:
             raise LeanToolError(f"LeanExplore local search failed: {exc}") from exc

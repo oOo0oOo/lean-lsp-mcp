@@ -16,7 +16,7 @@ INSTRUCTIONS = """## General Rules
 - **lean_profile_proof**: Profile a theorem for performance. Shows tactic hotspots. SLOW!
 
 ## Search Tools (rate limited)
-- **lean_leanexplore_search** (3/30s): LeanExplore search (API or local backend via `LEAN_EXPLORE_BACKEND=local`)
+- **lean_leanexplore_search** (3/30s): LeanExplore search (API or local backend via `LEAN_EXPLORE_BACKEND=local`, supports `rerank_top` for local mode)
 - **lean_leansearch** (3/30s): Natural language -> mathlib
 - **lean_loogle** (3/30s): Type pattern -> mathlib
 - **lean_leanfinder** (10/30s): Semantic/conceptual search
