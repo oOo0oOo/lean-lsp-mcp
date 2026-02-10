@@ -144,7 +144,7 @@ _LEAN_LSP_PREWARM_ENV = "LEAN_LSP_PREWARM"
 
 
 def _env_flag_enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -234,7 +234,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 request_context=SimpleNamespace(lifespan_context=context)
             )
             try:
-                startup_client(prewarm_ctx)
+                await asyncio.to_thread(startup_client, prewarm_ctx)
             except Exception as exc:
                 logger.warning("Lean client prewarm failed: %s", exc)
 

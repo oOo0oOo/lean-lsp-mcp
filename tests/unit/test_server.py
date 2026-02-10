@@ -115,6 +115,32 @@ async def test_app_lifespan_prewarm_failure_is_non_fatal(
     assert "Lean client prewarm failed" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_app_lifespan_prewarm_accepts_on_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
+    monkeypatch.setenv("LEAN_LSP_PREWARM", "on")
+
+    called = {"count": 0}
+
+    def fake_startup(ctx: types.SimpleNamespace) -> None:
+        called["count"] += 1
+        assert (
+            ctx.request_context.lifespan_context.lean_project_path
+            == project_dir.resolve()
+        )
+
+    monkeypatch.setattr(server, "startup_client", fake_startup)
+
+    async with server.app_lifespan(object()):
+        pass
+
+    assert called["count"] == 1
+
+
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
