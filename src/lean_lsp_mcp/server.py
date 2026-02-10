@@ -1,5 +1,7 @@
 import asyncio
 import functools
+import inspect
+import json
 import logging.config
 import os
 import re
@@ -1183,13 +1185,22 @@ def _leanexplore_get_local_service(app_ctx: AppContext):
     if app_ctx.leanexplore_service is not None:
         return app_ctx.leanexplore_service
 
-    try:
-        from lean_explore.local.service import Service as LeanExploreLocalService
-    except Exception as exc:
+    LeanExploreLocalService = None
+    import_errors: List[Exception] = []
+    for module_path in ("lean_explore.search.service", "lean_explore.local.service"):
+        try:
+            module = __import__(module_path, fromlist=["Service"])
+            LeanExploreLocalService = getattr(module, "Service")
+            break
+        except Exception as exc:
+            import_errors.append(exc)
+
+    if LeanExploreLocalService is None:
+        root_cause = import_errors[-1] if import_errors else None
         raise LeanToolError(
             "LeanExplore local backend requested but lean-explore is not installed. "
             "Install it and the local data toolchain (leanexplore data fetch)."
-        ) from exc
+        ) from root_cause
 
     try:
         app_ctx.leanexplore_service = LeanExploreLocalService()
@@ -1240,6 +1251,10 @@ def _leanexplore_results_from_payload(
     payload: object, key: str
 ) -> List["LeanExploreResult"]:
     raw_items = _leanexplore_extract_items(payload, key)
+    if not raw_items and key != "results":
+        raw_items = _leanexplore_extract_items(payload, "results")
+    if not raw_items and key != "citations":
+        raw_items = _leanexplore_extract_items(payload, "citations")
     return [_leanexplore_parse_item(item) for item in raw_items if item is not None]
 
 
@@ -1251,11 +1266,17 @@ def _leanexplore_headers() -> Dict[str, str]:
     return headers
 
 
-def _leanexplore_request_json(url: str) -> dict:
+async def _leanexplore_request_json(
+    url: str, *, allow_404: bool = False
+) -> dict | None:
     req = urllib.request.Request(url, headers=_leanexplore_headers(), method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return orjson.loads(response.read())
+        payload = await _urlopen_json(req, timeout=10)
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, list):
+            return {"results": payload}
+        raise LeanToolError("LeanExplore returned unexpected response shape.")
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise LeanToolError(
@@ -1263,6 +1284,8 @@ def _leanexplore_request_json(url: str) -> dict:
                 "use a local LEAN_EXPLORE_BASE_URL."
             ) from exc
         if exc.code == 404:
+            if allow_404:
+                return None
             raise LeanToolError("LeanExplore resource not found.") from exc
         raise LeanToolError(f"LeanExplore API error: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
@@ -1271,17 +1294,185 @@ def _leanexplore_request_json(url: str) -> dict:
         raise LeanToolError("LeanExplore returned invalid JSON.") from exc
 
 
+async def _leanexplore_await_if_needed(value: object) -> object:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _leanexplore_local_search(
+    service: object,
+    *,
+    query: str,
+    package_filters: List[str] | None,
+    limit: int,
+) -> object:
+    search_fn = getattr(service, "search", None)
+    if search_fn is None:
+        raise LeanToolError("LeanExplore local backend does not expose `search`.")
+
+    attempts: List[dict[str, object]] = []
+    if package_filters is not None:
+        attempts.append(
+            {"query": query, "package_filters": package_filters, "limit": limit}
+        )
+        attempts.append({"query": query, "packages": package_filters, "limit": limit})
+        attempts.append(
+            {
+                "query": query,
+                "packages": package_filters,
+                "limit": limit,
+                "rerank_top": 50,
+            }
+        )
+    attempts.append({"query": query, "limit": limit})
+
+    last_exc: TypeError | None = None
+    for kwargs in attempts:
+        try:
+            result = search_fn(**kwargs)
+        except TypeError as exc:
+            last_exc = exc
+            continue
+        return await _leanexplore_await_if_needed(result)
+
+    raise LeanToolError(
+        "LeanExplore local search failed due to API mismatch. "
+        f"Last error: {last_exc}"
+    )
+
+
+async def _leanexplore_local_get_by_id(service: object, group_id: int) -> object | None:
+    get_by_id_fn = getattr(service, "get_by_id", None)
+    if get_by_id_fn is None:
+        raise LeanToolError("LeanExplore local backend does not expose `get_by_id`.")
+
+    attempts = [
+        ("kwargs", {"group_id": group_id}),
+        ("kwargs", {"declaration_id": group_id}),
+        ("args", (group_id,)),
+    ]
+    last_exc: TypeError | None = None
+    for mode, payload in attempts:
+        try:
+            if mode == "kwargs":
+                result = get_by_id_fn(**payload)
+            else:
+                result = get_by_id_fn(*payload)
+        except TypeError as exc:
+            last_exc = exc
+            continue
+        resolved = await _leanexplore_await_if_needed(result)
+        if isinstance(resolved, list):
+            if not resolved:
+                return None
+            return resolved[0]
+        return resolved
+
+    raise LeanToolError(
+        "LeanExplore local `get_by_id` call failed due to API mismatch. "
+        f"Last error: {last_exc}"
+    )
+
+
+async def _leanexplore_local_get_dependencies(
+    service: object, group_id: int
+) -> object | None:
+    get_dependencies_fn = getattr(service, "get_dependencies", None)
+    if get_dependencies_fn is None:
+        # lean-explore v1.x removed the dedicated dependencies endpoint.
+        return await _leanexplore_local_get_by_id(service, group_id)
+
+    attempts = [
+        ("kwargs", {"group_id": group_id}),
+        ("kwargs", {"declaration_id": group_id}),
+        ("args", (group_id,)),
+    ]
+    last_exc: TypeError | None = None
+    for mode, payload in attempts:
+        try:
+            if mode == "kwargs":
+                result = get_dependencies_fn(**payload)
+            else:
+                result = get_dependencies_fn(*payload)
+        except TypeError as exc:
+            last_exc = exc
+            continue
+        resolved = await _leanexplore_await_if_needed(result)
+        if isinstance(resolved, list):
+            if not resolved:
+                return None
+            return resolved[0]
+        return resolved
+
+    raise LeanToolError(
+        "LeanExplore local `get_dependencies` call failed due to API mismatch. "
+        f"Last error: {last_exc}"
+    )
+
+
+def _leanexplore_extract_dependency_names(payload: object) -> List[str]:
+    raw = _leanexplore_item_to_dict(payload)
+    raw_dependencies = raw.get("dependencies")
+    if raw_dependencies is None:
+        return []
+
+    parsed_dependencies: object = raw_dependencies
+    if isinstance(raw_dependencies, str):
+        text = raw_dependencies.strip()
+        if not text:
+            return []
+        try:
+            parsed_dependencies = json.loads(text)
+        except json.JSONDecodeError:
+            parsed_dependencies = [part.strip() for part in text.split(",")]
+
+    if not isinstance(parsed_dependencies, list):
+        return []
+
+    names: List[str] = []
+    for dep in parsed_dependencies:
+        if isinstance(dep, str):
+            dep_name = dep.strip()
+            if dep_name:
+                names.append(dep_name)
+        elif isinstance(dep, dict):
+            dep_name = dep.get("name") or dep.get("lean_name")
+            if isinstance(dep_name, str) and dep_name.strip():
+                names.append(dep_name.strip())
+    return names
+
+
+def _leanexplore_dependency_names_to_results(names: List[str]) -> List[LeanExploreResult]:
+    results: List[LeanExploreResult] = []
+    for idx, name in enumerate(names, start=1):
+        results.append(
+            LeanExploreResult(
+                id=-idx,
+                lean_name=name,
+                source_file="",
+                range_start_line=0,
+                statement_text=name,
+            )
+        )
+    return results
+
+
 def _leanexplore_parse_item(item: object) -> LeanExploreResult:
     raw = _leanexplore_item_to_dict(item)
     primary = raw.get("primary_declaration") or raw.get("primaryDeclaration") or {}
-    lean_name = None
+    lean_name = raw.get("lean_name") or raw.get("leanName") or raw.get("name")
     if isinstance(primary, dict):
-        lean_name = primary.get("lean_name") or primary.get("leanName")
+        lean_name = (
+            lean_name or primary.get("lean_name") or primary.get("leanName")
+        )
     statement_text = (
         raw.get("statement_text")
         or raw.get("display_statement_text")
         or raw.get("statement")
         or raw.get("displayStatementText")
+        or raw.get("source_text")
+        or raw.get("sourceText")
         or ""
     )
     source_file = (
@@ -1289,6 +1480,7 @@ def _leanexplore_parse_item(item: object) -> LeanExploreResult:
         or raw.get("sourceFile")
         or raw.get("file")
         or raw.get("file_path")
+        or raw.get("module")
         or ""
     )
     range_start_line = raw.get("range_start_line")
@@ -1298,15 +1490,28 @@ def _leanexplore_parse_item(item: object) -> LeanExploreResult:
             start = range_data.get("start", {})
             if isinstance(start, dict):
                 range_start_line = start.get("line")
+    if range_start_line is None:
+        source_link = raw.get("source_link") or raw.get("sourceLink")
+        if isinstance(source_link, str):
+            match = re.search(r"#L(\d+)", source_link)
+            if match:
+                range_start_line = int(match.group(1))
+
+    identifier = (
+        raw.get("id") or raw.get("statement_group_id") or raw.get("statementGroupId")
+    )
+    if identifier is None:
+        identifier = 0
     return LeanExploreResult(
-        id=int(raw.get("id")),
+        id=int(identifier),
         lean_name=lean_name,
         source_file=source_file,
         range_start_line=int(range_start_line or 0),
         statement_text=statement_text,
         docstring=raw.get("docstring"),
         informal_description=raw.get("informal_description")
-        or raw.get("informalDescription"),
+        or raw.get("informalDescription")
+        or raw.get("informalization"),
     )
 
 
@@ -1320,7 +1525,7 @@ def _leanexplore_parse_item(item: object) -> LeanExploreResult:
     ),
 )
 @rate_limited("leanexplore", max_requests=3, per_seconds=30)
-def leanexplore_search(
+async def leanexplore_search(
     ctx: Context,
     query: Annotated[str, Field(description="Search query")],
     package_filters: Annotated[
@@ -1335,7 +1540,8 @@ def leanexplore_search(
     if app_ctx.leanexplore_local_enabled:
         service = _leanexplore_get_local_service(app_ctx)
         try:
-            data = service.search(
+            data = await _leanexplore_local_search(
+                service,
                 query=query.strip(),
                 package_filters=package_filters,
                 limit=limit,
@@ -1345,13 +1551,18 @@ def leanexplore_search(
         items = _leanexplore_results_from_payload(data, "results")[:limit]
         return LeanExploreResults(items=items)
 
-    params: List[tuple[str, str]] = [("q", query.strip())]
+    params: List[tuple[str, str]] = [("q", query.strip()), ("limit", str(limit))]
     if package_filters:
+        # Legacy API (<1.0): repeated pkg params.
         params.extend([("pkg", pkg) for pkg in package_filters])
+        # Newer API (>=1.0): CSV packages param.
+        params.append(("packages", ",".join(package_filters)))
 
     query_string = urllib.parse.urlencode(params, doseq=True)
     url = f"{_leanexplore_base_url()}/search?{query_string}"
-    data = _leanexplore_request_json(url)
+    data = await _leanexplore_request_json(url)
+    if data is None:
+        return LeanExploreResults(items=[])
     items = _leanexplore_results_from_payload(data, "results")[:limit]
     return LeanExploreResults(items=items)
 
@@ -1366,7 +1577,7 @@ def leanexplore_search(
     ),
 )
 @rate_limited("leanexplore", max_requests=3, per_seconds=30)
-def leanexplore_get_by_id(
+async def leanexplore_get_by_id(
     ctx: Context,
     group_id: Annotated[int, Field(description="Statement group ID")],
 ) -> LeanExploreResult:
@@ -1376,15 +1587,23 @@ def leanexplore_get_by_id(
     if app_ctx.leanexplore_local_enabled:
         service = _leanexplore_get_local_service(app_ctx)
         try:
-            data = service.get_by_id(group_id)
+            data = await _leanexplore_local_get_by_id(service, group_id)
         except Exception as exc:
             raise LeanToolError(f"LeanExplore local lookup failed: {exc}") from exc
         if data is None:
             raise LeanToolError("LeanExplore resource not found.")
         return _leanexplore_parse_item(data)
 
-    url = f"{_leanexplore_base_url()}/statement_groups/{group_id}"
-    data = _leanexplore_request_json(url)
+    base_url = _leanexplore_base_url()
+    data = await _leanexplore_request_json(
+        f"{base_url}/declarations/{group_id}", allow_404=True
+    )
+    if data is None:
+        data = await _leanexplore_request_json(
+            f"{base_url}/statement_groups/{group_id}", allow_404=True
+        )
+    if data is None:
+        raise LeanToolError("LeanExplore resource not found.")
     return _leanexplore_parse_item(data)
 
 
@@ -1398,7 +1617,7 @@ def leanexplore_get_by_id(
     ),
 )
 @rate_limited("leanexplore", max_requests=3, per_seconds=30)
-def leanexplore_dependencies(
+async def leanexplore_dependencies(
     ctx: Context,
     group_id: Annotated[int, Field(description="Statement group ID")],
     limit: Annotated[int, Field(description="Max results", ge=1)] = 10,
@@ -1409,20 +1628,55 @@ def leanexplore_dependencies(
     if app_ctx.leanexplore_local_enabled:
         service = _leanexplore_get_local_service(app_ctx)
         try:
-            data = service.get_dependencies(group_id)
+            data = await _leanexplore_local_get_dependencies(service, group_id)
         except Exception as exc:
             raise LeanToolError(
                 f"LeanExplore local dependency lookup failed: {exc}"
             ) from exc
         if data is None:
             return LeanExploreResults(items=[])
-        items = _leanexplore_results_from_payload(data, "citations")[:limit]
+        items = _leanexplore_results_from_payload(data, "citations")
+        if not items:
+            dep_names = _leanexplore_extract_dependency_names(data)
+            items = _leanexplore_dependency_names_to_results(dep_names)
+        items = items[:limit]
         return LeanExploreResults(items=items)
 
-    url = f"{_leanexplore_base_url()}/statement_groups/{group_id}/dependencies"
-    data = _leanexplore_request_json(url)
-    items = _leanexplore_results_from_payload(data, "citations")[:limit]
-    return LeanExploreResults(items=items)
+    base_url = _leanexplore_base_url()
+    dependency_payload = None
+    for url in (
+        f"{base_url}/declarations/{group_id}/dependencies",
+        f"{base_url}/statement_groups/{group_id}/dependencies",
+    ):
+        dependency_payload = await _leanexplore_request_json(url, allow_404=True)
+        if dependency_payload is not None:
+            break
+
+    if dependency_payload is not None:
+        items = _leanexplore_results_from_payload(dependency_payload, "citations")
+        if items:
+            return LeanExploreResults(items=items[:limit])
+
+        dep_names = _leanexplore_extract_dependency_names(dependency_payload)
+        if dep_names:
+            return LeanExploreResults(
+                items=_leanexplore_dependency_names_to_results(dep_names[:limit])
+            )
+
+    declaration_payload = await _leanexplore_request_json(
+        f"{base_url}/declarations/{group_id}", allow_404=True
+    )
+    if declaration_payload is None:
+        declaration_payload = await _leanexplore_request_json(
+            f"{base_url}/statement_groups/{group_id}", allow_404=True
+        )
+    if declaration_payload is None:
+        return LeanExploreResults(items=[])
+
+    dependency_names = _leanexplore_extract_dependency_names(declaration_payload)
+    return LeanExploreResults(
+        items=_leanexplore_dependency_names_to_results(dependency_names[:limit])
+    )
 
 
 @mcp.tool(
