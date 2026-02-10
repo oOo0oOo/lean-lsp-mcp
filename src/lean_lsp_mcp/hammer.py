@@ -34,6 +34,10 @@ class HammerManager:
 
     def __init__(self, port: int | None = None):
         self.port = port or int(os.environ.get("LEAN_HAMMER_PORT", self.DEFAULT_PORT))
+        self.image = os.environ.get("LEAN_HAMMER_IMAGE", self.IMAGE)
+        self.container_name = os.environ.get(
+            "LEAN_HAMMER_CONTAINER_NAME", self.CONTAINER_NAME
+        )
         self.cache_dir = get_cache_dir()
         self._container_tool: str | None = None
         self._running = False
@@ -79,7 +83,7 @@ class HammerManager:
 
         try:
             result = self._run_cmd(
-                [tool, "inspect", self.CONTAINER_NAME], timeout=10, check=False
+                [tool, "inspect", self.container_name], timeout=10, check=False
             )
             if result.returncode != 0:
                 return False
@@ -92,7 +96,7 @@ class HammerManager:
                         "inspect",
                         "-f",
                         "{{.State.Running}}",
-                        self.CONTAINER_NAME,
+                        self.container_name,
                     ],
                     timeout=10,
                     check=False,
@@ -101,7 +105,7 @@ class HammerManager:
             else:
                 # macOS container tool
                 result = self._run_cmd(
-                    [tool, "inspect", self.CONTAINER_NAME], timeout=10, check=False
+                    [tool, "inspect", self.container_name], timeout=10, check=False
                 )
                 return "running" in result.stdout.lower()
         except Exception:
@@ -127,12 +131,12 @@ class HammerManager:
             logger.error("No container runtime found")
             return False
 
-        logger.info(f"Pulling {self.IMAGE}...")
+        logger.info(f"Pulling {self.image}...")
         try:
             if tool == "docker":
-                self._run_cmd(["docker", "pull", self.IMAGE], timeout=600)
+                self._run_cmd(["docker", "pull", self.image], timeout=600)
             else:
-                self._run_cmd([tool, "image", "pull", self.IMAGE], timeout=600)
+                self._run_cmd([tool, "image", "pull", self.image], timeout=600)
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to pull image: {e.stderr}")
@@ -170,7 +174,7 @@ class HammerManager:
             if tool == "docker":
                 # Remove existing container if any
                 self._run_cmd(
-                    ["docker", "rm", "-f", self.CONTAINER_NAME], timeout=30, check=False
+                    ["docker", "rm", "-f", self.container_name], timeout=30, check=False
                 )
                 # Start new container
                 self._run_cmd(
@@ -179,19 +183,19 @@ class HammerManager:
                         "run",
                         "-d",
                         "--name",
-                        self.CONTAINER_NAME,
+                        self.container_name,
                         "-p",
                         f"{self.port}:80",
                         "-e",
                         "MAX_BATCH_TOKENS=16384",  # CPU-friendly batch size
-                        self.IMAGE,
+                        self.image,
                     ],
                     timeout=60,
                 )
             else:
                 # macOS container tool
                 self._run_cmd(
-                    [tool, "rm", "-f", self.CONTAINER_NAME], timeout=30, check=False
+                    [tool, "rm", "-f", self.container_name], timeout=30, check=False
                 )
                 self._run_cmd(
                     [
@@ -199,12 +203,12 @@ class HammerManager:
                         "run",
                         "-d",
                         "--name",
-                        self.CONTAINER_NAME,
+                        self.container_name,
                         "-p",
                         f"{self.port}:80",
                         "-e",
                         "MAX_BATCH_TOKENS=16384",
-                        self.IMAGE,
+                        self.image,
                     ],
                     timeout=60,
                 )
@@ -255,7 +259,7 @@ class HammerManager:
             def _start_container():
                 if tool == "docker":
                     self._run_cmd(
-                        ["docker", "rm", "-f", self.CONTAINER_NAME],
+                        ["docker", "rm", "-f", self.container_name],
                         timeout=30,
                         check=False,
                     )
@@ -265,18 +269,18 @@ class HammerManager:
                             "run",
                             "-d",
                             "--name",
-                            self.CONTAINER_NAME,
+                            self.container_name,
                             "-p",
                             f"{self.port}:80",
                             "-e",
                             "MAX_BATCH_TOKENS=16384",
-                            self.IMAGE,
+                            self.image,
                         ],
                         timeout=60,
                     )
                 else:
                     self._run_cmd(
-                        [tool, "rm", "-f", self.CONTAINER_NAME],
+                        [tool, "rm", "-f", self.container_name],
                         timeout=30,
                         check=False,
                     )
@@ -286,12 +290,12 @@ class HammerManager:
                             "run",
                             "-d",
                             "--name",
-                            self.CONTAINER_NAME,
+                            self.container_name,
                             "-p",
                             f"{self.port}:80",
                             "-e",
                             "MAX_BATCH_TOKENS=16384",
-                            self.IMAGE,
+                            self.image,
                         ],
                         timeout=60,
                     )
@@ -322,11 +326,11 @@ class HammerManager:
         try:
             if tool == "docker":
                 self._run_cmd(
-                    ["docker", "stop", self.CONTAINER_NAME], timeout=30, check=False
+                    ["docker", "stop", self.container_name], timeout=30, check=False
                 )
             else:
                 self._run_cmd(
-                    [tool, "stop", self.CONTAINER_NAME], timeout=30, check=False
+                    [tool, "stop", self.container_name], timeout=30, check=False
                 )
             self._running = False
             logger.info("Premise server stopped")

@@ -38,6 +38,15 @@ class TestHammerManager:
         manager = HammerManager(port=8080)
         assert manager.url == "http://localhost:8080"
 
+    def test_custom_image_and_container_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LEAN_HAMMER_IMAGE", "example/hammer:test")
+        monkeypatch.setenv("LEAN_HAMMER_CONTAINER_NAME", "custom-hammer")
+        manager = HammerManager()
+        assert manager.image == "example/hammer:test"
+        assert manager.container_name == "custom-hammer"
+
     def test_find_container_tool_docker(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def mock_which(cmd: str) -> str | None:
             if cmd == "docker":

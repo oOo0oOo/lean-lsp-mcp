@@ -58,6 +58,11 @@ def main():
         default=8765,
         help="Port for local hammer server (default: 8765)",
     )
+    parser.add_argument(
+        "--hammer-local-only",
+        action="store_true",
+        help="Require local hammer and disable remote fallback.",
+    )
     args = parser.parse_args()
 
     # Set env vars from CLI args (CLI takes precedence over env vars)
@@ -73,6 +78,8 @@ def main():
         os.environ["LEAN_HAMMER_LOCAL"] = "true"
     if args.hammer_port != 8765:
         os.environ["LEAN_HAMMER_PORT"] = str(args.hammer_port)
+    if args.hammer_local_only:
+        os.environ["LEAN_HAMMER_LOCAL_ONLY"] = "true"
 
     mcp.settings.host = args.host
     mcp.settings.port = args.port

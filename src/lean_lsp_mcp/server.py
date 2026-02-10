@@ -155,6 +155,7 @@ class AppContext:
     repl_enabled: bool = False
     hammer_manager: HammerManager | None = None
     hammer_local_available: bool = False
+    hammer_local_only: bool = False
 
 
 @asynccontextmanager
@@ -165,6 +166,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl_on = False
     hammer_manager: HammerManager | None = None
     hammer_local_available = False
+    hammer_local_only = os.environ.get("LEAN_HAMMER_LOCAL_ONLY", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -205,23 +211,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                     )
             else:
                 logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
-        # Initialize local hammer if enabled via env var or CLI
-        if os.environ.get("LEAN_HAMMER_LOCAL", "").lower() in ("1", "true", "yes"):
-            logger.info("Local hammer enabled, initializing...")
-            hammer_manager = HammerManager()
-            if hammer_manager.is_available():
-                if await hammer_manager.start_async():
-                    hammer_local_available = True
-                    logger.info("Local hammer started successfully")
-                else:
-                    logger.warning("Local hammer failed to start, will use remote API")
-            else:
-                logger.warning(
-                    "No container runtime found (Docker or macOS container), "
-                    "will use remote API"
-                )
-        # Initialize local hammer if enabled via env var or CLI
-        if os.environ.get("LEAN_HAMMER_LOCAL", "").lower() in ("1", "true", "yes"):
+        # Initialize local hammer if enabled via env var/CLI or required via local-only mode.
+        hammer_local_requested = hammer_local_only or os.environ.get(
+            "LEAN_HAMMER_LOCAL", ""
+        ).lower() in ("1", "true", "yes")
+        if hammer_local_requested:
             logger.info("Local hammer enabled, initializing...")
             hammer_manager = HammerManager()
             if hammer_manager.is_available():
@@ -253,6 +247,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             repl_enabled=repl_on,
             hammer_manager=hammer_manager,
             hammer_local_available=hammer_local_available,
+            hammer_local_only=hammer_local_only,
         )
         yield context
     finally:
@@ -264,10 +259,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         if loogle_manager:
             await loogle_manager.stop()
 
-        if repl:
-            await repl.close()
-        if hammer_manager:
-            await hammer_manager.stop_async()
         if repl:
             await repl.close()
         if hammer_manager:
@@ -1460,6 +1451,7 @@ async def hammer_premise(
     """Get premise suggestions for automation tactics at a goal position.
 
     Uses local premise server when LEAN_HAMMER_LOCAL=1 (no rate limits).
+    Set LEAN_HAMMER_LOCAL_ONLY=1 to disable remote fallback.
     Otherwise uses leanpremise.net API (rate limited: 3 requests per 30s).
 
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
@@ -1490,10 +1482,18 @@ async def hammer_premise(
             items = [PremiseResult(name=r["name"]) for r in results]
             return PremiseResults(items=items)
         except Exception as e:
+            if app_ctx.hammer_local_only:
+                raise LeanToolError(
+                    f"Local hammer failed and LEAN_HAMMER_LOCAL_ONLY is enabled: {e}"
+                ) from e
             logger.warning(f"Local hammer failed, falling back to remote: {e}")
+    elif app_ctx.hammer_local_only:
+        raise LeanToolError(
+            "LEAN_HAMMER_LOCAL_ONLY is enabled, but local hammer is not available."
+        )
 
     # Fall back to remote API with rate limiting
-    rate_limit = app_ctx.rate_limit.get("hammer_premise", [])
+    rate_limit = app_ctx.rate_limit.setdefault("hammer_premise", [])
     now = time.time()
 
     # Clean old entries
