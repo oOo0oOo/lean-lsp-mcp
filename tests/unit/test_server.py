@@ -238,3 +238,68 @@ def test_hover_skips_widgets_when_disabled(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.symbol == "foo"
     assert result.widgets == []
     assert client.widget_calls == 0
+
+
+def test_hover_handles_string_contents(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StringHoverClient(_HoverClient):
+        def get_hover(self, _path: str, _line: int, _column: int) -> dict:
+            return {
+                "range": {
+                    "start": {"line": 0, "character": 4},
+                    "end": {"line": 0, "character": 7},
+                },
+                "contents": "```lean\nfoo : Nat\n```",
+            }
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    ctx = _make_ctx()
+    client = _StringHoverClient()
+    ctx.request_context.lifespan_context.client = client
+
+    result = server.hover(
+        ctx=ctx,
+        file_path="/tmp/Foo.lean",
+        line=1,
+        column=5,
+        include_widgets=False,
+    )
+
+    assert result.symbol == "foo"
+    assert result.info == "foo : Nat"
+
+
+def test_hover_applies_widget_limit_and_hash_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ManyWidgetsHoverClient(_HoverClient):
+        def get_widgets(self, _path: str, _line: int, _column: int) -> list[dict]:
+            self.widget_calls += 1
+            return [
+                {
+                    "id": "WidgetA",
+                    "javascript_hash": "aa11",
+                    "props": {"kind": "chart"},
+                },
+                {
+                    "id": "WidgetB",
+                    "javascriptHash": "bb22",
+                    "props": {"kind": "table"},
+                },
+            ]
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    ctx = _make_ctx()
+    client = _ManyWidgetsHoverClient()
+    ctx.request_context.lifespan_context.client = client
+
+    result = server.hover(
+        ctx=ctx,
+        file_path="/tmp/Foo.lean",
+        line=1,
+        column=5,
+        max_widgets=1,
+    )
+
+    assert len(result.widgets) == 1
+    assert result.widgets[0].id == "WidgetA"
+    assert result.widgets[0].javascript_hash == "aa11"

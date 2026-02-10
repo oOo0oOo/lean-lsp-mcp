@@ -551,6 +551,32 @@ def _process_diagnostics(
     )
 
 
+def _strip_lean_code_fence(text: str) -> str:
+    if text.startswith("```lean\n") and text.endswith("\n```"):
+        return text[8:-4]
+    return text
+
+
+def _render_hover_contents(contents: object) -> str:
+    """Normalize LSP hover payloads into plain text."""
+    if isinstance(contents, str):
+        return contents
+    if isinstance(contents, dict):
+        value = contents.get("value")
+        return value if isinstance(value, str) else ""
+    if isinstance(contents, list):
+        lines: list[str] = []
+        for item in contents:
+            if isinstance(item, str):
+                lines.append(item)
+            elif isinstance(item, dict):
+                value = item.get("value")
+                if isinstance(value, str):
+                    lines.append(value)
+        return "\n\n".join(lines)
+    return ""
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -729,6 +755,10 @@ def hover(
         bool,
         Field(description="Include widget instances at this position"),
     ] = True,
+    max_widgets: Annotated[
+        int,
+        Field(description="Maximum number of widget instances to return", ge=1),
+    ] = 16,
 ) -> HoverInfo:
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -748,8 +778,8 @@ def hover(
     # Get the symbol and the hover information
     h_range = hover_info.get("range")
     symbol = extract_range(file_content, h_range) or ""
-    info = hover_info["contents"].get("value", "No hover information available.")
-    info = info.replace("```lean\n", "").replace("\n```", "").strip()
+    info_raw = _render_hover_contents(hover_info.get("contents"))
+    info = _strip_lean_code_fence(info_raw).strip()
 
     # Add diagnostics if available
     diagnostics = client.get_diagnostics(rel_path)
@@ -763,11 +793,17 @@ def hover(
             parsed_widgets = check_lsp_response(
                 raw_widgets, "get_widgets", allow_none=True
             )
-            for widget in parsed_widgets or []:
+            if not isinstance(parsed_widgets, list):
+                parsed_widgets = []
+            for widget in parsed_widgets:
                 if not isinstance(widget, dict):
                     continue
+                if len(widgets) >= max_widgets:
+                    break
 
                 js_hash = widget.get("javascriptHash")
+                if js_hash is None and "javascript_hash" in widget:
+                    js_hash = widget.get("javascript_hash")
                 props = widget.get("props")
                 props_dict = props if isinstance(props, dict) else None
                 name = widget.get("name?") or widget.get("name")
