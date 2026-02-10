@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated, Dict, List, Optional
 
 import certifi
@@ -139,6 +140,11 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+_LEAN_LSP_PREWARM_ENV = "LEAN_LSP_PREWARM"
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -160,6 +166,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_local_available = False
     repl: Repl | None = None
     repl_on = False
+    context: AppContext | None = None
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -217,11 +224,25 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             repl=repl,
             repl_enabled=repl_on,
         )
+
+        if lean_project_path and _env_flag_enabled(_LEAN_LSP_PREWARM_ENV):
+            logger.info(
+                "Prewarming Lean client because %s is enabled",
+                _LEAN_LSP_PREWARM_ENV,
+            )
+            prewarm_ctx = SimpleNamespace(
+                request_context=SimpleNamespace(lifespan_context=context)
+            )
+            try:
+                startup_client(prewarm_ctx)
+            except Exception as exc:
+                logger.warning("Lean client prewarm failed: %s", exc)
+
         yield context
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context.client:
+        if context and context.client:
             context.client.close()
 
         if loogle_manager:
