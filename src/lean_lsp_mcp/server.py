@@ -577,6 +577,31 @@ def _rpc_call_with_retry(
         raise last_exc
 
 
+def _is_widget_rpc_unavailable(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "rpcmethodnotfound",
+            "method not found",
+            "unknown method",
+            "unknown rpc",
+            "unsupported method",
+        )
+    )
+
+
+def _strip_lean_code_fence(text: str | None) -> str | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    if stripped.startswith("```lean"):
+        stripped = stripped.removeprefix("```lean").strip()
+    if stripped.endswith("```"):
+        stripped = stripped.removesuffix("```").strip()
+    return stripped
+
+
 def _render_interactive_goal(goal: Dict) -> str:
     lines: List[str] = []
     user_name = goal.get("userName?") or goal.get("userName")
@@ -592,12 +617,12 @@ def _render_interactive_goal(goal: Dict) -> str:
             if names:
                 line = f"{names} : {hyp_type} := {hyp_value}".strip()
             else:
-                line = f": {hyp_type} := {hyp_value}".strip()
+                line = f"{hyp_type} := {hyp_value}".strip()
         else:
             if names:
                 line = f"{names} : {hyp_type}".strip()
             else:
-                line = f": {hyp_type}".strip()
+                line = hyp_type.strip()
         lines.append(line)
 
     goal_prefix = goal.get("goalPrefix", "⊢ ")
@@ -608,6 +633,31 @@ def _render_interactive_goal(goal: Dict) -> str:
 
 def _render_interactive_goals(goals: List[Dict]) -> List[str]:
     return [_render_interactive_goal(goal) for goal in goals]
+
+
+def _interactive_goals_from_lsp(
+    client: LeanLSPClient, rel_path: str, line: int, column: int
+) -> InteractiveGoalsResult:
+    goal_result = client.get_goal(rel_path, line - 1, column - 1)
+    check_lsp_response(goal_result, "get_goal", allow_none=True)
+    rendered = extract_goals_list(goal_result)
+    rendered_text = "\n\n---\n\n".join(rendered)
+    return InteractiveGoalsResult(
+        goals=[], rendered=rendered, rendered_text=rendered_text
+    )
+
+
+def _interactive_term_goal_from_lsp(
+    client: LeanLSPClient, rel_path: str, line: int, column: int
+) -> InteractiveTermGoalResult:
+    term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
+    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
+    rendered = None
+    goal_payload = None
+    if isinstance(term_goal_result, dict):
+        goal_payload = term_goal_result
+        rendered = _strip_lean_code_fence(term_goal_result.get("goal"))
+    return InteractiveTermGoalResult(goal=goal_payload, rendered=rendered)
 
 
 @mcp.tool(
@@ -763,10 +813,8 @@ def term_goal(
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
     check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
     expected_type = None
-    if term_goal_result is not None:
-        rendered = term_goal_result.get("goal")
-        if rendered:
-            expected_type = rendered.replace("```lean\n", "").replace("\n```", "")
+    if isinstance(term_goal_result, dict):
+        expected_type = _strip_lean_code_fence(term_goal_result.get("goal"))
 
     return TermGoalState(line_context=line_context, expected_type=expected_type)
 
@@ -795,6 +843,8 @@ def interactive_goals(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    # Ensure the file is elaborated before invoking widget RPC methods.
+    client.get_diagnostics(rel_path)
     content = client.get_file_content(rel_path)
     lines = content.splitlines()
 
@@ -818,6 +868,8 @@ def interactive_goals(
             client, uri, "Lean.Widget.getInteractiveGoals", params, line - 1, column - 1
         )
     except Exception as exc:  # noqa: BLE001 - surface as tool error
+        if _is_widget_rpc_unavailable(exc):
+            return _interactive_goals_from_lsp(client, rel_path, line, column)
         raise LeanToolError(
             f"RPC error during interactive goals: {type(exc).__name__}: {exc or repr(exc)}"
         ) from exc
@@ -888,6 +940,8 @@ def interactive_term_goal(
             column - 1,
         )
     except Exception as exc:  # noqa: BLE001 - surface as tool error
+        if _is_widget_rpc_unavailable(exc):
+            return _interactive_term_goal_from_lsp(client, rel_path, line, column)
         raise LeanToolError(
             f"RPC error during interactive term goal: {type(exc).__name__}: {exc or repr(exc)}"
         ) from exc
