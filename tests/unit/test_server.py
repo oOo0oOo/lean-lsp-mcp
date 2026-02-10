@@ -169,3 +169,72 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+class _HoverClient:
+    def __init__(self) -> None:
+        self.widget_calls = 0
+
+    def open_file(self, _path: str) -> None:
+        return
+
+    def get_file_content(self, _path: str) -> str:
+        return "def foo : Nat := 1\n"
+
+    def get_hover(self, _path: str, _line: int, _column: int) -> dict:
+        return {
+            "range": {
+                "start": {"line": 0, "character": 4},
+                "end": {"line": 0, "character": 7},
+            },
+            "contents": {"value": "```lean\nfoo : Nat\n```"},
+        }
+
+    def get_diagnostics(self, _path: str) -> list[dict]:
+        return []
+
+    def get_widgets(self, _path: str, _line: int, _column: int) -> list[dict]:
+        self.widget_calls += 1
+        return [
+            {
+                "id": "ProofWidgets.HtmlDisplayPanel",
+                "javascriptHash": "12345",
+                "props": {"kind": "chart"},
+            }
+        ]
+
+
+def test_hover_includes_widgets_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    ctx = _make_ctx()
+    client = _HoverClient()
+    ctx.request_context.lifespan_context.client = client
+
+    result = server.hover(ctx=ctx, file_path="/tmp/Foo.lean", line=1, column=5)
+
+    assert result.symbol == "foo"
+    assert result.info == "foo : Nat"
+    assert len(result.widgets) == 1
+    assert result.widgets[0].id == "ProofWidgets.HtmlDisplayPanel"
+    assert result.widgets[0].javascript_hash == "12345"
+    assert result.widgets[0].props == {"kind": "chart"}
+    assert client.widget_calls == 1
+
+
+def test_hover_skips_widgets_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    ctx = _make_ctx()
+    client = _HoverClient()
+    ctx.request_context.lifespan_context.client = client
+
+    result = server.hover(
+        ctx=ctx,
+        file_path="/tmp/Foo.lean",
+        line=1,
+        column=5,
+        include_widgets=False,
+    )
+
+    assert result.symbol == "foo"
+    assert result.widgets == []
+    assert client.widget_calls == 0

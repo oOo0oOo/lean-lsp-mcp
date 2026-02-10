@@ -59,6 +59,7 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    WidgetInfo,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -724,6 +725,10 @@ def hover(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
+    include_widgets: Annotated[
+        bool,
+        Field(description="Include widget instances at this position"),
+    ] = True,
 ) -> HoverInfo:
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -751,10 +756,37 @@ def hover(
     check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
+    widgets: list[WidgetInfo] = []
+    if include_widgets:
+        try:
+            raw_widgets = client.get_widgets(rel_path, line - 1, column - 1)
+            parsed_widgets = check_lsp_response(
+                raw_widgets, "get_widgets", allow_none=True
+            )
+            for widget in parsed_widgets or []:
+                if not isinstance(widget, dict):
+                    continue
+
+                js_hash = widget.get("javascriptHash")
+                props = widget.get("props")
+                props_dict = props if isinstance(props, dict) else None
+                name = widget.get("name?") or widget.get("name")
+                widgets.append(
+                    WidgetInfo(
+                        id=str(widget.get("id", "unknown")),
+                        name=str(name) if name is not None else None,
+                        javascript_hash=str(js_hash) if js_hash is not None else None,
+                        props=props_dict,
+                    )
+                )
+        except Exception as e:
+            logger.debug("Failed to collect hover widgets: %s", e)
+
     return HoverInfo(
         symbol=symbol,
         info=info,
         diagnostics=_to_diagnostic_messages(filtered),
+        widgets=widgets,
     )
 
 
