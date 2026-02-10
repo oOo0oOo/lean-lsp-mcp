@@ -204,6 +204,50 @@ def test_lean_search_exact_match(monkeypatch, reload_search_utils):
     ]
 
 
+def test_lean_search_prioritizes_exact_and_local_results(
+    monkeypatch, reload_search_utils
+):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match(
+            ".lake/packages/mathlib/Mathlib/Foo.lean",
+            "def sampleValue : Nat := 0",
+        ),
+        _make_match("src/Foo/Bar.lean", "def sampleValueExtra : Nat := 0"),
+        _make_match("src/Foo/Baz.lean", "def sampleValue : Nat := 1"),
+    ]
+
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(project_root.resolve()),
+    )
+
+    results = search_utils.lean_local_search(
+        "sampleValue", limit=3, project_root=project_root
+    )
+
+    assert results == [
+        {
+            "name": "sampleValue",
+            "kind": "def",
+            "file": "src/Foo/Baz.lean",
+        },
+        {
+            "name": "sampleValue",
+            "kind": "def",
+            "file": ".lake/packages/mathlib/Mathlib/Foo.lean",
+        },
+        {
+            "name": "sampleValueExtra",
+            "kind": "def",
+            "file": "src/Foo/Bar.lean",
+        },
+    ]
+
+
 def test_lean_search_respects_limit(monkeypatch, reload_search_utils):
     search_utils = reload_search_utils
     project_root = Path("/proj")
@@ -541,8 +585,8 @@ def test_lean_search_strips_colon_from_names(monkeypatch, reload_search_utils):
     results = search_utils.lean_local_search("my", project_root=project_root)
 
     assert len(results) == 2
-    assert results[0]["name"] == "myFunc"
-    assert results[1]["name"] == "myThm"
+    assert {result["name"] for result in results} == {"myFunc", "myThm"}
+    assert all(":" not in result["name"] for result in results)
 
 
 def test_lean_search_uses_cwd_when_project_root_none(monkeypatch, reload_search_utils):

@@ -65,6 +65,34 @@ def check_ripgrep_status() -> tuple[bool, str]:
     return False, "\n".join(lines)
 
 
+def _local_search_sort_key(
+    match: dict[str, str], normalized_query: str
+) -> tuple[int, int, int, str, str]:
+    """Sort local search results by relevance and stability.
+
+    Priorities:
+    1. Exact declaration-name match over prefixes/suffixes.
+    2. Project declarations over `.lake/packages` dependencies.
+    3. Shorter base names, then lexical fallback for deterministic order.
+    """
+    name = match["name"]
+    basename = name.rsplit(".", 1)[-1]
+    name_fold = name.casefold()
+    base_fold = basename.casefold()
+
+    if name_fold == normalized_query or base_fold == normalized_query:
+        relevance_rank = 0
+    elif base_fold.startswith(normalized_query):
+        relevance_rank = 1
+    elif normalized_query in base_fold:
+        relevance_rank = 2
+    else:
+        relevance_rank = 3
+
+    package_penalty = 1 if match["file"].startswith(".lake/packages/") else 0
+    return (relevance_rank, package_penalty, len(basename), basename, name)
+
+
 def lean_local_search(
     query: str,
     limit: int = 32,
@@ -212,7 +240,9 @@ def lean_local_search(
             error_msg += f"\n{stderr_text}"
         raise RuntimeError(error_msg)
 
-    return matches
+    normalized_query = query.casefold()
+    matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
+    return matches[:limit]
 
 
 @lru_cache(maxsize=1)
