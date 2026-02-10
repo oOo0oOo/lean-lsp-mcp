@@ -322,7 +322,7 @@ Search Lean declarations via [LeanExplore](https://www.leanexplore.com).
 
 - Uses the LeanExplore API by default (`https://www.leanexplore.com/api/v1`).
 - Set `LEAN_EXPLORE_API_KEY` for hosted API access.
-- **Local backend support**: run `leanexplore data fetch`, then `leanexplore http serve --backend local`, and set `LEAN_EXPLORE_BASE_URL` to `http://localhost:8001/api/v1`.
+- **Local backend support**: run `lean-explore data fetch`, then `lean-explore http serve --backend local`, and set `LEAN_EXPLORE_BASE_URL` to `http://localhost:8001/api/v1`.
 - Related tools: `lean_leanexplore_get_by_id`, `lean_leanexplore_dependencies` (dependency/citation lookup).
 
 #### lean_leansearch
