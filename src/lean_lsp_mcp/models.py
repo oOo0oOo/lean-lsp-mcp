@@ -31,11 +31,13 @@ class LeanFinderResult(BaseModel):
 
 
 class LeanExploreResult(BaseModel):
-    id: int = Field(description="LeanExplore statement group identifier")
+    id: int = Field(description="LeanExplore declaration/statement group identifier")
     lean_name: Optional[str] = Field(
         None, description="Primary declaration Lean name (if available)"
     )
-    source_file: str = Field(description="Source file path for the statement group")
+    source_file: str = Field(
+        description="Source file or module path for the declaration/statement"
+    )
     range_start_line: int = Field(
         description="Start line of the statement group in the source file"
     )
