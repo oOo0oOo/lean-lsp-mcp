@@ -16,8 +16,8 @@ INSTRUCTIONS = """## General Rules
 - **lean_profile_proof**: Profile a theorem for performance. Shows tactic hotspots. SLOW!
 
 ## Search Tools (rate limited)
-- **lean_leanexplore_search** (3/30s): LeanExplore search (API or local backend via `LEAN_EXPLORE_BACKEND=local`)
-- **lean_leanexplore_search_summary** (3/30s): LeanExplore slim search (id/name/description)
+- **lean_leanexplore_search** (3/30s): LeanExplore search (API or local backend via `LEAN_EXPLORE_BACKEND=local`, supports `rerank_top` for local mode)
+- **lean_leanexplore_search_summary** (3/30s): LeanExplore slim search (id/name/description, supports `rerank_top` for local mode)
 - **lean_leanexplore_get_source_code** (3/30s): LeanExplore source by id
 - **lean_leanexplore_get_docstring** (3/30s): LeanExplore docstring by id
 - **lean_leanexplore_get_description** (3/30s): LeanExplore informal description by id

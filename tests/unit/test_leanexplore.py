@@ -89,6 +89,75 @@ async def test_leanexplore_search_builds_url_and_parses(
 
 
 @pytest.mark.asyncio
+async def test_leanexplore_default_rerank_top_can_be_overridden_by_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LocalService:
+        async def search(self, *, query: str, limit: int, rerank_top: int | None):
+            assert query == "Nat"
+            assert limit == 1
+            assert rerank_top == 7
+            return {"results": [_sample_item()]}
+
+    monkeypatch.setenv("LEAN_EXPLORE_RERANK_TOP", "7")
+    ctx = _make_ctx(
+        leanexplore_local_enabled=True,
+        leanexplore_service=LocalService(),
+    )
+
+    result = await server.leanexplore_search(ctx=ctx, query="Nat", limit=1)
+    assert result.items[0].id == 42
+
+
+def test_leanexplore_default_rerank_top_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEAN_EXPLORE_RERANK_TOP", "-1")
+    with pytest.raises(server.LeanToolError, match="LEAN_EXPLORE_RERANK_TOP"):
+        server._leanexplore_default_rerank_top()
+
+    monkeypatch.setenv("LEAN_EXPLORE_RERANK_TOP", "abc")
+    with pytest.raises(server.LeanToolError, match="LEAN_EXPLORE_RERANK_TOP"):
+        server._leanexplore_default_rerank_top()
+
+    monkeypatch.setenv("LEAN_EXPLORE_RERANK_TOP", "none")
+    assert server._leanexplore_default_rerank_top() is None
+
+
+def test_leanexplore_local_service_error_mentions_local_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in ("lean_explore.search.service", "lean_explore.local.service"):
+            raise ModuleNotFoundError("No module named 'lean_explore'")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    app_ctx = server.AppContext(
+        lean_project_path=None,
+        client=None,
+        rate_limit={"leanexplore": []},
+        lean_search_available=True,
+        loogle_manager=None,
+        loogle_local_available=False,
+        repl=None,
+        repl_enabled=False,
+        leanexplore_local_enabled=True,
+        leanexplore_service=None,
+    )
+
+    with pytest.raises(server.LeanToolError) as exc_info:
+        server._leanexplore_get_local_service(app_ctx)
+
+    message = str(exc_info.value)
+    assert "lean-explore[local]" in message
+    assert "lean-explore data fetch" in message
+
+
+@pytest.mark.asyncio
 async def test_leanexplore_search_accepts_upstream_api_key_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -264,7 +333,7 @@ async def test_leanexplore_local_v1_style_service_works() -> None:
             assert query == "Nat"
             assert limit == 1
             assert packages == ["Mathlib"]
-            assert rerank_top == 50
+            assert rerank_top == 9
             return {
                 "results": [
                     {
@@ -292,7 +361,11 @@ async def test_leanexplore_local_v1_style_service_works() -> None:
         leanexplore_service=LocalV1Service(),
     )
     search_result = await server.leanexplore_search(
-        ctx=ctx, query="Nat", package_filters=["Mathlib"], limit=1
+        ctx=ctx,
+        query="Nat",
+        package_filters=["Mathlib"],
+        rerank_top=9,
+        limit=1,
     )
     dep_result = await server.leanexplore_dependencies(ctx=ctx, group_id=123, limit=10)
 
