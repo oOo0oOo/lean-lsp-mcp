@@ -17,6 +17,13 @@ INSTRUCTIONS = """## General Rules
 
 ## Search Tools (rate limited)
 - **lean_leanexplore_search** (3/30s): LeanExplore search (API or local backend via `LEAN_EXPLORE_BACKEND=local`)
+- **lean_leanexplore_search_summary** (3/30s): LeanExplore slim search (id/name/description)
+- **lean_leanexplore_get_source_code** (3/30s): LeanExplore source by id
+- **lean_leanexplore_get_docstring** (3/30s): LeanExplore docstring by id
+- **lean_leanexplore_get_description** (3/30s): LeanExplore informal description by id
+- **lean_leanexplore_get_module** (3/30s): LeanExplore module path by id
+- **lean_leanexplore_get_source_link** (3/30s): LeanExplore source URL by id
+- **lean_leanexplore_get_dependencies_field** (3/30s): LeanExplore raw dependencies field by id
 - **lean_leansearch** (3/30s): Natural language -> mathlib
 - **lean_loogle** (3/30s): Type pattern -> mathlib
 - **lean_leanfinder** (10/30s): Semantic/conceptual search

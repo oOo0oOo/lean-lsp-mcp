@@ -47,8 +47,16 @@ from lean_lsp_mcp.models import (
     HoverInfo,
     LeanFinderResult,
     LeanFinderResults,
+    LeanExploreDependenciesFieldResult,
+    LeanExploreDescriptionResult,
+    LeanExploreDocstringResult,
+    LeanExploreModuleResult,
     LeanExploreResult,
     LeanExploreResults,
+    LeanExploreSourceCodeResult,
+    LeanExploreSourceLinkResult,
+    LeanExploreSummaryResult,
+    LeanExploreSummaryResults,
     LeanSearchResult,
     LeanSearchResults,
     LocalSearchResult,
@@ -87,6 +95,8 @@ from lean_lsp_mcp.utils import (
 
 _LEANEXPLORE_LOCAL_ENV = "LEAN_EXPLORE_LOCAL"
 _LEANEXPLORE_BACKEND_ENV = "LEAN_EXPLORE_BACKEND"
+_LEANEXPLORE_API_KEY_ENV = "LEAN_EXPLORE_API_KEY"
+_LEANEXPLORE_API_KEY_ALT_ENV = "LEANEXPLORE_API_KEY"
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
@@ -1169,8 +1179,15 @@ async def local_search(
 def _leanexplore_base_url() -> str:
     base_url = os.environ.get("LEAN_EXPLORE_BASE_URL", "").strip()
     if not base_url:
-        base_url = "https://www.leanexplore.com/api/v1"
+        base_url = "https://www.leanexplore.com/api/v2"
     return base_url.rstrip("/")
+
+
+def _leanexplore_api_key() -> str:
+    return (
+        os.environ.get(_LEANEXPLORE_API_KEY_ENV, "").strip()
+        or os.environ.get(_LEANEXPLORE_API_KEY_ALT_ENV, "").strip()
+    )
 
 
 def _leanexplore_use_local_backend() -> bool:
@@ -1260,7 +1277,7 @@ def _leanexplore_results_from_payload(
 
 def _leanexplore_headers() -> Dict[str, str]:
     headers = {"User-Agent": "lean-lsp-mcp/0.1"}
-    api_key = os.environ.get("LEAN_EXPLORE_API_KEY", "").strip()
+    api_key = _leanexplore_api_key()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
@@ -1280,7 +1297,8 @@ async def _leanexplore_request_json(
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             raise LeanToolError(
-                "LeanExplore authentication failed. Set LEAN_EXPLORE_API_KEY or "
+                "LeanExplore authentication failed. Set LEAN_EXPLORE_API_KEY "
+                "(or LEANEXPLORE_API_KEY) or "
                 "use a local LEAN_EXPLORE_BASE_URL."
             ) from exc
         if exc.code == 404:
@@ -1514,6 +1532,121 @@ def _leanexplore_parse_item(item: object) -> LeanExploreResult:
     )
 
 
+def _leanexplore_extract_module(raw: dict) -> str:
+    value = raw.get("module") or raw.get("source_file") or raw.get("sourceFile") or ""
+    return value if isinstance(value, str) else ""
+
+
+def _leanexplore_extract_source_link(raw: dict) -> str:
+    value = raw.get("source_link") or raw.get("sourceLink") or ""
+    return value if isinstance(value, str) else ""
+
+
+def _leanexplore_extract_source_text(raw: dict) -> str:
+    value = (
+        raw.get("source_text")
+        or raw.get("sourceText")
+        or raw.get("statement_text")
+        or raw.get("display_statement_text")
+        or raw.get("statement")
+        or ""
+    )
+    return value if isinstance(value, str) else ""
+
+
+def _leanexplore_extract_docstring(raw: dict) -> str | None:
+    value = raw.get("docstring")
+    return value if isinstance(value, str) else None
+
+
+def _leanexplore_extract_description(raw: dict) -> str | None:
+    value = (
+        raw.get("informal_description")
+        or raw.get("informalDescription")
+        or raw.get("informalization")
+    )
+    return value if isinstance(value, str) else None
+
+
+def _leanexplore_extract_bold_description(text: str | None) -> str | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    match = re.match(r"\*\*(.+?)\*\*", stripped)
+    return match.group(1) if match else stripped
+
+
+def _leanexplore_extract_dependencies_field(raw: dict) -> str | None:
+    value = raw.get("dependencies")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
+
+async def _leanexplore_fetch_item_payload(app_ctx: AppContext, group_id: int) -> object:
+    if app_ctx.leanexplore_local_enabled:
+        service = _leanexplore_get_local_service(app_ctx)
+        try:
+            data = await _leanexplore_local_get_by_id(service, group_id)
+        except Exception as exc:
+            raise LeanToolError(f"LeanExplore local lookup failed: {exc}") from exc
+        if data is None:
+            raise LeanToolError("LeanExplore resource not found.")
+        return data
+
+    base_url = _leanexplore_base_url()
+    for url in (
+        f"{base_url}/declarations/{group_id}",
+        f"{base_url}/statement_groups/{group_id}",
+    ):
+        data = await _leanexplore_request_json(url, allow_404=True)
+        if data is not None:
+            return data
+    raise LeanToolError("LeanExplore resource not found.")
+
+
+async def _leanexplore_search_items(
+    app_ctx: AppContext,
+    *,
+    query: str,
+    package_filters: List[str] | None,
+    limit: int,
+) -> List[LeanExploreResult]:
+    if app_ctx.leanexplore_local_enabled:
+        service = _leanexplore_get_local_service(app_ctx)
+        try:
+            data = await _leanexplore_local_search(
+                service,
+                query=query,
+                package_filters=package_filters,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise LeanToolError(f"LeanExplore local search failed: {exc}") from exc
+        return _leanexplore_results_from_payload(data, "results")[:limit]
+
+    params: List[tuple[str, str]] = [("q", query), ("limit", str(limit))]
+    if package_filters:
+        # Legacy API (<1.0): repeated pkg params.
+        params.extend([("pkg", pkg) for pkg in package_filters])
+        # Newer API (>=1.0): CSV packages param.
+        params.append(("packages", ",".join(package_filters)))
+
+    query_string = urllib.parse.urlencode(params, doseq=True)
+    url = f"{_leanexplore_base_url()}/search?{query_string}"
+    data = await _leanexplore_request_json(url)
+    if data is None:
+        return []
+    return _leanexplore_results_from_payload(data, "results")[:limit]
+
+
 @mcp.tool(
     "lean_leanexplore_search",
     annotations=ToolAnnotations(
@@ -1535,35 +1668,209 @@ async def leanexplore_search(
 ) -> LeanExploreResults:
     """Search Lean declarations via LeanExplore (API or local backend)."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
-
-    if app_ctx.leanexplore_local_enabled:
-        service = _leanexplore_get_local_service(app_ctx)
-        try:
-            data = await _leanexplore_local_search(
-                service,
-                query=query.strip(),
-                package_filters=package_filters,
-                limit=limit,
-            )
-        except Exception as exc:
-            raise LeanToolError(f"LeanExplore local search failed: {exc}") from exc
-        items = _leanexplore_results_from_payload(data, "results")[:limit]
-        return LeanExploreResults(items=items)
-
-    params: List[tuple[str, str]] = [("q", query.strip()), ("limit", str(limit))]
-    if package_filters:
-        # Legacy API (<1.0): repeated pkg params.
-        params.extend([("pkg", pkg) for pkg in package_filters])
-        # Newer API (>=1.0): CSV packages param.
-        params.append(("packages", ",".join(package_filters)))
-
-    query_string = urllib.parse.urlencode(params, doseq=True)
-    url = f"{_leanexplore_base_url()}/search?{query_string}"
-    data = await _leanexplore_request_json(url)
-    if data is None:
-        return LeanExploreResults(items=[])
-    items = _leanexplore_results_from_payload(data, "results")[:limit]
+    items = await _leanexplore_search_items(
+        app_ctx,
+        query=query.strip(),
+        package_filters=package_filters,
+        limit=limit,
+    )
     return LeanExploreResults(items=items)
+
+
+@mcp.tool(
+    "lean_leanexplore_search_summary",
+    annotations=ToolAnnotations(
+        title="LeanExplore Search Summary",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_search_summary(
+    ctx: Context,
+    query: Annotated[str, Field(description="Search query")],
+    package_filters: Annotated[
+        Optional[List[str]],
+        Field(description="Optional list of package filters"),
+    ] = None,
+    limit: Annotated[int, Field(description="Max results", ge=1)] = 10,
+) -> LeanExploreSummaryResults:
+    """Search LeanExplore and return concise results (id, name, description)."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    items = await _leanexplore_search_items(
+        app_ctx,
+        query=query.strip(),
+        package_filters=package_filters,
+        limit=limit,
+    )
+    summary_items = [
+        LeanExploreSummaryResult(
+            id=item.id,
+            lean_name=item.lean_name,
+            description=_leanexplore_extract_bold_description(
+                item.informal_description
+            ),
+        )
+        for item in items
+    ]
+    return LeanExploreSummaryResults(items=summary_items)
+
+
+@mcp.tool(
+    "lean_leanexplore_get_source_code",
+    annotations=ToolAnnotations(
+        title="LeanExplore Source Code",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_get_source_code(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group/declaration ID")],
+) -> LeanExploreSourceCodeResult:
+    """Fetch source code for a LeanExplore declaration by ID."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    raw = _leanexplore_item_to_dict(payload)
+    parsed = _leanexplore_parse_item(raw)
+    return LeanExploreSourceCodeResult(
+        id=parsed.id or group_id,
+        lean_name=parsed.lean_name,
+        source_text=_leanexplore_extract_source_text(raw) or parsed.statement_text,
+    )
+
+
+@mcp.tool(
+    "lean_leanexplore_get_source_link",
+    annotations=ToolAnnotations(
+        title="LeanExplore Source Link",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_get_source_link(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group/declaration ID")],
+) -> LeanExploreSourceLinkResult:
+    """Fetch source link for a LeanExplore declaration by ID."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    raw = _leanexplore_item_to_dict(payload)
+    parsed = _leanexplore_parse_item(raw)
+    return LeanExploreSourceLinkResult(
+        id=parsed.id or group_id,
+        lean_name=parsed.lean_name,
+        source_link=_leanexplore_extract_source_link(raw),
+    )
+
+
+@mcp.tool(
+    "lean_leanexplore_get_docstring",
+    annotations=ToolAnnotations(
+        title="LeanExplore Docstring",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_get_docstring(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group/declaration ID")],
+) -> LeanExploreDocstringResult:
+    """Fetch docstring for a LeanExplore declaration by ID."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    raw = _leanexplore_item_to_dict(payload)
+    parsed = _leanexplore_parse_item(raw)
+    return LeanExploreDocstringResult(
+        id=parsed.id or group_id,
+        lean_name=parsed.lean_name,
+        docstring=_leanexplore_extract_docstring(raw),
+    )
+
+
+@mcp.tool(
+    "lean_leanexplore_get_description",
+    annotations=ToolAnnotations(
+        title="LeanExplore Description",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_get_description(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group/declaration ID")],
+) -> LeanExploreDescriptionResult:
+    """Fetch informal description for a LeanExplore declaration by ID."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    raw = _leanexplore_item_to_dict(payload)
+    parsed = _leanexplore_parse_item(raw)
+    return LeanExploreDescriptionResult(
+        id=parsed.id or group_id,
+        lean_name=parsed.lean_name,
+        informal_description=_leanexplore_extract_description(raw),
+    )
+
+
+@mcp.tool(
+    "lean_leanexplore_get_module",
+    annotations=ToolAnnotations(
+        title="LeanExplore Module",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_get_module(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group/declaration ID")],
+) -> LeanExploreModuleResult:
+    """Fetch module path for a LeanExplore declaration by ID."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    raw = _leanexplore_item_to_dict(payload)
+    parsed = _leanexplore_parse_item(raw)
+    return LeanExploreModuleResult(
+        id=parsed.id or group_id,
+        lean_name=parsed.lean_name,
+        module=_leanexplore_extract_module(raw) or parsed.source_file,
+    )
+
+
+@mcp.tool(
+    "lean_leanexplore_get_dependencies_field",
+    annotations=ToolAnnotations(
+        title="LeanExplore Dependencies Field",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("leanexplore", max_requests=3, per_seconds=30)
+async def leanexplore_get_dependencies_field(
+    ctx: Context,
+    group_id: Annotated[int, Field(description="Statement group/declaration ID")],
+) -> LeanExploreDependenciesFieldResult:
+    """Fetch raw dependencies field for a LeanExplore declaration by ID."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    raw = _leanexplore_item_to_dict(payload)
+    parsed = _leanexplore_parse_item(raw)
+    return LeanExploreDependenciesFieldResult(
+        id=parsed.id or group_id,
+        lean_name=parsed.lean_name,
+        dependencies=_leanexplore_extract_dependencies_field(raw),
+    )
 
 
 @mcp.tool(
@@ -1582,28 +1889,8 @@ async def leanexplore_get_by_id(
 ) -> LeanExploreResult:
     """Fetch a LeanExplore statement group by ID."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
-
-    if app_ctx.leanexplore_local_enabled:
-        service = _leanexplore_get_local_service(app_ctx)
-        try:
-            data = await _leanexplore_local_get_by_id(service, group_id)
-        except Exception as exc:
-            raise LeanToolError(f"LeanExplore local lookup failed: {exc}") from exc
-        if data is None:
-            raise LeanToolError("LeanExplore resource not found.")
-        return _leanexplore_parse_item(data)
-
-    base_url = _leanexplore_base_url()
-    data = await _leanexplore_request_json(
-        f"{base_url}/declarations/{group_id}", allow_404=True
-    )
-    if data is None:
-        data = await _leanexplore_request_json(
-            f"{base_url}/statement_groups/{group_id}", allow_404=True
-        )
-    if data is None:
-        raise LeanToolError("LeanExplore resource not found.")
-    return _leanexplore_parse_item(data)
+    payload = await _leanexplore_fetch_item_payload(app_ctx, group_id)
+    return _leanexplore_parse_item(payload)
 
 
 @mcp.tool(

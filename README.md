@@ -320,11 +320,25 @@ Search Lean declarations via [LeanExplore](https://www.leanexplore.com).
 
 [Docs](https://kellyjdavis.github.io/lean-explore)
 
-- Uses the LeanExplore API by default (`https://www.leanexplore.com/api/v1`).
-- Set `LEAN_EXPLORE_API_KEY` for hosted API access.
+- Uses the LeanExplore API by default (`https://www.leanexplore.com/api/v2`).
+- Set `LEAN_EXPLORE_API_KEY` (or `LEANEXPLORE_API_KEY`) for hosted API access.
 - **Local backend support**: install `lean-explore` and download data with `leanexplore data fetch`. Then set `LEAN_EXPLORE_BACKEND=local` (or `LEAN_EXPLORE_LOCAL=1`). This uses the local database/FAISS assets directly (no API key).
 - Supports legacy (`0.x`) and current (`1.x`) LeanExplore local service APIs.
-- Related tools: `lean_leanexplore_get_by_id`, `lean_leanexplore_dependencies` (dependency/citation lookup; on newer backends this may return dependency names when citation groups are unavailable).
+- Related tools:
+  `lean_leanexplore_search_summary`,
+  `lean_leanexplore_get_source_code`,
+  `lean_leanexplore_get_docstring`,
+  `lean_leanexplore_get_description`,
+  `lean_leanexplore_get_module`,
+  `lean_leanexplore_get_source_link`,
+  `lean_leanexplore_get_dependencies_field`,
+  `lean_leanexplore_get_by_id`,
+  `lean_leanexplore_dependencies`.
+
+#### lean_leanexplore_search_summary
+
+Search LeanExplore and return concise results (`id`, `lean_name`, `description`).
+Recommended first step before fetching full source/doc fields.
 
 #### lean_leansearch
 
@@ -482,7 +496,8 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_EXPLORE_API_KEY`: API key for LeanExplore hosted API access.
-- `LEAN_EXPLORE_BASE_URL`: Base URL for LeanExplore API (default: `https://www.leanexplore.com/api/v1`).
+- `LEANEXPLORE_API_KEY`: Alternative API key env var used by upstream `lean-explore`.
+- `LEAN_EXPLORE_BASE_URL`: Base URL for LeanExplore API (default: `https://www.leanexplore.com/api/v2`).
 - `LEAN_EXPLORE_BACKEND`: Set to `local` to use the local LeanExplore backend (requires `lean-explore` + data).
 - `LEAN_EXPLORE_LOCAL`: Alternative to `LEAN_EXPLORE_BACKEND=local` (`true`, `1`, or `yes`).
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.

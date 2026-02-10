@@ -50,6 +50,68 @@ class LeanExploreResult(BaseModel):
     )
 
 
+class LeanExploreSummaryResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    description: Optional[str] = Field(
+        None, description="Short natural-language description"
+    )
+
+
+class LeanExploreSourceCodeResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    source_text: str = Field(description="Declaration source code")
+
+
+class LeanExploreSourceLinkResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    source_link: str = Field(description="Source link URL")
+
+
+class LeanExploreDocstringResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    docstring: Optional[str] = Field(None, description="Declaration docstring")
+
+
+class LeanExploreDescriptionResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    informal_description: Optional[str] = Field(
+        None, description="Informal declaration description"
+    )
+
+
+class LeanExploreModuleResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    module: str = Field(description="Module path")
+
+
+class LeanExploreDependenciesFieldResult(BaseModel):
+    id: int = Field(description="LeanExplore declaration identifier")
+    lean_name: Optional[str] = Field(
+        None, description="Primary declaration Lean name (if available)"
+    )
+    dependencies: Optional[str] = Field(
+        None, description="Raw dependencies payload from LeanExplore"
+    )
+
+
 class StateSearchResult(BaseModel):
     name: str = Field(description="Theorem/lemma name")
 
@@ -222,6 +284,14 @@ class LeanExploreResults(BaseModel):
 
     items: List[LeanExploreResult] = Field(
         default_factory=list, description="List of LeanExplore results"
+    )
+
+
+class LeanExploreSummaryResults(BaseModel):
+    """Wrapper for LeanExplore summary results list."""
+
+    items: List[LeanExploreSummaryResult] = Field(
+        default_factory=list, description="List of LeanExplore summary results"
     )
 
 

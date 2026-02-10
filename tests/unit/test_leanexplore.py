@@ -77,6 +77,58 @@ async def test_leanexplore_search_builds_url_and_parses(
 
 
 @pytest.mark.asyncio
+async def test_leanexplore_search_accepts_upstream_api_key_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_urlopen_json(req, timeout: float = 10.0):
+        captured["headers"] = dict(req.header_items())
+        return {"results": [_sample_item()], "count": 1}
+
+    monkeypatch.delenv("LEAN_EXPLORE_API_KEY", raising=False)
+    monkeypatch.setenv("LEANEXPLORE_API_KEY", "alt-token")
+    monkeypatch.setattr(server, "_urlopen_json", fake_urlopen_json)
+
+    ctx = _make_ctx()
+    await server.leanexplore_search(ctx=ctx, query="Nat", limit=1)
+
+    headers = {k.lower(): v for k, v in captured["headers"].items()}
+    assert headers.get("authorization") == "Bearer alt-token"
+
+
+@pytest.mark.asyncio
+async def test_leanexplore_search_summary_extracts_bold_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_urlopen_json(req, timeout: float = 10.0):
+        _ = req, timeout
+        return {
+            "results": [
+                {
+                    "id": 77,
+                    "name": "Nat.add_assoc",
+                    "module": "Mathlib.Data.Nat.Basic",
+                    "source_text": "theorem Nat.add_assoc : ...",
+                    "informalization": "**Associativity.** Addition is associative.",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(server, "_urlopen_json", fake_urlopen_json)
+
+    ctx = _make_ctx()
+    result = await server.leanexplore_search_summary(
+        ctx=ctx, query="associative", limit=1
+    )
+
+    assert len(result.items) == 1
+    assert result.items[0].id == 77
+    assert result.items[0].lean_name == "Nat.add_assoc"
+    assert result.items[0].description == "Associativity."
+
+
+@pytest.mark.asyncio
 async def test_leanexplore_get_by_id_prefers_declarations_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -118,6 +170,46 @@ async def test_leanexplore_get_by_id_falls_back_to_statement_groups(
     assert result.id == 42
     assert requested_urls[0].endswith("/declarations/42")
     assert requested_urls[1].endswith("/statement_groups/42")
+
+
+@pytest.mark.asyncio
+async def test_leanexplore_field_tools_fetch_expected_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_urlopen_json(req, timeout: float = 10.0):
+        _ = timeout
+        if req.full_url.endswith("/declarations/42"):
+            return {
+                "id": 42,
+                "name": "Nat.add",
+                "module": "Mathlib.Data.Nat.Basic",
+                "source_text": "theorem Nat.add : Nat -> Nat -> Nat := by ...",
+                "source_link": "https://example.test/Nat#L10",
+                "docstring": "Addition on natural numbers.",
+                "informalization": "Natural number addition.",
+                "dependencies": ["Nat.succ", "Nat.zero"],
+            }
+        raise AssertionError(f"Unexpected URL: {req.full_url}")
+
+    monkeypatch.setattr(server, "_urlopen_json", fake_urlopen_json)
+
+    source_result = await server.leanexplore_get_source_code(
+        ctx=_make_ctx(), group_id=42
+    )
+    module_result = await server.leanexplore_get_module(ctx=_make_ctx(), group_id=42)
+    docstring_result = await server.leanexplore_get_docstring(
+        ctx=_make_ctx(), group_id=42
+    )
+    link_result = await server.leanexplore_get_source_link(ctx=_make_ctx(), group_id=42)
+    deps_result = await server.leanexplore_get_dependencies_field(
+        ctx=_make_ctx(), group_id=42
+    )
+
+    assert source_result.source_text.startswith("theorem Nat.add")
+    assert module_result.module == "Mathlib.Data.Nat.Basic"
+    assert docstring_result.docstring == "Addition on natural numbers."
+    assert link_result.source_link.endswith("#L10")
+    assert deps_result.dependencies == '["Nat.succ","Nat.zero"]'
 
 
 @pytest.mark.asyncio
@@ -195,3 +287,12 @@ async def test_leanexplore_local_v1_style_service_works() -> None:
     assert search_result.items[0].id == 123
     assert search_result.items[0].lean_name == "Nat.add"
     assert dep_result.items[0].lean_name == "Nat.succ"
+
+    doc_result = await server.leanexplore_get_docstring(
+        ctx=_make_ctx(
+            leanexplore_local_enabled=True,
+            leanexplore_service=LocalV1Service(),
+        ),
+        group_id=123,
+    )
+    assert doc_result.lean_name == "Nat.add"

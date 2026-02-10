@@ -170,3 +170,12 @@ async def test_search_tools(
             assert {"id", "statement_text", "source_file"} <= set(
                 leanexplore_entry.keys()
             )
+
+        leanexplore_summary = await client.call_tool(
+            "lean_leanexplore_search_summary",
+            {"query": "natural numbers", "limit": 3},
+            expect_error=True,
+        )
+        leanexplore_summary_entry = _first_result_item(leanexplore_summary)
+        if leanexplore_summary_entry is not None:
+            assert {"id", "lean_name"} <= set(leanexplore_summary_entry.keys())
