@@ -322,7 +322,7 @@ Search Lean declarations via [LeanExplore](https://www.leanexplore.com).
 
 - Uses the LeanExplore API by default (`https://www.leanexplore.com/api/v1`).
 - Set `LEAN_EXPLORE_API_KEY` for hosted API access.
-- **Local backend support**: install `lean-explore` and download data with `leanexplore data fetch`. Then set `LEAN_EXPLORE_BACKEND=local` (or `LEAN_EXPLORE_LOCAL=1`). This uses the local database/FAISS assets directly (no API key).
+- **Local backend support**: install `lean-explore` and download data with `lean-explore data fetch`. Then set `LEAN_EXPLORE_BACKEND=local` (or `LEAN_EXPLORE_LOCAL=1`). This uses the local database/FAISS assets directly (no API key).
 - Supports legacy (`0.x`) and current (`1.x`) LeanExplore local service APIs.
 - Related tools: `lean_leanexplore_get_by_id`, `lean_leanexplore_dependencies` (dependency/citation lookup; on newer backends this may return dependency names when citation groups are unavailable).
 
