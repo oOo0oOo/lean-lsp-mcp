@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -219,7 +220,7 @@ class HammerManager:
                     logger.info("Premise server started successfully")
                     self._running = True
                     return True
-                asyncio.get_event_loop().run_until_complete(asyncio.sleep(1))
+                time.sleep(1)
 
             logger.error("Premise server failed to become healthy")
             return False

@@ -166,6 +166,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl_on = False
     hammer_manager: HammerManager | None = None
     hammer_local_available = False
+    context: AppContext | None = None
     hammer_local_only = os.environ.get("LEAN_HAMMER_LOCAL_ONLY", "").lower() in (
         "1",
         "true",
@@ -253,7 +254,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context.client:
+        if context and context.client:
             context.client.close()
 
         if loogle_manager:

@@ -103,6 +103,29 @@ async def test_app_lifespan_starts_and_stops_hammer_once(
     assert FakeHammerManager.instances[0].stop_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_app_lifespan_init_failure_before_context_does_not_mask_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    class BrokenLoogleManager:
+        def __init__(self, project_path: Path | None = None) -> None:
+            _ = project_path
+
+        def ensure_installed(self) -> bool:
+            raise RuntimeError("loogle setup exploded")
+
+        async def stop(self) -> None:
+            return
+
+    monkeypatch.setattr(server, "LoogleManager", BrokenLoogleManager)
+
+    with pytest.raises(RuntimeError, match="loogle setup exploded"):
+        async with server.app_lifespan(object()):
+            pass
+
+
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
