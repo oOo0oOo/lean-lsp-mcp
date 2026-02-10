@@ -991,6 +991,16 @@ def _multi_attempt_lsp(
                 logger.warning(
                     "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
                 )
+            try:
+                # Force a disk resync so transient snippet edits do not leak
+                # into subsequent tool calls for already-open documents.
+                client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to force-reopen `%s` after multi_attempt: %s",
+                    rel_path,
+                    exc,
+                )
 
 
 @mcp.tool(

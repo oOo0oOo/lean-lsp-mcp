@@ -169,3 +169,46 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+def test_multi_attempt_force_reopens_after_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.open_calls: list[tuple[str, bool]] = []
+            self.restore_calls: list[tuple[str, str]] = []
+
+        def open_file(
+            self,
+            path: str,
+            dependency_build_mode: str = "never",
+            force_reopen: bool = False,
+        ) -> None:
+            _ = dependency_build_mode
+            self.open_calls.append((path, force_reopen))
+
+        def update_file(self, _path: str, _changes: list[object]) -> None:
+            return
+
+        def get_diagnostics(self, _path: str) -> list[dict]:
+            return []
+
+        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
+            return {}
+
+        def update_file_content(self, path: str, content: str) -> None:
+            self.restore_calls.append((path, content))
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    monkeypatch.setattr(server, "get_file_contents", lambda _path: "original")
+
+    result = server._multi_attempt_lsp(ctx, "/abs/Foo.lean", line=1, snippets=[])
+
+    assert result.items == []
+    assert fake_client.restore_calls == [("Foo.lean", "original")]
+    assert fake_client.open_calls == [("Foo.lean", False), ("Foo.lean", True)]
