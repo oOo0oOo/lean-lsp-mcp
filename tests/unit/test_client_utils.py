@@ -87,6 +87,59 @@ def test_startup_client_reuses_existing(
     assert len(patched_clients) == 2
 
 
+def test_startup_client_retries_with_initial_build_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    ctx = _Context(_LifespanContext(project, None))
+
+    calls: list[tuple[bool, bool]] = []
+
+    def _constructor(
+        project_path: Path, initial_build: bool, prevent_cache_get: bool = False
+    ) -> _MockLeanClient:
+        calls.append((initial_build, prevent_cache_get))
+        if not initial_build:
+            raise RuntimeError("cold startup failed")
+        return _MockLeanClient(project_path)
+
+    monkeypatch.setattr("lean_lsp_mcp.client_utils.LeanLSPClient", _constructor)
+    monkeypatch.delenv("LEAN_LSP_AUTO_BUILD", raising=False)
+
+    startup_client(ctx)
+
+    assert calls == [(False, False), (True, False)]
+    assert isinstance(ctx.request_context.lifespan_context.client, _MockLeanClient)
+
+
+def test_startup_client_raises_when_auto_build_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    ctx = _Context(_LifespanContext(project, None))
+
+    calls: list[bool] = []
+
+    def _constructor(
+        project_path: Path, initial_build: bool, prevent_cache_get: bool = False
+    ) -> _MockLeanClient:
+        del project_path, prevent_cache_get
+        calls.append(initial_build)
+        raise RuntimeError("cold startup failed")
+
+    monkeypatch.setattr("lean_lsp_mcp.client_utils.LeanLSPClient", _constructor)
+    monkeypatch.setenv("LEAN_LSP_AUTO_BUILD", "off")
+
+    with pytest.raises(RuntimeError, match="Run `lake build`"):
+        startup_client(ctx)
+
+    assert calls == [False]
+
+
 def test_valid_lean_project_path(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
