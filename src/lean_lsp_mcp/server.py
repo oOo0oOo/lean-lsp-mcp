@@ -8,6 +8,7 @@ import ssl
 import time
 import urllib
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -532,14 +533,374 @@ def file_outline(
 
 
 @mcp.tool(
-    "lean_module_hierarchy",
+    "lean_imports",
     annotations=ToolAnnotations(
-        title="Module Hierarchy",
+        title="Module Imports",
         readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
+def lean_imports(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    lean_project_path: Annotated[
+        Optional[str], Field(description="Override Lean project root")
+    ] = None,
+    include_imports: Annotated[
+        bool, Field(description="Include modules imported by this module")
+    ] = True,
+    include_imported_by: Annotated[
+        bool, Field(description="Include modules that import this module")
+    ] = False,
+    view: Annotated[
+        Optional[str], Field(description="Optional view mode: graph or tree")
+    ] = None,
+    direction: Annotated[
+        Optional[str],
+        Field(description="Traversal direction: imports, imported_by, or both"),
+    ] = None,
+    depth: Annotated[int, Field(description="Traversal depth", ge=1)] = 1,
+    max_nodes: Annotated[int, Field(description="Maximum nodes in view", ge=1)] = 512,
+) -> ModuleHierarchyResult:
+    """Get module import information with optional graph/tree views."""
+    return _lean_imports_impl(
+        ctx=ctx,
+        file_path=file_path,
+        lean_project_path=lean_project_path,
+        include_imports=include_imports,
+        include_imported_by=include_imported_by,
+        view=view,
+        direction=direction,
+        depth=depth,
+        max_nodes=max_nodes,
+    )
+
+
+_DEFAULT_IMPORTS_CACHE_MAX = 2048
+try:
+    _IMPORTS_CACHE_MAX = max(
+        0,
+        int(os.environ.get("LEAN_IMPORTS_CACHE_MAX", str(_DEFAULT_IMPORTS_CACHE_MAX))),
+    )
+except ValueError:
+    _IMPORTS_CACHE_MAX = _DEFAULT_IMPORTS_CACHE_MAX
+_IMPORTS_CACHE: OrderedDict[tuple[str, str, str, str], List[Dict]] = OrderedDict()
+
+
+def _resolve_module_hierarchy_path(
+    ctx: Context, file_path: str, lean_project_path: str | None
+) -> str | None:
+    if lean_project_path:
+        project_path = Path(lean_project_path).resolve()
+        ctx.request_context.lifespan_context.lean_project_path = project_path
+        startup_client(ctx)
+        return get_relative_file_path(project_path, file_path)
+    return setup_client_for_file(ctx, file_path)
+
+
+def _module_cache_key(
+    cache_scope: str, module: Dict, direction: str
+) -> tuple[str, str, str, str]:
+    return (
+        cache_scope,
+        str(module.get("name", "")),
+        str(module.get("uri", "")),
+        direction,
+    )
+
+
+def _cached_module_links(
+    client: LeanLSPClient, module: Dict, direction: str, cache_scope: str
+) -> List[Dict]:
+    key = _module_cache_key(cache_scope, module, direction)
+    cached = _IMPORTS_CACHE.get(key)
+    if cached is not None:
+        _IMPORTS_CACHE.move_to_end(key)
+        return cached
+
+    if direction == "imports":
+        links = client.get_module_imports(module) or []
+    else:
+        links = client.get_module_imported_by(module) or []
+
+    if _IMPORTS_CACHE_MAX > 0:
+        _IMPORTS_CACHE[key] = links
+        _IMPORTS_CACHE.move_to_end(key)
+        while len(_IMPORTS_CACHE) > _IMPORTS_CACHE_MAX:
+            _IMPORTS_CACHE.popitem(last=False)
+
+    return links
+
+
+def _resolve_view_direction(
+    *,
+    view: str | None,
+    direction: str | None,
+    include_imports: bool,
+    include_imported_by: bool,
+) -> str | None:
+    if direction is not None and direction not in ("imports", "imported_by", "both"):
+        raise LeanToolError(
+            "Invalid direction. Expected one of: imports, imported_by, both."
+        )
+    if view is None:
+        return None
+    if view not in ("graph", "tree"):
+        raise LeanToolError("Invalid view. Expected one of: graph, tree.")
+    resolved = direction
+    if resolved is None:
+        if include_imports and include_imported_by:
+            resolved = "both"
+        elif include_imported_by:
+            resolved = "imported_by"
+        else:
+            resolved = "imports"
+    if view == "tree" and resolved == "both":
+        raise LeanToolError("Tree view does not support direction=both.")
+    return resolved
+
+
+def _module_key(module: Dict) -> str:
+    key = module.get("name") or module.get("uri") or ""
+    return str(key)
+
+
+def _module_graph_node(module: Dict) -> Dict:
+    return {
+        "id": _module_key(module),
+        "name": str(module.get("name", "")),
+        "uri": str(module.get("uri", "")),
+    }
+
+
+def _build_import_graph(
+    *,
+    client: LeanLSPClient,
+    root_module: Dict,
+    direction: str,
+    depth: int,
+    max_nodes: int,
+    cache_scope: str,
+) -> Dict:
+    nodes: Dict[str, Dict] = {}
+    edges: List[Dict] = []
+    truncated = False
+
+    queue: List[tuple[Dict, int]] = [(root_module, 0)]
+    seen_depth: Dict[str, int] = {_module_key(root_module): 0}
+
+    while queue:
+        module, level = queue.pop(0)
+        module_id = _module_key(module)
+        if not module_id:
+            continue
+        if module_id not in nodes:
+            if len(nodes) >= max_nodes:
+                truncated = True
+                continue
+            nodes[module_id] = _module_graph_node(module)
+        if level >= depth:
+            continue
+
+        directions = ("imports", "imported_by") if direction == "both" else (direction,)
+        for edge_direction in directions:
+            links = _cached_module_links(client, module, edge_direction, cache_scope)
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                neighbor = link.get("module")
+                if not isinstance(neighbor, dict):
+                    continue
+                neighbor_id = _module_key(neighbor)
+                if not neighbor_id:
+                    continue
+                if neighbor_id not in nodes:
+                    if len(nodes) >= max_nodes:
+                        truncated = True
+                        continue
+                    nodes[neighbor_id] = _module_graph_node(neighbor)
+                if edge_direction == "imports":
+                    source = module_id
+                    target = neighbor_id
+                else:
+                    source = neighbor_id
+                    target = module_id
+                edges.append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "direction": edge_direction,
+                    }
+                )
+                next_level = level + 1
+                current_best = seen_depth.get(neighbor_id)
+                if current_best is None or next_level < current_best:
+                    seen_depth[neighbor_id] = next_level
+                    queue.append((neighbor, next_level))
+
+    return {
+        "root": _module_key(root_module),
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "truncated": truncated,
+    }
+
+
+def _build_import_tree(
+    *,
+    client: LeanLSPClient,
+    root_module: Dict,
+    direction: str,
+    depth: int,
+    max_nodes: int,
+    cache_scope: str,
+) -> Dict:
+    if direction == "both":
+        raise LeanToolError("Tree view does not support direction=both.")
+
+    truncated = False
+    visited: set[str] = set()
+
+    def walk(module: Dict, remaining_depth: int, path: set[str]) -> Dict:
+        nonlocal truncated
+        module_id = _module_key(module)
+        node = {
+            "id": module_id,
+            "name": str(module.get("name", "")),
+            "uri": str(module.get("uri", "")),
+            "children": [],
+        }
+        if not module_id:
+            return node
+        if remaining_depth <= 0:
+            return node
+
+        links = _cached_module_links(client, module, direction, cache_scope)
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            child_module = link.get("module")
+            if not isinstance(child_module, dict):
+                continue
+            child_id = _module_key(child_module)
+            if not child_id or child_id in path:
+                continue
+            if child_id not in visited:
+                if len(visited) >= max_nodes:
+                    truncated = True
+                    break
+                visited.add(child_id)
+            node["children"].append(
+                walk(child_module, remaining_depth - 1, path | {child_id})
+            )
+        return node
+
+    root_id = _module_key(root_module)
+    if root_id:
+        visited.add(root_id)
+    tree = walk(root_module, depth, {root_id} if root_id else set())
+    tree["direction"] = direction
+    tree["truncated"] = truncated
+    return tree
+
+
+def _lean_imports_impl(
+    *,
+    ctx: Context,
+    file_path: str,
+    lean_project_path: str | None,
+    include_imports: bool,
+    include_imported_by: bool,
+    view: str | None,
+    direction: str | None,
+    depth: int,
+    max_nodes: int,
+) -> ModuleHierarchyResult:
+    rel_path = _resolve_module_hierarchy_path(ctx, file_path, lean_project_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    module = client.prepare_module_hierarchy(rel_path)
+    resolved_direction = _resolve_view_direction(
+        view=view,
+        direction=direction,
+        include_imports=include_imports,
+        include_imported_by=include_imported_by,
+    )
+
+    if module is None:
+        return ModuleHierarchyResult(
+            module=None,
+            imports=[],
+            imported_by=[],
+            graph=None,
+            tree=None,
+            view=view,
+            direction=resolved_direction,
+        )
+
+    cache_scope = str(ctx.request_context.lifespan_context.lean_project_path or "")
+
+    imports: List[LeanImport] = []
+    imported_by: List[LeanImport] = []
+
+    if include_imports:
+        imports = _imports_from_list(
+            _cached_module_links(client, module, "imports", cache_scope)
+        )
+
+    if include_imported_by:
+        imported_by = _imports_from_list(
+            _cached_module_links(client, module, "imported_by", cache_scope)
+        )
+
+    graph = None
+    tree = None
+    if view == "graph" and resolved_direction is not None:
+        graph = _build_import_graph(
+            client=client,
+            root_module=module,
+            direction=resolved_direction,
+            depth=depth,
+            max_nodes=max_nodes,
+            cache_scope=cache_scope,
+        )
+    elif view == "tree" and resolved_direction is not None:
+        tree = _build_import_tree(
+            client=client,
+            root_module=module,
+            direction=resolved_direction,
+            depth=depth,
+            max_nodes=max_nodes,
+            cache_scope=cache_scope,
+        )
+
+    return ModuleHierarchyResult(
+        module=_module_from_dict(module),
+        imports=imports,
+        imported_by=imported_by,
+        graph=graph,
+        tree=tree,
+        view=view,
+        direction=resolved_direction,
+    )
+
+
+@mcp.tool(
+    "lean_module_hierarchy",
+    annotations=ToolAnnotations(
+        title="Module Hierarchy (Deprecated)",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@deprecated
 def module_hierarchy(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -553,39 +914,17 @@ def module_hierarchy(
         bool, Field(description="Include modules that import this module")
     ] = False,
 ) -> ModuleHierarchyResult:
-    """Get module hierarchy information for a Lean file."""
-    if lean_project_path:
-        project_path = Path(lean_project_path).resolve()
-        ctx.request_context.lifespan_context.lean_project_path = project_path
-        startup_client(ctx)
-        rel_path = get_relative_file_path(project_path, file_path)
-    else:
-        rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    module = client.prepare_module_hierarchy(rel_path)
-
-    if module is None:
-        return ModuleHierarchyResult(module=None, imports=[], imported_by=[])
-
-    imports: List[LeanImport] = []
-    imported_by: List[LeanImport] = []
-
-    if include_imports:
-        imports = _imports_from_list(client.get_module_imports(module))
-
-    if include_imported_by:
-        imported_by = _imports_from_list(client.get_module_imported_by(module))
-
-    return ModuleHierarchyResult(
-        module=_module_from_dict(module),
-        imports=imports,
-        imported_by=imported_by,
+    """DEPRECATED. Use lean_imports instead."""
+    return _lean_imports_impl(
+        ctx=ctx,
+        file_path=file_path,
+        lean_project_path=lean_project_path,
+        include_imports=include_imports,
+        include_imported_by=include_imported_by,
+        view=None,
+        direction=None,
+        depth=1,
+        max_nodes=512,
     )
 
 

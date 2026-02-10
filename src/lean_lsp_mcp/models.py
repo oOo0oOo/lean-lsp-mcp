@@ -65,6 +65,14 @@ class ModuleHierarchyResult(BaseModel):
     imported_by: List[LeanImport] = Field(
         default_factory=list, description="Modules that import this module"
     )
+    graph: Optional[dict[str, Any]] = Field(
+        None, description="Optional module graph view"
+    )
+    tree: Optional[dict[str, Any]] = Field(
+        None, description="Optional module tree view"
+    )
+    view: Optional[str] = Field(None, description="Selected view mode")
+    direction: Optional[str] = Field(None, description="Traversal direction")
 
 
 class DiagnosticMessage(BaseModel):

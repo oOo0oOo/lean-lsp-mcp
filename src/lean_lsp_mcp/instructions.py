@@ -9,7 +9,8 @@ INSTRUCTIONS = """## General Rules
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
 - **lean_file_outline**: Token-efficient file skeleton (slow-ish).
-- **lean_module_hierarchy**: Module info + imports (optional reverse imports).
+- **lean_imports**: Module info + imports/imported_by with optional graph/tree views.
+- **lean_module_hierarchy**: Deprecated alias for lean_imports.
 - **lean_multi_attempt**: Test tactics without editing: `["simp", "ring", "omega"]`
 - **lean_declaration_file**: Get declaration source. Use sparingly (large output).
 - **lean_run_code**: Run standalone snippet. Use rarely.
