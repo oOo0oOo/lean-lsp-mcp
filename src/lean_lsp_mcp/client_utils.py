@@ -68,12 +68,26 @@ def startup_client(ctx: Context):
                 AUTO_BUILD_ENV,
             )
             build_capture = OutputCapture()
-            with build_capture:
-                client = LeanLSPClient(
-                    lean_project_path,
-                    initial_build=True,
-                    prevent_cache_get=prevent_cache,
+            try:
+                with build_capture:
+                    client = LeanLSPClient(
+                        lean_project_path,
+                        initial_build=True,
+                        prevent_cache_get=prevent_cache,
+                    )
+            except Exception as retry_error:
+                retry_output = build_capture.get_output().strip()
+                msg = (
+                    "Failed to start Lean language server after retry with initial build.\n"
+                    f"First attempt error: {first_error}\n"
+                    f"Retry error: {retry_error}\n"
+                    "Try running `lake build` manually in your project."
                 )
+                if startup_output:
+                    msg = f"{msg}\n\nStartup output:\n{startup_output}"
+                if retry_output:
+                    msg = f"{msg}\n\nRetry output:\n{retry_output}"
+                raise RuntimeError(msg) from retry_error
             build_output = build_capture.get_output().strip()
             if build_output:
                 logger.info("Initial build output:\n%s", build_output)

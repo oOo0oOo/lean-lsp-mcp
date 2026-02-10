@@ -140,6 +140,39 @@ def test_startup_client_raises_when_auto_build_disabled(
     assert calls == [False]
 
 
+def test_startup_client_surfaces_both_failures_when_retry_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    ctx = _Context(_LifespanContext(project, None))
+
+    calls: list[bool] = []
+
+    def _constructor(
+        project_path: Path, initial_build: bool, prevent_cache_get: bool = False
+    ) -> _MockLeanClient:
+        del project_path, prevent_cache_get
+        calls.append(initial_build)
+        if initial_build:
+            raise RuntimeError("retry build failed")
+        raise RuntimeError("cold startup failed")
+
+    monkeypatch.setattr("lean_lsp_mcp.client_utils.LeanLSPClient", _constructor)
+    monkeypatch.delenv("LEAN_LSP_AUTO_BUILD", raising=False)
+
+    with pytest.raises(
+        RuntimeError, match="after retry with initial build"
+    ) as exc_info:
+        startup_client(ctx)
+
+    msg = str(exc_info.value)
+    assert "First attempt error: cold startup failed" in msg
+    assert "Retry error: retry build failed" in msg
+    assert calls == [False, True]
+
+
 def test_valid_lean_project_path(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
