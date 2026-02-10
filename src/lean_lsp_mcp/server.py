@@ -1374,8 +1374,7 @@ async def _leanexplore_local_search(
         return await _leanexplore_await_if_needed(result)
 
     raise LeanToolError(
-        "LeanExplore local search failed due to API mismatch. "
-        f"Last error: {last_exc}"
+        f"LeanExplore local search failed due to API mismatch. Last error: {last_exc}"
     )
 
 
@@ -1480,7 +1479,9 @@ def _leanexplore_extract_dependency_names(payload: object) -> List[str]:
     return names
 
 
-def _leanexplore_dependency_names_to_results(names: List[str]) -> List[LeanExploreResult]:
+def _leanexplore_dependency_names_to_results(
+    names: List[str],
+) -> List[LeanExploreResult]:
     results: List[LeanExploreResult] = []
     for idx, name in enumerate(names, start=1):
         results.append(
@@ -1500,9 +1501,7 @@ def _leanexplore_parse_item(item: object) -> LeanExploreResult:
     primary = raw.get("primary_declaration") or raw.get("primaryDeclaration") or {}
     lean_name = raw.get("lean_name") or raw.get("leanName") or raw.get("name")
     if isinstance(primary, dict):
-        lean_name = (
-            lean_name or primary.get("lean_name") or primary.get("leanName")
-        )
+        lean_name = lean_name or primary.get("lean_name") or primary.get("leanName")
     statement_text = (
         raw.get("statement_text")
         or raw.get("display_statement_text")
