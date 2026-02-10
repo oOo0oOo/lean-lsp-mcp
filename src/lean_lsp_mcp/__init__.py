@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from lean_lsp_mcp.server import mcp
+from lean_lsp_mcp.server import apply_tool_configuration, mcp
 
 
 def main():
@@ -24,6 +24,31 @@ def main():
         type=int,
         default=8000,
         help="Host port for transport",
+    )
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        help="Set LEAN_PROJECT_PATH explicitly (used for relative file paths).",
+    )
+    parser.add_argument(
+        "--strict-project-root",
+        action="store_true",
+        help="Reject file paths outside LEAN_PROJECT_PATH.",
+    )
+    parser.add_argument(
+        "--disable-tools",
+        type=str,
+        help="Comma-separated tool names to disable (e.g. lean_run_code,lean_build).",
+    )
+    parser.add_argument(
+        "--tool-descriptions",
+        type=str,
+        help="JSON object mapping tool names to replacement descriptions.",
+    )
+    parser.add_argument(
+        "--tool-descriptions-file",
+        type=str,
+        help="Path to JSON file mapping tool names to replacement descriptions.",
     )
     parser.add_argument(
         "--loogle-local",
@@ -49,6 +74,16 @@ def main():
     args = parser.parse_args()
 
     # Set env vars from CLI args (CLI takes precedence over env vars)
+    if args.project_root:
+        os.environ["LEAN_PROJECT_PATH"] = args.project_root
+    if args.strict_project_root:
+        os.environ["LEAN_MCP_STRICT_PROJECT_ROOT"] = "true"
+    if args.disable_tools:
+        os.environ["LEAN_MCP_DISABLED_TOOLS"] = args.disable_tools
+    if args.tool_descriptions:
+        os.environ["LEAN_MCP_TOOL_DESCRIPTIONS"] = args.tool_descriptions
+    if args.tool_descriptions_file:
+        os.environ["LEAN_MCP_TOOL_DESCRIPTIONS_FILE"] = args.tool_descriptions_file
     if args.loogle_local:
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:
@@ -58,6 +93,7 @@ def main():
     if args.repl_timeout:
         os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
 
+    apply_tool_configuration(mcp)
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     mcp.run(transport=args.transport)

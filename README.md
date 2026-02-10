@@ -455,6 +455,19 @@ Many clients allow the user to disable specific tools manually (e.g. lean_build)
 
 **Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
+You can also disable tools at server startup:
+
+- `LEAN_MCP_DISABLED_TOOLS`: Comma-separated tool names (for example `lean_run_code,lean_build`).
+- `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object to override tool descriptions.
+- `LEAN_MCP_TOOL_DESCRIPTIONS_FILE`: Path to a JSON file with description overrides.
+
+Example:
+
+```bash
+export LEAN_MCP_DISABLED_TOOLS="lean_run_code,lean_build"
+export LEAN_MCP_TOOL_DESCRIPTIONS='{"lean_goal":"Primary proof-state inspection tool."}'
+```
+
 ## MCP Configuration
 
 This MCP server works out-of-the-box without any configuration. However, a few optional settings are available.
@@ -463,7 +476,11 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
-- `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_PROJECT_PATH`: Path to your Lean project root. Relative `file_path` arguments resolve against this root.
+- `LEAN_MCP_STRICT_PROJECT_ROOT`: Set to `true`, `1`, or `yes` to reject file paths outside `LEAN_PROJECT_PATH`.
+- `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
+- `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
+- `LEAN_MCP_TOOL_DESCRIPTIONS_FILE`: Path to a JSON file mapping tool names to replacement descriptions.
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` (~5x faster, see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
@@ -586,6 +603,31 @@ While it does not handle any sensitive data such as passwords or API keys, it st
 - No input or output validation.
 
 Please be aware of these risks. Feel free to audit the code and report security issues!
+
+### Containerized setup (recommended for stricter isolation)
+
+Build image:
+
+```bash
+docker build -t lean-lsp-mcp:secure .
+```
+
+Run with a mounted project root:
+
+```bash
+docker run --rm -i \
+  --network none \
+  -v "$PWD":/workspace \
+  -e LEAN_PROJECT_PATH=/workspace \
+  -e LEAN_MCP_STRICT_PROJECT_ROOT=true \
+  lean-lsp-mcp:secure
+```
+
+The included Docker image defaults to:
+
+- `LEAN_PROJECT_PATH=/workspace`
+- `LEAN_MCP_STRICT_PROJECT_ROOT=true`
+- `LEAN_MCP_DISABLED_TOOLS=lean_run_code`
 
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
 
