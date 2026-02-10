@@ -34,6 +34,18 @@ def _sample_item() -> dict:
     }
 
 
+def test_leanexplore_base_url_defaults_to_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEAN_EXPLORE_BASE_URL", raising=False)
+    assert server._leanexplore_base_url() == "https://www.leanexplore.com/api/v2"
+
+
+def test_leanexplore_base_url_strips_trailing_slash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEAN_EXPLORE_BASE_URL", "https://example.test/api/v2/")
+    assert server._leanexplore_base_url() == "https://example.test/api/v2"
+
+
 @pytest.mark.asyncio
 async def test_leanexplore_search_builds_url_and_parses(
     monkeypatch: pytest.MonkeyPatch,
