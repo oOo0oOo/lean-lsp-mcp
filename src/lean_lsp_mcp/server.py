@@ -268,12 +268,18 @@ def lean_file_resource(file_path: str) -> str:
     This allows clients to read Lean files using the MCP resource protocol
     rather than tool calls, enabling resource subscriptions and caching.
     """
-    path = Path(file_path)
+    decoded_path = urllib.parse.unquote(file_path)
+    path = Path(decoded_path).expanduser()
+    if not path.is_absolute():
+        raise ValueError(
+            f"Expected absolute Lean file path in resource URI, got: {decoded_path}"
+        )
+    path = path.resolve()
     if not path.exists():
         raise ValueError(f"File not found: {file_path}")
     if not path.suffix == ".lean":
         raise ValueError(f"Not a Lean file: {file_path}")
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
 
 
 # ============================================================================
@@ -334,6 +340,12 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 async def _maybe_await(result):
     if inspect.isawaitable(result):
         await result
+
+
+def _lean_file_resource_uri(file_path: str | Path) -> str:
+    resolved = Path(file_path).expanduser().resolve()
+    encoded = urllib.parse.quote(str(resolved), safe="")
+    return f"lean://file/{encoded}"
 
 
 @mcp.tool(
@@ -936,7 +948,7 @@ def declaration_file(
     # Create a ResourceLink so clients can re-read the file via MCP resources
     resource_link = ResourceLink(
         type="resource_link",
-        uri=f"lean://file/{abs_path}",
+        uri=_lean_file_resource_uri(abs_path),
         name=f"Source: {symbol}",
         description=f"Lean source file containing the declaration of {symbol}",
         mimeType="text/x-lean4",

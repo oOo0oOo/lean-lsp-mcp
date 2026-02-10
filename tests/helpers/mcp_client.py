@@ -100,7 +100,7 @@ def _text_from_block(block: ContentBlock) -> Iterable[str]:
     if isinstance(block, TextContent):
         yield block.text
     elif isinstance(block, ResourceLink):
-        yield block.uri
+        yield str(block.uri)
     elif isinstance(block, EmbeddedResource):
         resource = block.resource
         if hasattr(resource, "text"):
