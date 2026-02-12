@@ -47,7 +47,9 @@ def test_load_model_missing_dependency_shows_install_hint(
     monkeypatch.setattr(builtins, "__import__", fake_import)
     semantic_search._load_model.cache_clear()
 
-    with pytest.raises(semantic_search.LeanToolError, match="uv add sentence-transformers numpy"):
+    with pytest.raises(
+        semantic_search.LeanToolError, match="uv add sentence-transformers numpy"
+    ):
         semantic_search._load_model("sentence-transformers/all-MiniLM-L6-v2")
 
 
@@ -63,5 +65,7 @@ def test_require_numpy_missing_dependency_shows_install_hint(
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with pytest.raises(semantic_search.LeanToolError, match="uv add sentence-transformers numpy"):
+    with pytest.raises(
+        semantic_search.LeanToolError, match="uv add sentence-transformers numpy"
+    ):
         semantic_search._require_numpy()
