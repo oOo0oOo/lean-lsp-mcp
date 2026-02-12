@@ -1124,21 +1124,36 @@ def _leansearch_name_field(value: object) -> str:
 def _leansearch_parse_remote_results(
     payload: object, num_results: int
 ) -> List[LeanSearchResult]:
-    if not isinstance(payload, list) or not payload:
-        return []
-    first_bucket = payload[0]
-    if not isinstance(first_bucket, list):
+    entries: List[object] = []
+    if isinstance(payload, list):
+        if payload and isinstance(payload[0], list):
+            entries = payload[0]
+        else:
+            entries = payload
+    elif isinstance(payload, dict):
+        for key in ("results", "items", "hits"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                entries = candidate
+                break
+    if not entries:
         return []
 
     parsed: List[LeanSearchResult] = []
-    for entry in first_bucket:
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
+
         result = entry.get("result")
         if not isinstance(result, dict):
-            continue
-        name = _leansearch_name_field(result.get("name"))
-        module_name = _leansearch_name_field(result.get("module_name"))
+            result = entry
+
+        name = _leansearch_name_field(
+            result.get("name") or result.get("lean_name") or result.get("full_name")
+        )
+        module_name = _leansearch_name_field(
+            result.get("module_name") or result.get("module")
+        )
         if not name or not module_name:
             continue
         parsed.append(
@@ -1146,7 +1161,7 @@ def _leansearch_parse_remote_results(
                 name=name,
                 module_name=module_name,
                 kind=result.get("kind"),
-                type=result.get("type"),
+                type=result.get("type") or result.get("signature"),
             )
         )
         if len(parsed) >= num_results:

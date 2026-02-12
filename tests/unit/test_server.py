@@ -280,3 +280,63 @@ async def test_leansearch_project_root_override_for_local_fallback(
     assert (
         ctx.request_context.lifespan_context.lean_project_path == project_dir.resolve()
     )
+
+
+def test_leansearch_parse_remote_results_accepts_dict_results_shape() -> None:
+    payload = {
+        "results": [
+            {
+                "name": "Nat.add",
+                "module_name": "Mathlib.Data.Nat.Basic",
+                "kind": "theorem",
+                "type": "Nat -> Nat -> Nat",
+            },
+            {
+                "result": {
+                    "name": ["Nat", "succ"],
+                    "module_name": ["Mathlib", "Init", "Prelude"],
+                    "kind": "def",
+                    "signature": "Nat -> Nat",
+                }
+            },
+        ]
+    }
+
+    items = server._leansearch_parse_remote_results(payload, num_results=5)
+
+    assert items == [
+        server.LeanSearchResult(
+            name="Nat.add",
+            module_name="Mathlib.Data.Nat.Basic",
+            kind="theorem",
+            type="Nat -> Nat -> Nat",
+        ),
+        server.LeanSearchResult(
+            name="Nat.succ",
+            module_name="Mathlib.Init.Prelude",
+            kind="def",
+            type="Nat -> Nat",
+        ),
+    ]
+
+
+def test_leansearch_parse_remote_results_accepts_flat_list_shape() -> None:
+    payload = [
+        {
+            "name": "Nat.zero",
+            "module": "Mathlib.Init.Prelude",
+            "kind": "def",
+            "type": "Nat",
+        }
+    ]
+
+    items = server._leansearch_parse_remote_results(payload, num_results=1)
+
+    assert items == [
+        server.LeanSearchResult(
+            name="Nat.zero",
+            module_name="Mathlib.Init.Prelude",
+            kind="def",
+            type="Nat",
+        )
+    ]
