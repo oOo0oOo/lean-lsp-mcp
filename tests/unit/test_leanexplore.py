@@ -97,3 +97,24 @@ def test_leanexplore_get_by_id_uses_statement_groups_endpoint(
 
     assert result.id == 42
     assert captured["url"].endswith("/statement_groups/42")
+
+
+def test_leanexplore_search_accepts_legacy_api_key_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout: float = 10.0):
+        captured["headers"] = dict(req.header_items())
+        payload = {"results": [_sample_item()], "count": 1}
+        return DummyResponse(orjson.dumps(payload))
+
+    monkeypatch.setenv("LEAN_EXPLORE_BASE_URL", "https://example.test/api/v1")
+    monkeypatch.delenv("LEAN_EXPLORE_API_KEY", raising=False)
+    monkeypatch.setenv("LEANEXPLORE_API_KEY", "legacy-token")
+    monkeypatch.setattr(server.urllib.request, "urlopen", fake_urlopen)
+
+    _ = server.leanexplore_search(ctx=_make_ctx(), query="Nat", limit=1)
+
+    headers = {k.lower(): v for k, v in captured["headers"].items()}
+    assert headers.get("authorization") == "Bearer legacy-token"
