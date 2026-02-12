@@ -587,6 +587,31 @@ While it does not handle any sensitive data such as passwords or API keys, it st
 
 Please be aware of these risks. Feel free to audit the code and report security issues!
 
+### Containerized setup (recommended for stricter isolation)
+
+Build image:
+
+```bash
+docker build -t lean-lsp-mcp:secure .
+```
+
+Run with a mounted project root:
+
+```bash
+docker run --rm -i \
+  --network none \
+  -v "$PWD":/workspace \
+  -e LEAN_PROJECT_PATH=/workspace \
+  -e LEAN_MCP_STRICT_PROJECT_ROOT=true \
+  lean-lsp-mcp:secure
+```
+
+The included Docker image defaults to:
+
+- `LEAN_PROJECT_PATH=/workspace`
+- `LEAN_MCP_STRICT_PROJECT_ROOT=true`
+- `LEAN_MCP_DISABLED_TOOLS=lean_run_code`
+
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
 
 ## Development
