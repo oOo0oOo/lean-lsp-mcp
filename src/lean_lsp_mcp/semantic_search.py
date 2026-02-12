@@ -158,7 +158,7 @@ def _load_model(model_name: str):
     except Exception as exc:
         raise LeanToolError(
             "Semantic search requires sentence-transformers. "
-            "Install with `uv add --optional semantic-search sentence-transformers numpy`."
+            "Install with `uv add sentence-transformers numpy`."
         ) from exc
 
     return SentenceTransformer(model_name)
@@ -170,7 +170,7 @@ def _require_numpy():
     except Exception as exc:
         raise LeanToolError(
             "Semantic search requires numpy. "
-            "Install with `uv add --optional semantic-search sentence-transformers numpy`."
+            "Install with `uv add sentence-transformers numpy`."
         ) from exc
     return np
 
