@@ -1289,6 +1289,8 @@ def _leanexplore_results_from_payload(
 def _leanexplore_headers() -> Dict[str, str]:
     headers = {"User-Agent": "lean-lsp-mcp/0.1"}
     api_key = os.environ.get("LEAN_EXPLORE_API_KEY", "").strip()
+    if not api_key:
+        api_key = os.environ.get("LEANEXPLORE_API_KEY", "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers

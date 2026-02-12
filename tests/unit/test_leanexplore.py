@@ -268,3 +268,25 @@ async def test_leanexplore_local_v1_style_service_works() -> None:
     assert search_result.items[0].id == 123
     assert search_result.items[0].lean_name == "Nat.add"
     assert dep_result.items[0].lean_name == "Nat.succ"
+
+
+@pytest.mark.asyncio
+async def test_leanexplore_search_accepts_legacy_api_key_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_urlopen_json(req, timeout: float = 10.0):
+        captured["headers"] = dict(req.header_items())
+        _ = timeout
+        return {"results": [_sample_item()], "count": 1}
+
+    monkeypatch.setenv("LEAN_EXPLORE_BASE_URL", "https://example.test/api/v1")
+    monkeypatch.delenv("LEAN_EXPLORE_API_KEY", raising=False)
+    monkeypatch.setenv("LEANEXPLORE_API_KEY", "legacy-token")
+    monkeypatch.setattr(server, "_urlopen_json", fake_urlopen_json)
+
+    _ = await server.leanexplore_search(ctx=_make_ctx(), query="Nat", limit=1)
+
+    headers = {k.lower(): v for k, v in captured["headers"].items()}
+    assert headers.get("authorization") == "Bearer legacy-token"
