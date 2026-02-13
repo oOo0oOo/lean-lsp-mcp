@@ -40,6 +40,7 @@ from lean_lsp_mcp.models import (
     DiagnosticMessage,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
+    InteractiveDiagnosticsResult,
     FileOutline,
     GoalState,
     HoverInfo,
@@ -52,11 +53,11 @@ from lean_lsp_mcp.models import (
     LoogleResult,
     LoogleResults,
     MultiAttemptResult,
-    InteractiveDiagnosticsResult,
     PremiseResult,
     PremiseResults,
     ProofProfileResult,
     RunResult,
+    WidgetSourceResult,
     WidgetsResult,
     StateSearchResult,
     StateSearchResults,
@@ -573,7 +574,10 @@ def diagnostic_messages(
     declaration_name: Annotated[
         Optional[str], Field(description="Filter to declaration (slow)")
     ] = None,
-) -> DiagnosticsResult:
+    interactive: Annotated[
+        bool, Field(description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient, e.g. to extract 'Try This' code suggestions.")
+    ] = False,
+) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -594,6 +598,12 @@ def diagnostic_messages(
     # Convert 1-indexed to 0-indexed for leanclient
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
+
+    if interactive:
+        diagnostics = client.get_interactive_diagnostics(
+            rel_path, start_line=start_line_0, end_line=end_line_0
+        )
+        return InteractiveDiagnosticsResult(diagnostics=diagnostics)
 
     result = client.get_diagnostics(
         rel_path,
@@ -1451,7 +1461,7 @@ def get_widgets(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
 ) -> WidgetsResult:
-    """Get panel widgets at a position (proof visualizations, #html, custom widgets)."""
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data — may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -1465,25 +1475,20 @@ def get_widgets(
 
 
 @mcp.tool(
-    "lean_get_interactive_diagnostics",
+    "lean_get_widget_source",
     annotations=ToolAnnotations(
-        title="Interactive Diagnostics",
+        title="Widget Source",
         readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def get_interactive_diagnostics(
+def get_widget_source(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    start_line: Annotated[
-        Optional[int], Field(description="Filter from line (1-indexed)", ge=1)
-    ] = None,
-    end_line: Annotated[
-        Optional[int], Field(description="Filter to line (1-indexed)", ge=1)
-    ] = None,
-) -> InteractiveDiagnosticsResult:
-    """Get interactive diagnostics with rich messages and embedded widgets."""
+    javascript_hash: Annotated[str, Field(description="javascriptHash from a widget instance")],
+) -> WidgetSourceResult:
+    """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -1492,14 +1497,10 @@ def get_interactive_diagnostics(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-
-    start_0 = (start_line - 1) if start_line is not None else None
-    end_0 = (end_line - 1) if end_line is not None else None
-
-    diagnostics = client.get_interactive_diagnostics(
-        rel_path, start_line=start_0, end_line=end_0
+    source = client.get_widget_source(
+        rel_path, 0, 0, {"javascriptHash": javascript_hash}
     )
-    return InteractiveDiagnosticsResult(diagnostics=diagnostics)
+    return WidgetSourceResult(source=source)
 
 
 @mcp.tool(

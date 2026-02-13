@@ -229,6 +229,12 @@ class InteractiveDiagnosticsResult(BaseModel):
     )
 
 
+class WidgetSourceResult(BaseModel):
+    """Widget JavaScript source for a given hash."""
+
+    source: dict = Field(description="Widget source data including JavaScript module")
+
+
 class LineProfile(BaseModel):
     """Timing for a single source line."""
 
