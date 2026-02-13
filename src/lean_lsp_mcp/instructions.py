@@ -5,6 +5,7 @@ INSTRUCTIONS = """## General Rules
 ## Key Tools
 - **lean_goal**: Proof state at position. Omit `column` for before/after. "no goals" = done!
 - **lean_diagnostic_messages**: Compiler errors/warnings. "no goals to be solved" = remove tactics.
+- **lean_try_this**: Extract TryThis suggestions from diagnostics.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.

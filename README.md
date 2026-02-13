@@ -173,6 +173,10 @@ term has type
 ```
 </details>
 
+#### lean_try_this
+
+Extract `Try this:` suggestions from diagnostics for a Lean file. Useful for quick tactic hints.
+
 #### lean_goal
 
 Get the proof goal at a specific location (line or line & column) in a Lean file.
