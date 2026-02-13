@@ -308,6 +308,22 @@ This is useful to confirm declarations actually exist and prevent hallucinating 
 
 This tool requires [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to be installed and available in your PATH.
 
+#### lean_local_semantic_search
+
+Semantic search over local declarations using embeddings. This tool indexes your project and dependencies locally.
+
+Requires optional dependencies:
+
+```bash
+uv add --optional semantic-search sentence-transformers numpy
+```
+
+Environment variables:
+
+- `LEAN_SEMANTIC_SEARCH_MODEL`: Embedding model name (default: `sentence-transformers/all-MiniLM-L6-v2`).
+- `LEAN_SEMANTIC_SEARCH_CACHE_DIR`: Override cache directory for the semantic index.
+- `LEAN_SEMANTIC_SEARCH_REBUILD`: Set to `true`, `1`, or `yes` to force a rebuild.
+
 ### External Search Tools
 
 Currently most external tools are separately **rate limited to 3 requests per 30 seconds**. Please don't ruin the fun for everyone by overusing these amazing free services!
@@ -473,6 +489,9 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
+- `LEAN_SEMANTIC_SEARCH_MODEL`: Embedding model name for local semantic search.
+- `LEAN_SEMANTIC_SEARCH_CACHE_DIR`: Cache directory for semantic search indices.
+- `LEAN_SEMANTIC_SEARCH_REBUILD`: Force rebuild of the semantic search index.
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
