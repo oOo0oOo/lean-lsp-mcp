@@ -225,7 +225,8 @@ class InteractiveDiagnosticsResult(BaseModel):
     """Wrapper for interactive diagnostics with embedded widgets."""
 
     diagnostics: List[dict] = Field(
-        default_factory=list, description="Interactive diagnostic objects with TaggedText messages"
+        default_factory=list,
+        description="Interactive diagnostic objects with TaggedText messages",
     )
 
 

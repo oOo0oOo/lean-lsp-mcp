@@ -575,7 +575,10 @@ def diagnostic_messages(
         Optional[str], Field(description="Filter to declaration (slow)")
     ] = None,
     interactive: Annotated[
-        bool, Field(description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient, e.g. to extract 'Try This' code suggestions.")
+        bool,
+        Field(
+            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient, e.g. to extract 'Try This' code suggestions."
+        ),
     ] = False,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
@@ -1486,7 +1489,9 @@ def get_widgets(
 def get_widget_source(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    javascript_hash: Annotated[str, Field(description="javascriptHash from a widget instance")],
+    javascript_hash: Annotated[
+        str, Field(description="javascriptHash from a widget instance")
+    ],
 ) -> WidgetSourceResult:
     """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
