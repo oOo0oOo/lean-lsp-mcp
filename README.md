@@ -154,7 +154,7 @@ Get the contents of a Lean file, optionally with line number annotations.
 
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. Only use when plain text is insufficient, e.g. to extract "Try This" code suggestions.
 
 <details>
 <summary>Example output</summary>
@@ -280,7 +280,7 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 
 #### lean_get_widgets
 
-Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns widget instances with their id, name, range, and props.
+Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns raw widget data - may be verbose.
 
 <details>
 <summary>Example output (<code>#html</code> widget)</summary>
@@ -306,41 +306,9 @@ Get panel widgets at a position (proof visualizations, `#html`, custom widgets).
 ```
 </details>
 
-#### lean_get_interactive_diagnostics
+#### lean_get_widget_source
 
-Get interactive diagnostics with rich `TaggedText` messages and embedded widgets. Complements `lean_diagnostic_messages` with structured data including widget embeds.
-
-<details>
-<summary>Example output (unused simp argument with "Try This" widget)</summary>
-
-```json
-{
-  "diagnostics": [
-    {
-      "severity": 2,
-      "range": {"start": {"line": 4, "character": 8}, "end": {"line": 4, "character": 20}},
-      "message": {
-        "append": [
-          {"tag": [{"expr": {"text": "This simp argument is unused:\n  Nat.add_comm\n"}}, ...]},
-          {"tag": [{"widget": {
-            "wi": {
-              "id": "Lean.Meta.Hint.tryThisDiffWidget",
-              "props": {
-                "suggestion": "simp",
-                "diff": [
-                  {"text": "simp", "type": "unchanged"},
-                  {"text": " [Nat.add_comm]", "type": "deletion"}
-                ]
-              }
-            }
-          }}, ...]}
-        ]
-      }
-    }
-  ]
-}
-```
-</details>
+Get the JavaScript source code of a widget by its `javascriptHash` (from `lean_get_widgets` or `lean_diagnostic_messages` with `interactive=True`). Useful for understanding custom widget rendering logic. Returns full JS module - may be verbose.
 
 #### lean_profile_proof
 
