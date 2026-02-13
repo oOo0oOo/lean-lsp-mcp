@@ -16,9 +16,9 @@ def widget_file(test_project_path: Path) -> Path:
     path.write_text(
         textwrap.dedent("""\
             import ProofWidgets.Component.HtmlDisplay
+            open ProofWidgets
 
-            open ProofWidgets in
-            #html <b>Hello from widget test</b>
+            #html Html.element "b" #[] #[.text "Hello widget"]
         """),
         encoding="utf-8",
     )
@@ -41,6 +41,10 @@ async def test_get_widgets(
         )
         data = result_json(result)
         assert "widgets" in data
+        assert len(data["widgets"]) > 0
+        widget = data["widgets"][0]
+        assert widget["id"] == "ProofWidgets.HtmlDisplayPanel"
+        assert "props" in widget
 
 
 @pytest.mark.asyncio

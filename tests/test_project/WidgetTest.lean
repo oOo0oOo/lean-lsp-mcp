@@ -1,4 +1,4 @@
 import ProofWidgets.Component.HtmlDisplay
+open ProofWidgets
 
-open ProofWidgets in
-#html <b>Hello from widget test</b>
+#html Html.element "b" #[] #[.text "Hello widget"]

@@ -278,6 +278,70 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ```
 </details>
 
+#### lean_get_widgets
+
+Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns widget instances with their id, name, range, and props.
+
+<details>
+<summary>Example output (<code>#html</code> widget)</summary>
+
+```json
+{
+  "widgets": [
+    {
+      "id": "ProofWidgets.HtmlDisplayPanel",
+      "javascriptHash": "15661785739548337049",
+      "props": {
+        "html": {
+          "element": ["b", [], [{"text": "Hello widget"}]]
+        }
+      },
+      "range": {
+        "start": {"line": 4, "character": 0},
+        "end": {"line": 4, "character": 50}
+      }
+    }
+  ]
+}
+```
+</details>
+
+#### lean_get_interactive_diagnostics
+
+Get interactive diagnostics with rich `TaggedText` messages and embedded widgets. Complements `lean_diagnostic_messages` with structured data including widget embeds.
+
+<details>
+<summary>Example output (unused simp argument with "Try This" widget)</summary>
+
+```json
+{
+  "diagnostics": [
+    {
+      "severity": 2,
+      "range": {"start": {"line": 4, "character": 8}, "end": {"line": 4, "character": 20}},
+      "message": {
+        "append": [
+          {"tag": [{"expr": {"text": "This simp argument is unused:\n  Nat.add_comm\n"}}, ...]},
+          {"tag": [{"widget": {
+            "wi": {
+              "id": "Lean.Meta.Hint.tryThisDiffWidget",
+              "props": {
+                "suggestion": "simp",
+                "diff": [
+                  {"text": "simp", "type": "unchanged"},
+                  {"text": " [Nat.add_comm]", "type": "deletion"}
+                ]
+              }
+            }
+          }}, ...]}
+        ]
+      }
+    }
+  ]
+}
+```
+</details>
+
 #### lean_profile_proof
 
 Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated copy of the theorem and returns per-line timing data.
