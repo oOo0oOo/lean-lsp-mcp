@@ -52,10 +52,12 @@ from lean_lsp_mcp.models import (
     LoogleResult,
     LoogleResults,
     MultiAttemptResult,
+    InteractiveDiagnosticsResult,
     PremiseResult,
     PremiseResults,
     ProofProfileResult,
     RunResult,
+    WidgetsResult,
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
@@ -1432,6 +1434,72 @@ async def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+
+@mcp.tool(
+    "lean_get_widgets",
+    annotations=ToolAnnotations(
+        title="Get Widgets",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widgets(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> WidgetsResult:
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets)."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    widgets = client.get_widgets(rel_path, line - 1, column - 1)
+    return WidgetsResult(widgets=widgets)
+
+
+@mcp.tool(
+    "lean_get_interactive_diagnostics",
+    annotations=ToolAnnotations(
+        title="Interactive Diagnostics",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_interactive_diagnostics(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    start_line: Annotated[
+        Optional[int], Field(description="Filter from line (1-indexed)", ge=1)
+    ] = None,
+    end_line: Annotated[
+        Optional[int], Field(description="Filter to line (1-indexed)", ge=1)
+    ] = None,
+) -> InteractiveDiagnosticsResult:
+    """Get interactive diagnostics with rich messages and embedded widgets."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    start_0 = (start_line - 1) if start_line is not None else None
+    end_0 = (end_line - 1) if end_line is not None else None
+
+    diagnostics = client.get_interactive_diagnostics(
+        rel_path, start_line=start_0, end_line=end_0
+    )
+    return InteractiveDiagnosticsResult(diagnostics=diagnostics)
 
 
 @mcp.tool(
