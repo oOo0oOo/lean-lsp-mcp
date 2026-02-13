@@ -154,7 +154,7 @@ Get the contents of a Lean file, optionally with line number annotations.
 
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. Only use when plain text is insufficient, e.g. to extract "Try This" code suggestions.
 
 <details>
 <summary>Example output</summary>
@@ -277,6 +277,38 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ...
 ```
 </details>
+
+#### lean_get_widgets
+
+Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns raw widget data - may be verbose.
+
+<details>
+<summary>Example output (<code>#html</code> widget)</summary>
+
+```json
+{
+  "widgets": [
+    {
+      "id": "ProofWidgets.HtmlDisplayPanel",
+      "javascriptHash": "15661785739548337049",
+      "props": {
+        "html": {
+          "element": ["b", [], [{"text": "Hello widget"}]]
+        }
+      },
+      "range": {
+        "start": {"line": 4, "character": 0},
+        "end": {"line": 4, "character": 50}
+      }
+    }
+  ]
+}
+```
+</details>
+
+#### lean_get_widget_source
+
+Get the JavaScript source code of a widget by its `javascriptHash` (from `lean_get_widgets` or `lean_diagnostic_messages` with `interactive=True`). Useful for understanding custom widget rendering logic. Returns full JS module - may be verbose.
 
 #### lean_profile_proof
 
