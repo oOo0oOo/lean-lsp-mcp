@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -16,12 +17,13 @@ class DummyClient:
         self.closed_calls += 1
 
 
-def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
+def _make_ctx(rate_limit: dict[str, deque[int]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
         client=None,
-        rate_limit=rate_limit or {"test": []},
+        rate_limit=rate_limit or {"test": deque()},
         lean_search_available=True,
+        open_files=set(),
     )
     request_context = types.SimpleNamespace(lifespan_context=context)
     return types.SimpleNamespace(request_context=request_context)
@@ -36,12 +38,13 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         assert context.lean_project_path is None
         assert context.client is None
         assert context.rate_limit == {
-            "leansearch": [],
-            "loogle": [],
-            "leanfinder": [],
-            "lean_state_search": [],
-            "hammer_premise": [],
+            "leansearch": deque(),
+            "loogle": deque(),
+            "leanfinder": deque(),
+            "lean_state_search": deque(),
+            "hammer_premise": deque(),
         }
+        assert context.open_files == set()
 
 
 @pytest.mark.asyncio
@@ -103,7 +106,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
 
-    rate_limit = {"test": [80, 81]}
+    rate_limit = {"test": deque([80, 81])}
     ctx = _make_ctx(rate_limit=rate_limit)
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
@@ -112,7 +115,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
         return "ok"
 
     assert wrapped(ctx=ctx) == "ok"
-    assert rate_limit["test"] == [100]
+    assert rate_limit["test"] == deque([100])
 
 
 @pytest.mark.asyncio
@@ -169,3 +172,47 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_multi_attempt_resyncs_when_file_already_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.open_calls: list[tuple[str, bool]] = []
+
+        def open_file(
+            self,
+            path: str,
+            dependency_build_mode: str = "never",
+            force_reopen: bool = False,
+        ) -> None:
+            _ = dependency_build_mode
+            self.open_calls.append((path, force_reopen))
+
+        def update_file(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def update_file_content(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        def get_diagnostics(self, *args, **kwargs) -> list[dict]:  # type: ignore[no-untyped-def]
+            return []
+
+        def get_goal(self, *args, **kwargs) -> dict:  # type: ignore[no-untyped-def]
+            return {}
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+    ctx.request_context.lifespan_context.open_files = {"Foo.lean"}
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _fp: "Foo.lean")
+    monkeypatch.setattr(server, "get_file_contents", lambda _fp: "theorem foo := by")
+
+    result = await server.multi_attempt(
+        ctx=ctx, file_path="/abs/Foo.lean", line=1, snippets=[]
+    )
+    assert result.items == []
+    assert fake_client.open_calls == [("Foo.lean", True)]
