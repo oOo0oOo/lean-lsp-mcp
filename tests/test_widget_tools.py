@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -50,39 +51,35 @@ async def test_get_widgets(
 @pytest.mark.asyncio
 async def test_diagnostic_messages_interactive(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    widget_file: Path,
+    test_project_path: Path,
 ) -> None:
+    """Interactive diagnostics for unused simp arg should contain a widget."""
+    path = test_project_path / "InteractiveDiagTest.lean"
+    path.write_text(
+        textwrap.dedent("""\
+            import Mathlib
+
+            example : 1 + 1 = 2 := by
+              simp [Nat.add_comm]
+        """),
+        encoding="utf-8",
+    )
     async with mcp_client_factory() as client:
+        # Plain diagnostics first to ensure file is ready
+        await client.call_tool(
+            "lean_diagnostic_messages",
+            {"file_path": str(path)},
+        )
         result = await client.call_tool(
             "lean_diagnostic_messages",
-            {
-                "file_path": str(widget_file),
-                "interactive": True,
-            },
+            {"file_path": str(path), "interactive": True},
         )
         data = result_json(result)
-        assert "diagnostics" in data
-        assert isinstance(data["diagnostics"], list)
-
-
-@pytest.mark.asyncio
-async def test_diagnostic_messages_interactive_with_line_range(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    widget_file: Path,
-) -> None:
-    async with mcp_client_factory() as client:
-        result = await client.call_tool(
-            "lean_diagnostic_messages",
-            {
-                "file_path": str(widget_file),
-                "start_line": 1,
-                "end_line": 4,
-                "interactive": True,
-            },
-        )
-        data = result_json(result)
-        assert "diagnostics" in data
-        assert isinstance(data["diagnostics"], list)
+        assert len(data["diagnostics"]) > 0
+        diag = data["diagnostics"][0]
+        assert diag["severity"] == 2  # warning
+        raw = json.dumps(diag["message"])
+        assert "widget" in raw
 
 
 @pytest.mark.asyncio
@@ -90,8 +87,8 @@ async def test_get_widget_source(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     widget_file: Path,
 ) -> None:
+    """Fetching widget source by hash should return JavaScript module code."""
     async with mcp_client_factory() as client:
-        # First get a widget to obtain its hash
         widgets_result = await client.call_tool(
             "lean_get_widgets",
             {"file_path": str(widget_file), "line": 4, "column": 1},
@@ -102,10 +99,12 @@ async def test_get_widget_source(
 
         result = await client.call_tool(
             "lean_get_widget_source",
-            {
-                "file_path": str(widget_file),
-                "javascript_hash": js_hash,
-            },
+            {"file_path": str(widget_file), "javascript_hash": js_hash},
         )
-        data = result_json(result)
-        assert "source" in data
+        source = result_json(result)["source"]
+        assert "sourcetext" in source
+        js = source["sourcetext"]
+        assert len(js) > 100
+        assert "import" in js
+        assert "react" in js
+        assert "export" in js
