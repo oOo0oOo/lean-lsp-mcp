@@ -471,6 +471,11 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
+- `LEAN_HAMMER_LOCAL`: Set to `true`, `1`, or `yes` to start and use local hammer in Docker/macOS container.
+- `LEAN_HAMMER_LOCAL_ONLY`: Set to `true`, `1`, or `yes` to require local hammer and disable remote fallback.
+- `LEAN_HAMMER_PORT`: Local hammer container port (default: `8765`).
+- `LEAN_HAMMER_IMAGE`: Override hammer container image (default: `ghcr.io/hanwenzhu/lean-premise-server:latest`).
+- `LEAN_HAMMER_CONTAINER_NAME`: Override hammer container name (default: `lean-premise-server`).
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
 

@@ -69,6 +69,63 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
     assert dummy_client.closed_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_app_lifespan_starts_and_stops_hammer_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEAN_HAMMER_LOCAL", "true")
+
+    class FakeHammerManager:
+        instances: list["FakeHammerManager"] = []
+
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.stop_calls = 0
+            FakeHammerManager.instances.append(self)
+
+        def is_available(self) -> bool:
+            return True
+
+        async def start_async(self) -> bool:
+            self.start_calls += 1
+            return True
+
+        async def stop_async(self) -> None:
+            self.stop_calls += 1
+
+    monkeypatch.setattr(server, "HammerManager", FakeHammerManager)
+
+    async with server.app_lifespan(object()) as context:
+        assert context.hammer_local_available is True
+        assert len(FakeHammerManager.instances) == 1
+        assert FakeHammerManager.instances[0].start_calls == 1
+
+    assert FakeHammerManager.instances[0].stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_init_failure_before_context_does_not_mask_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    class BrokenLoogleManager:
+        def __init__(self, project_path: Path | None = None) -> None:
+            _ = project_path
+
+        def ensure_installed(self) -> bool:
+            raise RuntimeError("loogle setup exploded")
+
+        async def stop(self) -> None:
+            return
+
+    monkeypatch.setattr(server, "LoogleManager", BrokenLoogleManager)
+
+    with pytest.raises(RuntimeError, match="loogle setup exploded"):
+        async with server.app_lifespan(object()):
+            pass
+
+
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
@@ -169,3 +226,27 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_hammer_premise_local_only_requires_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Client:
+        def open_file(self, _path: str) -> None:
+            return None
+
+        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
+            return {"goals": ["⊢ True"]}
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    ctx = _make_ctx()
+    lifespan = ctx.request_context.lifespan_context
+    lifespan.client = _Client()
+    lifespan.hammer_local_only = True
+    lifespan.hammer_local_available = False
+    lifespan.hammer_manager = None
+
+    with pytest.raises(server.LeanToolError, match="local hammer is not available"):
+        await server.hammer_premise(ctx=ctx, file_path="Foo.lean", line=1, column=1)
