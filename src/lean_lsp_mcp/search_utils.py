@@ -65,6 +65,54 @@ def check_ripgrep_status() -> tuple[bool, str]:
     return False, "\n".join(lines)
 
 
+def _local_search_sort_key(
+    match: dict[str, str], normalized_query: str
+) -> tuple[int, int, int, str, str]:
+    """Sort local search results by relevance and stability.
+
+    Priorities:
+    1. Exact declaration-name match over prefixes/suffixes.
+    2. Project declarations over `.lake/packages` dependencies.
+    3. Shorter base names, then lexical fallback for deterministic order.
+    """
+    name = match["name"]
+    basename = name.rsplit(".", 1)[-1]
+    name_fold = name.casefold()
+    base_fold = basename.casefold()
+
+    if "." in normalized_query:
+        if name_fold == normalized_query:
+            relevance_rank = 0
+        elif name_fold.startswith(normalized_query):
+            relevance_rank = 1
+        elif normalized_query in name_fold:
+            relevance_rank = 2
+        elif base_fold == normalized_query:
+            relevance_rank = 3
+        elif base_fold.startswith(normalized_query):
+            relevance_rank = 4
+        elif normalized_query in base_fold:
+            relevance_rank = 5
+        else:
+            relevance_rank = 6
+    else:
+        if name_fold == normalized_query or base_fold == normalized_query:
+            relevance_rank = 0
+        elif base_fold.startswith(normalized_query):
+            relevance_rank = 1
+        elif normalized_query in base_fold:
+            relevance_rank = 2
+        elif name_fold.startswith(normalized_query):
+            relevance_rank = 3
+        elif normalized_query in name_fold:
+            relevance_rank = 4
+        else:
+            relevance_rank = 5
+
+    package_penalty = 1 if match["file"].startswith(".lake/packages/") else 0
+    return (relevance_rank, package_penalty, len(basename), basename, name)
+
+
 def lean_local_search(
     query: str,
     limit: int = 32,
@@ -103,6 +151,7 @@ def lean_local_search(
     process = _create_ripgrep_process(command, cwd=str(root))
 
     matches: list[dict[str, str]] = []
+    max_candidates = min(max(limit * 8, limit), 2048)
     stderr_text = ""
     terminated_early = False
     stderr_chunks: list[str] = []
@@ -159,7 +208,7 @@ def lean_local_search(
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
 
-            if len(matches) >= limit:
+            if len(matches) >= max_candidates:
                 terminated_early = True
                 try:
                     process.terminate()
@@ -212,7 +261,21 @@ def lean_local_search(
             error_msg += f"\n{stderr_text}"
         raise RuntimeError(error_msg)
 
-    return matches
+    normalized_query = query.casefold()
+    matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for match in matches:
+        key = (match["name"], match["kind"], match["file"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(match)
+        if len(deduped) >= limit:
+            break
+
+    return deduped
 
 
 @lru_cache(maxsize=1)
