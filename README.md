@@ -322,6 +322,8 @@ Search for theorems in Mathlib using [leansearch.net](https://leansearch.net) (n
 
 - Supports natural language, mixed queries, concepts, identifiers, and Lean terms.
 - Example: `bijective map from injective`, `n + 1 <= m if n < m`, `Cauchy Schwarz`, `List.sum`, `{f : A → B} (hf : Injective f) : ∃ h, Bijective h`
+- Local fallback is enabled by default (`local_fallback=true`): if `leansearch.net` is unavailable or returns no results, the tool tries local declaration search when a project root is known.
+- Use `project_root` to point local fallback at a specific Lean project; omit it to use the current inferred project root.
 
 <details>
 <summary>Example output (query by LLM: `bijective map from injective`)</summary>
