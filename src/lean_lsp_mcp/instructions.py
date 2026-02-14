@@ -4,11 +4,13 @@ INSTRUCTIONS = """## General Rules
 
 ## Key Tools
 - **lean_goal**: Proof state at position. Omit `column` for before/after. "no goals" = done!
+- **lean_interactive_goals**: Structured goals + plaintext rendering.
 - **lean_diagnostic_messages**: Compiler errors/warnings. "no goals to be solved" = remove tactics.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
 - **lean_file_outline**: Token-efficient file skeleton (slow-ish).
+- **lean_interactive_term_goal**: Structured expected type + plaintext rendering.
 - **lean_multi_attempt**: Test tactics without editing: `["simp", "ring", "omega"]`
 - **lean_declaration_file**: Get declaration source. Use sparingly (large output).
 - **lean_run_code**: Run standalone snippet. Use rarely.

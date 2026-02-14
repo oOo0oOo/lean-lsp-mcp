@@ -208,6 +208,53 @@ def extract_range(content: str, range: dict) -> str:
     return content[start_offset:end_offset]
 
 
+def tagged_text_to_plain(tagged_text: Any) -> str:
+    """Flatten Lean TaggedText/InteractiveMessage into plain text."""
+    parts: List[str] = []
+
+    def looks_like_tagged_text(node: Any) -> bool:
+        return isinstance(node, dict) and any(
+            key in node for key in ("text", "append", "tag")
+        )
+
+    def walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            parts.append(node)
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if isinstance(node, dict):
+            if "text" in node:
+                text = node.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                return
+            if "append" in node:
+                walk(node.get("append"))
+                return
+            if "tag" in node:
+                tag_payload = node.get("tag")
+                if isinstance(tag_payload, list) and len(tag_payload) == 2:
+                    _, tag_body = tag_payload
+                    walk(tag_body)
+                    return
+                if looks_like_tagged_text(tag_payload):
+                    walk(tag_payload)
+                    return
+                return
+            for key in ("children", "alt", "msg"):
+                if key in node:
+                    walk(node[key])
+            return
+
+    walk(tagged_text)
+    return "".join(parts)
+
+
 def find_start_position(content: str, query: str) -> dict | None:
     """Find the position of the query in the content.
 

@@ -44,6 +44,8 @@ from lean_lsp_mcp.models import (
     FileOutline,
     GoalState,
     HoverInfo,
+    InteractiveGoalsResult,
+    InteractiveTermGoalResult,
     LeanFinderResult,
     LeanFinderResults,
     LeanSearchResult,
@@ -82,6 +84,7 @@ from lean_lsp_mcp.utils import (
     find_start_position,
     get_declaration_range,
     is_build_stderr,
+    tagged_text_to_plain,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
@@ -553,6 +556,113 @@ def _process_diagnostics(
     )
 
 
+def _rpc_call_with_retry(
+    client: LeanLSPClient,
+    uri: str,
+    method: str,
+    params: Dict,
+    line: int,
+    character: int,
+    retries: int = 1,
+):
+    last_exc: Exception | None = None
+    for _ in range(retries + 1):
+        try:
+            return client._rpc_call(uri, method, params, line=line, character=character)
+        except Exception as exc:  # noqa: BLE001 - surface as tool error
+            msg = str(exc)
+            last_exc = exc
+            if "Outdated RPC session" in msg or "RpcNeedsReconnect" in msg:
+                client._rpc_release_session(uri)
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+
+
+def _is_widget_rpc_unavailable(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "rpcmethodnotfound",
+            "method not found",
+            "unknown method",
+            "unknown rpc",
+            "unsupported method",
+        )
+    )
+
+
+def _strip_lean_code_fence(text: str | None) -> str | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    if stripped.startswith("```lean"):
+        stripped = stripped.removeprefix("```lean").strip()
+    if stripped.endswith("```"):
+        stripped = stripped.removesuffix("```").strip()
+    return stripped
+
+
+def _render_interactive_goal(goal: Dict) -> str:
+    lines: List[str] = []
+    user_name = goal.get("userName?") or goal.get("userName")
+    if user_name:
+        lines.append(f"case {user_name}")
+
+    for hyp in goal.get("hyps", []) or []:
+        names = " ".join(n for n in hyp.get("names", []) if isinstance(n, str) and n)
+        hyp_type = tagged_text_to_plain(hyp.get("type", {}))
+        value = hyp.get("val") if "val" in hyp else hyp.get("val?")
+        if value is not None:
+            hyp_value = tagged_text_to_plain(value)
+            if names:
+                line = f"{names} : {hyp_type} := {hyp_value}".strip()
+            else:
+                line = f"{hyp_type} := {hyp_value}".strip()
+        else:
+            if names:
+                line = f"{names} : {hyp_type}".strip()
+            else:
+                line = hyp_type.strip()
+        lines.append(line)
+
+    goal_prefix = goal.get("goalPrefix", "⊢ ")
+    target_type = tagged_text_to_plain(goal.get("type", {}))
+    lines.append(f"{goal_prefix}{target_type}".strip())
+    return "\n".join(line for line in lines if line)
+
+
+def _render_interactive_goals(goals: List[Dict]) -> List[str]:
+    return [_render_interactive_goal(goal) for goal in goals]
+
+
+def _interactive_goals_from_lsp(
+    client: LeanLSPClient, rel_path: str, line: int, column: int
+) -> InteractiveGoalsResult:
+    goal_result = client.get_goal(rel_path, line - 1, column - 1)
+    check_lsp_response(goal_result, "get_goal", allow_none=True)
+    rendered = extract_goals_list(goal_result)
+    rendered_text = "\n\n---\n\n".join(rendered)
+    return InteractiveGoalsResult(
+        goals=[], rendered=rendered, rendered_text=rendered_text
+    )
+
+
+def _interactive_term_goal_from_lsp(
+    client: LeanLSPClient, rel_path: str, line: int, column: int
+) -> InteractiveTermGoalResult:
+    term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
+    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
+    rendered = None
+    goal_payload = None
+    if isinstance(term_goal_result, dict):
+        goal_payload = term_goal_result
+        rendered = _strip_lean_code_fence(term_goal_result.get("goal"))
+    return InteractiveTermGoalResult(goal=goal_payload, rendered=rendered)
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -649,6 +759,7 @@ def goal(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    client.get_diagnostics(rel_path)
     content = client.get_file_content(rel_path)
     lines = content.splitlines()
 
@@ -717,12 +828,144 @@ def term_goal(
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
     check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
     expected_type = None
-    if term_goal_result is not None:
-        rendered = term_goal_result.get("goal")
-        if rendered:
-            expected_type = rendered.replace("```lean\n", "").replace("\n```", "")
+    if isinstance(term_goal_result, dict):
+        expected_type = _strip_lean_code_fence(term_goal_result.get("goal"))
 
     return TermGoalState(line_context=line_context, expected_type=expected_type)
+
+
+@mcp.tool(
+    "lean_interactive_goals",
+    annotations=ToolAnnotations(
+        title="Interactive Goals",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def interactive_goals(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> InteractiveGoalsResult:
+    """Get interactive goals (structured + plain text)."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    # Ensure the file is elaborated before invoking widget RPC methods.
+    client.get_diagnostics(rel_path)
+    content = client.get_file_content(rel_path)
+    lines = content.splitlines()
+
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+
+    line_context = lines[line - 1]
+    if column < 1 or column > len(line_context) + 1:
+        raise LeanToolError(
+            f"Column {column} out of range for line {line} (length {len(line_context)})"
+        )
+
+    uri = client._local_to_uri(rel_path)
+    params = {
+        "textDocument": {"uri": uri},
+        "position": {"line": line - 1, "character": column - 1},
+    }
+
+    try:
+        result = _rpc_call_with_retry(
+            client, uri, "Lean.Widget.getInteractiveGoals", params, line - 1, column - 1
+        )
+    except Exception as exc:  # noqa: BLE001 - surface as tool error
+        if _is_widget_rpc_unavailable(exc):
+            return _interactive_goals_from_lsp(client, rel_path, line, column)
+        raise LeanToolError(
+            f"RPC error during interactive goals: {type(exc).__name__}: {exc or repr(exc)}"
+        ) from exc
+
+    if result is None:
+        return InteractiveGoalsResult(goals=[], rendered=[], rendered_text="")
+
+    goals = result.get("goals", []) if isinstance(result, dict) else []
+    rendered = _render_interactive_goals(goals)
+    rendered_text = "\n\n---\n\n".join(rendered)
+    return InteractiveGoalsResult(
+        goals=goals,
+        rendered=rendered,
+        rendered_text=rendered_text,
+    )
+
+
+@mcp.tool(
+    "lean_interactive_term_goal",
+    annotations=ToolAnnotations(
+        title="Interactive Term Goal",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def interactive_term_goal(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> InteractiveTermGoalResult:
+    """Get interactive term goal (structured + plain text)."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    client.get_diagnostics(rel_path)
+    content = client.get_file_content(rel_path)
+    lines = content.splitlines()
+
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+
+    line_context = lines[line - 1]
+    if column < 1 or column > len(line_context) + 1:
+        raise LeanToolError(
+            f"Column {column} out of range for line {line} (length {len(line_context)})"
+        )
+
+    uri = client._local_to_uri(rel_path)
+    params = {
+        "textDocument": {"uri": uri},
+        "position": {"line": line - 1, "character": column - 1},
+    }
+
+    try:
+        result = _rpc_call_with_retry(
+            client,
+            uri,
+            "Lean.Widget.getInteractiveTermGoal",
+            params,
+            line - 1,
+            column - 1,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface as tool error
+        if _is_widget_rpc_unavailable(exc):
+            return _interactive_term_goal_from_lsp(client, rel_path, line, column)
+        raise LeanToolError(
+            f"RPC error during interactive term goal: {type(exc).__name__}: {exc or repr(exc)}"
+        ) from exc
+
+    if result is None:
+        return InteractiveTermGoalResult(goal=None, rendered=None)
+
+    rendered = _render_interactive_goal(result) if isinstance(result, dict) else None
+    return InteractiveTermGoalResult(goal=result, rendered=rendered)
 
 
 @mcp.tool(
