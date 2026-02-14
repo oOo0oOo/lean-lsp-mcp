@@ -43,6 +43,7 @@ from lean_lsp_mcp.models import (
     InteractiveDiagnosticsResult,
     FileOutline,
     GoalState,
+    HighlightOccurrencesResult,
     HoverInfo,
     LeanFinderResult,
     LeanFinderResults,
@@ -82,6 +83,8 @@ from lean_lsp_mcp.utils import (
     find_start_position,
     get_declaration_range,
     is_build_stderr,
+    tagged_text_to_highlighted,
+    tagged_text_to_plain,
 )
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
@@ -553,6 +556,61 @@ def _process_diagnostics(
     )
 
 
+def _rpc_call_with_retry(
+    client: LeanLSPClient,
+    uri: str,
+    method: str,
+    params: Dict,
+    line: int,
+    character: int,
+    retries: int = 1,
+):
+    last_exc: Exception | None = None
+    for _ in range(retries + 1):
+        try:
+            return client._rpc_call(uri, method, params, line=line, character=character)
+        except Exception as exc:  # noqa: BLE001 - surface as tool error
+            msg = str(exc)
+            last_exc = exc
+            if "Outdated RPC session" in msg or "RpcNeedsReconnect" in msg:
+                client._rpc_release_session(uri)
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+
+
+def _is_widget_rpc_unavailable(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "rpcmethodnotfound",
+            "method not found",
+            "unknown method",
+            "unknown rpc",
+            "unsupported method",
+        )
+    )
+
+
+def _highlight_plain_text(
+    text: str,
+    query: str,
+    *,
+    case_sensitive: bool,
+    marker_start: str = "❰",
+    marker_end: str = "❱",
+) -> str:
+    if not text or not query:
+        return text
+    flags = 0 if case_sensitive else re.IGNORECASE
+    pattern = re.compile(re.escape(query), flags)
+    return pattern.sub(
+        lambda match: f"{marker_start}{match.group(0)}{marker_end}", text
+    )
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -770,6 +828,104 @@ def hover(
         symbol=symbol,
         info=info,
         diagnostics=_to_diagnostic_messages(filtered),
+    )
+
+
+@mcp.tool(
+    "lean_highlight_occurrences",
+    annotations=ToolAnnotations(
+        title="Highlight Occurrences",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def highlight_occurrences(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    query: Annotated[str, Field(description="Query string to highlight")],
+    case_sensitive: Annotated[
+        bool, Field(description="Whether matching should be case-sensitive")
+    ] = True,
+    message: Annotated[
+        Optional[Dict], Field(description="Interactive message payload")
+    ] = None,
+    text: Annotated[
+        Optional[str],
+        Field(description="Plain text to highlight (converted to message)"),
+    ] = None,
+) -> HighlightOccurrencesResult:
+    """Highlight occurrences inside an interactive message."""
+    if message is None and text is None:
+        raise LeanToolError("Provide either `message` or `text` to highlight.")
+    if not query.strip():
+        raise LeanToolError("`query` must not be empty.")
+
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    client.get_diagnostics(rel_path)
+    content = client.get_file_content(rel_path)
+    lines = content.splitlines()
+
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+
+    line_context = lines[line - 1]
+    if column < 1 or column > len(line_context) + 1:
+        raise LeanToolError(
+            f"Column {column} out of range for line {line} (length {len(line_context)})"
+        )
+
+    msg_payload = message if message is not None else {"text": text or ""}
+    uri = client._local_to_uri(rel_path)
+    params = {"query": query, "msg": msg_payload}
+
+    try:
+        result = _rpc_call_with_retry(
+            client, uri, "Lean.Widget.highlightMatches", params, line - 1, column - 1
+        )
+    except Exception as exc:  # noqa: BLE001 - surface as tool error
+        if _is_widget_rpc_unavailable(exc):
+            rendered_text = tagged_text_to_plain(msg_payload)
+            highlighted_text = _highlight_plain_text(
+                rendered_text,
+                query,
+                case_sensitive=case_sensitive,
+            )
+            return HighlightOccurrencesResult(
+                message=msg_payload,
+                rendered_text=rendered_text,
+                highlighted_text=highlighted_text,
+            )
+        raise LeanToolError(
+            f"RPC error during highlightMatches: {type(exc).__name__}: {exc or repr(exc)}"
+        ) from exc
+
+    if result is None:
+        rendered_text = tagged_text_to_plain(msg_payload)
+        highlighted_text = _highlight_plain_text(
+            rendered_text, query, case_sensitive=case_sensitive
+        )
+        return HighlightOccurrencesResult(
+            message=msg_payload,
+            rendered_text=rendered_text,
+            highlighted_text=highlighted_text,
+        )
+
+    rendered_text = tagged_text_to_plain(result)
+    highlighted_text = tagged_text_to_highlighted(result)
+    return HighlightOccurrencesResult(
+        message=result,
+        rendered_text=rendered_text,
+        highlighted_text=highlighted_text,
     )
 
 
