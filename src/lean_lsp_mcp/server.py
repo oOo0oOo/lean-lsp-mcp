@@ -144,6 +144,53 @@ logger = get_logger(__name__)
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 
 
+# ---------------------------------------------------------------------------
+# Shared singletons for resources that should NOT be duplicated per-session.
+#
+# With the ``streamable-http`` transport every MCP session gets its own
+# ``app_lifespan`` invocation.  Heavy resources like the local loogle
+# subprocess (~6 GB RSS for the Mathlib index) must be initialised exactly
+# once and shared across sessions; otherwise N concurrent clients would
+# spawn N loogle processes and exhaust memory.
+# ---------------------------------------------------------------------------
+_shared_loogle_manager: LoogleManager | None = None
+_shared_loogle_available: bool = False
+_shared_loogle_init_done: bool = False
+_shared_loogle_lock = asyncio.Lock()
+_shared_session_count: int = 0
+
+
+async def _ensure_shared_loogle(
+    lean_project_path: Path | None,
+) -> tuple[LoogleManager | None, bool]:
+    """Lazily initialise the shared loogle singleton (once, thread-safe)."""
+    global _shared_loogle_manager, _shared_loogle_available, _shared_loogle_init_done
+
+    async with _shared_loogle_lock:
+        if _shared_loogle_init_done:
+            return _shared_loogle_manager, _shared_loogle_available
+        _shared_loogle_init_done = True
+
+        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            return None, False
+
+        logger.info("Local loogle enabled, initializing (shared)...")
+        _shared_loogle_manager = LoogleManager(project_path=lean_project_path)
+        if _shared_loogle_manager.ensure_installed():
+            if await _shared_loogle_manager.start():
+                _shared_loogle_available = True
+                logger.info("Shared local loogle started successfully")
+            else:
+                logger.warning("Local loogle failed to start, will use remote API")
+        else:
+            logger.warning("Local loogle installation failed, will use remote API")
+        return _shared_loogle_manager, _shared_loogle_available
+
+
 @dataclass
 class AppContext:
     lean_project_path: Path | None
@@ -159,8 +206,8 @@ class AppContext:
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    loogle_manager: LoogleManager | None = None
-    loogle_local_available = False
+    global _shared_session_count
+
     repl: Repl | None = None
     repl_on = False
 
@@ -171,18 +218,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
 
-        # Initialize local loogle if enabled via env var or CLI
-        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
-            logger.info("Local loogle enabled, initializing...")
-            loogle_manager = LoogleManager(project_path=lean_project_path)
-            if loogle_manager.ensure_installed():
-                if await loogle_manager.start():
-                    loogle_local_available = True
-                    logger.info("Local loogle started successfully")
-                else:
-                    logger.warning("Local loogle failed to start, will use remote API")
-            else:
-                logger.warning("Local loogle installation failed, will use remote API")
+        # Use the shared loogle singleton (initialised at most once)
+        loogle_manager, loogle_local_available = await _ensure_shared_loogle(
+            lean_project_path
+        )
+        _shared_session_count += 1
 
         # Initialize REPL if enabled
         if repl_enabled():
@@ -223,12 +263,15 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         yield context
     finally:
         logger.info("Closing Lean LSP client")
+        _shared_session_count -= 1
 
         if context.client:
             context.client.close()
 
-        if loogle_manager:
-            await loogle_manager.stop()
+        # Only tear down loogle when the *last* session exits
+        if _shared_session_count <= 0 and _shared_loogle_manager:
+            logger.info("Last session closed, stopping shared loogle")
+            await _shared_loogle_manager.stop()
 
         if repl:
             await repl.close()
