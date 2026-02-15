@@ -145,7 +145,7 @@ def lean_local_search(
         str(root),
     ]
 
-    if lean_src := _get_lean_src_search_path():
+    if lean_src := _get_lean_src_search_path(root):
         command.append(lean_src)
 
     process = _create_ripgrep_process(command, cwd=str(root))
@@ -278,12 +278,17 @@ def lean_local_search(
     return deduped
 
 
-@lru_cache(maxsize=1)
-def _get_lean_src_search_path() -> str | None:
-    """Return the Lean stdlib directory, if available (cache once)."""
+@lru_cache(maxsize=4)
+def _get_lean_src_search_path(project_root: Path | None = None) -> str | None:
+    """Return the Lean stdlib directory, if available.
+
+    Runs ``lean --print-prefix`` from *project_root* so that elan resolves the
+    toolchain from the project's ``lean-toolchain`` file.
+    """
+    cwd = str(project_root) if project_root else None
     try:
         completed = subprocess.run(
-            ["lean", "--print-prefix"], capture_output=True, text=True
+            ["lean", "--print-prefix"], capture_output=True, text=True, cwd=cwd
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
