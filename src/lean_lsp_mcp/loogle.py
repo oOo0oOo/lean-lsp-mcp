@@ -125,7 +125,11 @@ class LoogleManager:
                 cwd=self.cache_dir,
             )
             if r.returncode != 0:
-                logger.error(f"Clone failed: {r.stderr}")
+                logger.error("Clone failed (exit %s).", r.returncode)
+                if r.stdout:
+                    logger.error("Clone stdout:\n%s", r.stdout[:2000])
+                if r.stderr:
+                    logger.error("Clone stderr:\n%s", r.stderr[:2000])
                 return False
             return True
         except Exception as e:
@@ -142,11 +146,15 @@ class LoogleManager:
             self._run(["lake", "exe", "cache", "get"], timeout=600)
         except Exception as e:
             logger.warning(f"Cache download: {e}")
-        logger.info("Building loogle (this may a few minutes)...")
+        logger.info("Building loogle (this may take a few minutes)...")
         try:
             result = self._run(["lake", "build"], timeout=900)
             if result.returncode != 0:
-                logger.error(f"Build failed: {result.stderr[:1000]}")
+                logger.error("Build failed (exit %s).", result.returncode)
+                if result.stdout:
+                    logger.error("Build stdout:\n%s", result.stdout[:2000])
+                if result.stderr:
+                    logger.error("Build stderr:\n%s", result.stderr[:2000])
             return result.returncode == 0
         except Exception as e:
             logger.error(f"Build error: {e}")
@@ -288,7 +296,13 @@ class LoogleManager:
         if not ok:
             logger.warning(f"Prerequisites: {err}")
             return False
-        if not self._clone_repo() or not self._build_loogle():
+        if not self._clone_repo():
+            return False
+        ok, err = self._check_toolchain_installed()
+        if not ok:
+            logger.warning(err)
+            return False
+        if not self._build_loogle():
             return False
         # Discover project paths before building index
         self._extra_paths = self._discover_project_paths()

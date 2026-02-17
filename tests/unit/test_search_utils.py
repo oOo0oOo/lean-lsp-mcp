@@ -204,6 +204,50 @@ def test_lean_search_exact_match(monkeypatch, reload_search_utils):
     ]
 
 
+def test_lean_search_prioritizes_exact_and_local_results(
+    monkeypatch, reload_search_utils
+):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match(
+            ".lake/packages/mathlib/Mathlib/Foo.lean",
+            "def sampleValue : Nat := 0",
+        ),
+        _make_match("src/Foo/Bar.lean", "def sampleValueExtra : Nat := 0"),
+        _make_match("src/Foo/Baz.lean", "def sampleValue : Nat := 1"),
+    ]
+
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(project_root.resolve()),
+    )
+
+    results = search_utils.lean_local_search(
+        "sampleValue", limit=3, project_root=project_root
+    )
+
+    assert results == [
+        {
+            "name": "sampleValue",
+            "kind": "def",
+            "file": "src/Foo/Baz.lean",
+        },
+        {
+            "name": "sampleValue",
+            "kind": "def",
+            "file": ".lake/packages/mathlib/Mathlib/Foo.lean",
+        },
+        {
+            "name": "sampleValueExtra",
+            "kind": "def",
+            "file": "src/Foo/Bar.lean",
+        },
+    ]
+
+
 def test_lean_search_respects_limit(monkeypatch, reload_search_utils):
     search_utils = reload_search_utils
     project_root = Path("/proj")
@@ -225,14 +269,105 @@ def test_lean_search_respects_limit(monkeypatch, reload_search_utils):
     assert len(results) == 2
 
 
+def test_lean_search_oversamples_before_ranking(monkeypatch, reload_search_utils):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("src/Foo/A.lean", "def sampleValueExtraA : Nat := 0"),
+        _make_match("src/Foo/B.lean", "def sampleValueExtraB : Nat := 0"),
+        _make_match("src/Foo/C.lean", "def sampleValueExtraC : Nat := 0"),
+        _make_match("src/Foo/D.lean", "def sampleValue : Nat := 0"),
+    ]
+
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(project_root.resolve()),
+    )
+
+    results = search_utils.lean_local_search(
+        "sampleValue", limit=1, project_root=project_root
+    )
+
+    assert results == [
+        {
+            "name": "sampleValue",
+            "kind": "def",
+            "file": "src/Foo/D.lean",
+        }
+    ]
+
+
+def test_lean_search_ranks_dotted_queries_by_full_name(
+    monkeypatch, reload_search_utils
+):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("src/Foo/A.lean", "def Nat.succX : Nat := 0"),
+        _make_match("src/Foo/B.lean", "def Nat.succ : Nat := 1"),
+        _make_match("src/Foo/C.lean", "def Prelude.Nat.succExtra : Nat := 2"),
+    ]
+
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(project_root.resolve()),
+    )
+
+    results = search_utils.lean_local_search(
+        "Nat.succ", limit=3, project_root=project_root
+    )
+
+    assert results[0] == {
+        "name": "Nat.succ",
+        "kind": "def",
+        "file": "src/Foo/B.lean",
+    }
+
+
+def test_lean_search_deduplicates_identical_results(monkeypatch, reload_search_utils):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    events = [
+        _make_match("src/Foo/Bar.lean", "def dupName : Nat := 0"),
+        _make_match("src/Foo/Bar.lean", "def dupName : Nat := 0"),
+        _make_match("src/Foo/Baz.lean", "def dupNameExtra : Nat := 0"),
+    ]
+
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(project_root.resolve()),
+    )
+
+    results = search_utils.lean_local_search("dupName", project_root=project_root)
+
+    assert results == [
+        {
+            "name": "dupName",
+            "kind": "def",
+            "file": "src/Foo/Bar.lean",
+        },
+        {
+            "name": "dupNameExtra",
+            "kind": "def",
+            "file": "src/Foo/Baz.lean",
+        },
+    ]
+
+
 def test_lean_search_wait_timeout_only_on_early_termination(
     monkeypatch, reload_search_utils
 ):
     search_utils = reload_search_utils
     project_root = Path("/proj")
     events = [
-        _make_match("src/Foo/Bar.lean", "def my : Nat := 0"),
-        _make_match("src/Foo/Baz.lean", "def my : Nat := 1"),
+        _make_match(f"src/Foo/{idx}.lean", f"def my{idx} : Nat := {idx}")
+        for idx in range(10)
     ]
 
     waits: list[float | None] = []
@@ -247,7 +382,9 @@ def test_lean_search_wait_timeout_only_on_early_termination(
             terminate_calls.append(None)
             return super().terminate()
 
-    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils, "_get_lean_src_search_path", lambda _root=None: None
+    )
     monkeypatch.setattr(
         search_utils,
         "_create_ripgrep_process",
@@ -283,7 +420,9 @@ def test_lean_search_reaps_process_on_parse_error(monkeypatch, reload_search_uti
             calls["kill"] += 1
             return super().kill()
 
-    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils, "_get_lean_src_search_path", lambda _root=None: None
+    )
     monkeypatch.setattr(
         search_utils,
         "_create_ripgrep_process",
@@ -541,8 +680,8 @@ def test_lean_search_strips_colon_from_names(monkeypatch, reload_search_utils):
     results = search_utils.lean_local_search("my", project_root=project_root)
 
     assert len(results) == 2
-    assert results[0]["name"] == "myFunc"
-    assert results[1]["name"] == "myThm"
+    assert {result["name"] for result in results} == {"myFunc", "myThm"}
+    assert all(":" not in result["name"] for result in results)
 
 
 def test_lean_search_uses_cwd_when_project_root_none(monkeypatch, reload_search_utils):
