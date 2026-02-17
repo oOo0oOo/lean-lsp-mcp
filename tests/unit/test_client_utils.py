@@ -11,7 +11,6 @@ from lean_lsp_mcp.client_utils import (
     startup_client,
     valid_lean_project_path,
 )
-from lean_lsp_mcp.utils import LeanToolError
 
 
 class _MockLeanClient:
@@ -28,12 +27,10 @@ class _LifespanContext:
         self,
         lean_project_path: Path | None,
         client: _MockLeanClient | None,
-        strict_project_root: bool = False,
     ) -> None:
         self.lean_project_path = lean_project_path
         self.client = client
         self.file_content_hashes: dict[str, int] = {}
-        self.strict_project_root = strict_project_root
 
 
 class _RequestContext:
@@ -217,14 +214,3 @@ def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> Non
     ctx = _Context(_LifespanContext(project, None))
     resolved = resolve_file_path(ctx, "src/Example.lean")
     assert resolved == target.resolve()
-
-
-def test_resolve_file_path_blocks_escape_in_strict_mode(tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
-    outside = tmp_path / "Outside.lean"
-    outside.write_text("theorem t : True := by trivial")
-
-    ctx = _Context(_LifespanContext(project, None, strict_project_root=True))
-    with pytest.raises(LeanToolError, match="outside configured LEAN_PROJECT_PATH"):
-        resolve_file_path(ctx, str(outside))

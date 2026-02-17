@@ -85,10 +85,8 @@ from lean_lsp_mcp.utils import (
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-_STRICT_PROJECT_ROOT_ENV = "LEAN_MCP_STRICT_PROJECT_ROOT"
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
-_TOOL_DESCRIPTIONS_FILE_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS_FILE"
 
 
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
@@ -133,28 +131,6 @@ def _load_tool_description_overrides() -> dict[str, str]:
         else:
             if not isinstance(payload, dict):
                 logger.warning("%s must be a JSON object.", _TOOL_DESCRIPTIONS_ENV)
-            else:
-                for key, value in payload.items():
-                    if isinstance(key, str) and isinstance(value, str):
-                        overrides[key] = value
-
-    file_path = os.environ.get(_TOOL_DESCRIPTIONS_FILE_ENV, "").strip()
-    if file_path:
-        try:
-            with open(file_path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "Failed reading %s at %s: %s",
-                _TOOL_DESCRIPTIONS_FILE_ENV,
-                file_path,
-                exc,
-            )
-        else:
-            if not isinstance(payload, dict):
-                logger.warning(
-                    "%s must point to a JSON object.", _TOOL_DESCRIPTIONS_FILE_ENV
-                )
             else:
                 for key, value in payload.items():
                     if isinstance(key, str) and isinstance(value, str):
@@ -231,7 +207,6 @@ class AppContext:
     # REPL for efficient multi-attempt execution
     repl: Repl | None = None
     repl_enabled: bool = False
-    strict_project_root: bool = False
 
 
 @asynccontextmanager
@@ -248,13 +223,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path = None
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
-        strict_project_root = _is_truthy_env(os.environ.get(_STRICT_PROJECT_ROOT_ENV))
-        if strict_project_root and lean_project_path is None:
-            logger.warning(
-                "%s is enabled but LEAN_PROJECT_PATH is not set. Strict path checks are inactive.",
-                _STRICT_PROJECT_ROOT_ENV,
-            )
-
         # Initialize local loogle if enabled via env var or CLI
         if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
             logger.info("Local loogle enabled, initializing...")
@@ -303,7 +271,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_local_available=loogle_local_available,
             repl=repl,
             repl_enabled=repl_on,
-            strict_project_root=strict_project_root,
         )
         yield context
     finally:
@@ -410,20 +377,12 @@ async def lsp_build(
 ) -> BuildResult:
     """Build the Lean project and restart LSP. Use only if needed (e.g. new imports)."""
     lifespan = ctx.request_context.lifespan_context
-    strict_root = bool(getattr(lifespan, "strict_project_root", False))
     configured_root = lifespan.lean_project_path
 
     if not lean_project_path:
         lean_project_path_obj = configured_root
     else:
         lean_project_path_obj = Path(lean_project_path).resolve()
-        if strict_root and configured_root is not None:
-            try:
-                lean_project_path_obj.relative_to(configured_root.resolve())
-            except ValueError as exc:
-                raise LeanToolError(
-                    "lean_project_path resolves outside configured LEAN_PROJECT_PATH in strict mode."
-                ) from exc
         lifespan.lean_project_path = lean_project_path_obj
 
     if lean_project_path_obj is None:
@@ -1004,14 +963,6 @@ def declaration_file(
         raise LeanToolError(
             f"Could not open declaration file `{abs_path}` for `{symbol}`."
         )
-    lifespan = ctx.request_context.lifespan_context
-    if lifespan.strict_project_root and lifespan.lean_project_path is not None:
-        try:
-            Path(abs_path).resolve().relative_to(lifespan.lean_project_path.resolve())
-        except ValueError as exc:
-            raise LeanToolError(
-                "Declaration source is outside configured LEAN_PROJECT_PATH in strict mode."
-            ) from exc
 
     file_content = get_file_contents(abs_path)
 
@@ -1249,7 +1200,6 @@ async def local_search(
 
     lifespan = ctx.request_context.lifespan_context
     stored_root = lifespan.lean_project_path
-    strict_root = bool(getattr(lifespan, "strict_project_root", False))
 
     if project_root:
         try:
@@ -1261,13 +1211,6 @@ async def local_search(
             raise LocalSearchError(f"Invalid project root '{project_root}': {exc}")
         if not resolved_root.exists():
             raise LocalSearchError(f"Project root '{project_root}' does not exist.")
-        if strict_root and stored_root is not None:
-            try:
-                resolved_root.relative_to(stored_root.resolve())
-            except ValueError as exc:
-                raise LocalSearchError(
-                    f"Project root '{project_root}' resolves outside configured LEAN_PROJECT_PATH."
-                ) from exc
         lifespan.lean_project_path = resolved_root
     else:
         resolved_root = stored_root

@@ -17,18 +17,22 @@ class DummyClient:
         self.closed_calls += 1
 
 
+@pytest.fixture(autouse=True)
+def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
+    monkeypatch.delenv("LEAN_REPL", raising=False)
+
+
 def _make_ctx(
     rate_limit: dict[str, list[int]] | None = None,
     *,
     lean_project_path: Path | None = None,
-    strict_project_root: bool = False,
 ) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=lean_project_path,
         client=None,
         rate_limit=rate_limit or {"test": []},
         lean_search_available=True,
-        strict_project_root=strict_project_root,
     )
     request_context = types.SimpleNamespace(lifespan_context=context)
     return types.SimpleNamespace(request_context=request_context)
@@ -154,28 +158,22 @@ def test_parse_disabled_tools() -> None:
     }
 
 
-def test_load_tool_description_overrides_inline_and_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_load_tool_description_overrides_inline(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    overrides_file = tmp_path / "tool_descriptions.json"
-    overrides_file.write_text(
-        json.dumps(
-            {
-                "lean_build": "Build tool from file",
-                "lean_goal": "Goal tool from file",
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setenv(
         "LEAN_MCP_TOOL_DESCRIPTIONS",
-        json.dumps({"lean_build": "Build tool from env"}),
+        json.dumps(
+            {
+                "lean_build": "Build tool from env",
+                "lean_goal": "Goal tool from env",
+            }
+        ),
     )
-    monkeypatch.setenv("LEAN_MCP_TOOL_DESCRIPTIONS_FILE", str(overrides_file))
 
     overrides = server._load_tool_description_overrides()
-    assert overrides["lean_build"] == "Build tool from file"
-    assert overrides["lean_goal"] == "Goal tool from file"
+    assert overrides["lean_build"] == "Build tool from env"
+    assert overrides["lean_goal"] == "Goal tool from env"
 
 
 def test_apply_tool_configuration_disables_and_overrides(
@@ -262,26 +260,3 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_local_search_blocks_root_escape_in_strict_mode(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(server, "_RG_AVAILABLE", True)
-
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-    outside_dir = tmp_path / "outside"
-    outside_dir.mkdir()
-
-    ctx = _make_ctx(lean_project_path=project_dir, strict_project_root=True)
-
-    with pytest.raises(server.LocalSearchError) as exc_info:
-        await server.local_search(
-            ctx=ctx,
-            query="foo",
-            project_root=str(outside_dir),
-        )
-
-    assert "outside configured LEAN_PROJECT_PATH" in str(exc_info.value)
