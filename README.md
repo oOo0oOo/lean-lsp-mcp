@@ -487,6 +487,18 @@ Many clients allow the user to disable specific tools manually (e.g. lean_build)
 
 **Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
+You can also disable tools at server startup:
+
+- `LEAN_MCP_DISABLED_TOOLS`: Comma-separated tool names (for example `lean_run_code,lean_build`).
+- `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object to override tool descriptions.
+
+Example:
+
+```bash
+export LEAN_MCP_DISABLED_TOOLS="lean_run_code,lean_build"
+export LEAN_MCP_TOOL_DESCRIPTIONS='{"lean_goal":"Primary proof-state inspection tool."}'
+```
+
 ## MCP Configuration
 
 This MCP server works out-of-the-box without any configuration. However, a few optional settings are available.
@@ -495,7 +507,9 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
-- `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_PROJECT_PATH`: Path to your Lean project root. Relative `file_path` arguments resolve against this root.
+- `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
+- `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` (~5x faster, see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).

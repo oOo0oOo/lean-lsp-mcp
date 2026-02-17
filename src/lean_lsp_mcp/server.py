@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import json
 import logging.config
 import os
 import re
@@ -24,6 +25,7 @@ from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
     infer_project_path,
+    resolve_file_path,
     setup_client_for_file,
     startup_client,
 )
@@ -86,6 +88,8 @@ from lean_lsp_mcp.utils import (
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
+_DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
+_TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
 
 
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
@@ -106,6 +110,57 @@ async def _safe_report_progress(
         await ctx.report_progress(progress=progress, total=total, message=message)
     except Exception:
         return
+
+
+def _is_truthy_env(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_disabled_tools(raw_value: str | None) -> set[str]:
+    if not raw_value:
+        return set()
+    return {name.strip() for name in raw_value.split(",") if name.strip()}
+
+
+def _load_tool_description_overrides() -> dict[str, str]:
+    overrides: dict[str, str] = {}
+
+    inline = os.environ.get(_TOOL_DESCRIPTIONS_ENV, "").strip()
+    if inline:
+        try:
+            payload = json.loads(inline)
+        except json.JSONDecodeError as exc:
+            logger.warning("Invalid %s JSON: %s", _TOOL_DESCRIPTIONS_ENV, exc)
+        else:
+            if not isinstance(payload, dict):
+                logger.warning("%s must be a JSON object.", _TOOL_DESCRIPTIONS_ENV)
+            else:
+                for key, value in payload.items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        overrides[key] = value
+
+    return overrides
+
+
+def apply_tool_configuration(server: FastMCP) -> None:
+    """Apply optional runtime tool configuration from environment variables."""
+    disabled = _parse_disabled_tools(os.environ.get(_DISABLED_TOOLS_ENV))
+    for name in sorted(disabled):
+        tool = server._tool_manager.get_tool(name)
+        if tool is None:
+            logger.warning("Cannot disable unknown tool '%s'", name)
+            continue
+        server.remove_tool(name)
+        logger.info("Disabled tool '%s' via %s", name, _DISABLED_TOOLS_ENV)
+
+    description_overrides = _load_tool_description_overrides()
+    for name, description in description_overrides.items():
+        tool = server._tool_manager.get_tool(name)
+        if tool is None:
+            logger.warning("Cannot override description for unknown tool '%s'", name)
+            continue
+        tool.description = description
+        logger.info("Overrode description for '%s'", name)
 
 
 _LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
@@ -163,6 +218,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     loogle_local_available = False
     repl: Repl | None = None
     repl_on = False
+    context: AppContext | None = None
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -170,7 +226,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path = None
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
-
         # Initialize local loogle if enabled via env var or CLI
         if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
             logger.info("Local loogle enabled, initializing...")
@@ -224,7 +279,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context.client:
+        if context and context.client:
             context.client.close()
 
         if loogle_manager:
@@ -324,11 +379,14 @@ async def lsp_build(
     ] = 20,
 ) -> BuildResult:
     """Build the Lean project and restart LSP. Use only if needed (e.g. new imports)."""
+    lifespan = ctx.request_context.lifespan_context
+    configured_root = lifespan.lean_project_path
+
     if not lean_project_path:
-        lean_project_path_obj = ctx.request_context.lifespan_context.lean_project_path
+        lean_project_path_obj = configured_root
     else:
         lean_project_path_obj = Path(lean_project_path).resolve()
-        ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
+        lifespan.lean_project_path = lean_project_path_obj
 
     if lean_project_path_obj is None:
         raise LeanToolError(
@@ -436,20 +494,28 @@ async def lsp_build(
 @deprecated
 def file_contents(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     annotate_lines: Annotated[bool, Field(description="Add line numbers")] = True,
 ) -> str:
     """DEPRECATED. Get file contents with optional line numbers."""
-    # Infer project path but do not start a client
-    if file_path.endswith(".lean"):
-        infer_project_path(ctx, file_path)  # Silently fails for non-project files
-
     try:
-        data = get_file_contents(file_path)
+        resolved_path = resolve_file_path(ctx, file_path)
+    except LeanToolError as exc:
+        return str(exc)
     except FileNotFoundError:
         return (
             f"File `{file_path}` does not exist. Please check the path and try again."
         )
+
+    # Infer project path but do not start a client
+    if resolved_path.suffix == ".lean":
+        infer_project_path(
+            ctx, str(resolved_path)
+        )  # Silently fails for non-project files
+
+    data = get_file_contents(str(resolved_path))
 
     if annotate_lines:
         data = data.split("\n")
@@ -473,7 +539,9 @@ def file_contents(
 )
 def file_outline(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -564,7 +632,9 @@ def _process_diagnostics(
 )
 def diagnostic_messages(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     start_line: Annotated[
         Optional[int], Field(description="Filter from line", ge=1)
     ] = None,
@@ -629,7 +699,9 @@ def diagnostic_messages(
 )
 def goal(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
         Optional[int],
@@ -689,7 +761,9 @@ def goal(
 )
 def term_goal(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
         Optional[int], Field(description="Column (defaults to end of line)", ge=1)
@@ -736,7 +810,9 @@ def term_goal(
 )
 def hover(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
 ) -> HoverInfo:
@@ -784,7 +860,9 @@ def hover(
 )
 def completions(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     max_completions: Annotated[int, Field(description="Max completions", ge=1)] = 32,
@@ -859,7 +937,9 @@ def completions(
 )
 def declaration_file(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     symbol: Annotated[
         str, Field(description="Symbol (case sensitive, must be in file)")
     ],
@@ -916,7 +996,8 @@ async def _multi_attempt_repl(
         return None
 
     try:
-        content = get_file_contents(file_path)
+        resolved_path = resolve_file_path(ctx, file_path)
+        content = get_file_contents(str(resolved_path))
         if content is None:
             return None
         lines = content.splitlines()
@@ -963,7 +1044,8 @@ def _multi_attempt_lsp(
     snippets: List[str],
 ) -> MultiAttemptResult:
     """Try tactics using LSP file modifications (fallback)."""
-    rel_path = setup_client_for_file(ctx, file_path)
+    resolved_path = str(resolve_file_path(ctx, file_path))
+    rel_path = setup_client_for_file(ctx, resolved_path)
     if not rel_path:
         raise LeanToolError(
             "Invalid Lean file path: Unable to start LSP server or load file"
@@ -971,7 +1053,7 @@ def _multi_attempt_lsp(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    original_content = get_file_contents(file_path)
+    original_content = get_file_contents(resolved_path)
 
     try:
         results: List[AttemptResult] = []
@@ -1019,7 +1101,9 @@ def _multi_attempt_lsp(
 )
 async def multi_attempt(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[
         List[str],
@@ -1134,7 +1218,10 @@ async def local_search(
 
     if project_root:
         try:
-            resolved_root = Path(project_root).expanduser().resolve()
+            root_path = Path(project_root).expanduser()
+            if not root_path.is_absolute() and stored_root is not None:
+                root_path = stored_root / root_path
+            resolved_root = root_path.resolve()
         except OSError as exc:
             raise LocalSearchError(f"Invalid project root '{project_root}': {exc}")
         if not resolved_root.exists():
@@ -1348,7 +1435,9 @@ async def leanfinder(
 @rate_limited("lean_state_search", max_requests=3, per_seconds=30)
 async def state_search(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -1399,7 +1488,9 @@ async def state_search(
 @rate_limited("hammer_premise", max_requests=3, per_seconds=30)
 async def hammer_premise(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 32,
@@ -1519,7 +1610,9 @@ def get_widget_source(
 )
 async def profile_proof(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[
         int, Field(description="Line where theorem starts (1-indexed)", ge=1)
     ],
@@ -1531,20 +1624,18 @@ async def profile_proof(
     """Run `lean --profile` on a theorem. Returns per-line timing and categories."""
     from lean_lsp_mcp.profile_utils import profile_theorem
 
+    file_path_obj = resolve_file_path(ctx, file_path)
+
     # Get project path
     lifespan = ctx.request_context.lifespan_context
     project_path = lifespan.lean_project_path
 
     if not project_path:
-        infer_project_path(ctx, file_path)
+        infer_project_path(ctx, str(file_path_obj))
         project_path = lifespan.lean_project_path
 
     if not project_path:
         raise LeanToolError("Lean project not found")
-
-    file_path_obj = Path(file_path)
-    if not file_path_obj.exists():
-        raise LeanToolError(f"File not found: {file_path}")
 
     try:
         return await profile_theorem(
@@ -1559,4 +1650,5 @@ async def profile_proof(
 
 
 if __name__ == "__main__":
+    apply_tool_configuration(mcp)
     mcp.run()

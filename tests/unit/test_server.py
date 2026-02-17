@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 
@@ -16,9 +17,19 @@ class DummyClient:
         self.closed_calls += 1
 
 
-def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
+@pytest.fixture(autouse=True)
+def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
+    monkeypatch.delenv("LEAN_REPL", raising=False)
+
+
+def _make_ctx(
+    rate_limit: dict[str, list[int]] | None = None,
+    *,
+    lean_project_path: Path | None = None,
+) -> types.SimpleNamespace:
     context = server.AppContext(
-        lean_project_path=None,
+        lean_project_path=lean_project_path,
         client=None,
         rate_limit=rate_limit or {"test": []},
         lean_search_available=True,
@@ -69,6 +80,29 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
     assert dummy_client.closed_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_app_lifespan_init_failure_before_context_does_not_mask_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    class BrokenLoogleManager:
+        def __init__(self, project_path: Path | None = None) -> None:
+            _ = project_path
+
+        def ensure_installed(self) -> bool:
+            raise RuntimeError("loogle setup exploded")
+
+        async def stop(self) -> None:
+            return
+
+    monkeypatch.setattr(server, "LoogleManager", BrokenLoogleManager)
+
+    with pytest.raises(RuntimeError, match="loogle setup exploded"):
+        async with server.app_lifespan(object()):
+            pass
+
+
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
@@ -113,6 +147,63 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert wrapped(ctx=ctx) == "ok"
     assert rate_limit["test"] == [100]
+
+
+def test_parse_disabled_tools() -> None:
+    assert server._parse_disabled_tools(None) == set()
+    assert server._parse_disabled_tools("") == set()
+    assert server._parse_disabled_tools("lean_build, lean_run_code ,,") == {
+        "lean_build",
+        "lean_run_code",
+    }
+
+
+def test_load_tool_description_overrides_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        json.dumps(
+            {
+                "lean_build": "Build tool from env",
+                "lean_goal": "Goal tool from env",
+            }
+        ),
+    )
+
+    overrides = server._load_tool_description_overrides()
+    assert overrides["lean_build"] == "Build tool from env"
+    assert overrides["lean_goal"] == "Goal tool from env"
+
+
+def test_apply_tool_configuration_disables_and_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mcp = server.FastMCP(name="test")
+
+    @mcp.tool("enabled_tool")
+    def enabled_tool() -> str:
+        """enabled description"""
+        return "ok"
+
+    @mcp.tool("removed_tool")
+    def removed_tool() -> str:
+        """removed description"""
+        return "ok"
+
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "removed_tool")
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        json.dumps({"enabled_tool": "overridden description"}),
+    )
+
+    server.apply_tool_configuration(mcp)
+
+    assert mcp._tool_manager.get_tool("removed_tool") is None
+    assert (
+        mcp._tool_manager.get_tool("enabled_tool").description
+        == "overridden description"
+    )
 
 
 @pytest.mark.asyncio
