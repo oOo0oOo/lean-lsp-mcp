@@ -592,25 +592,29 @@ Please be aware of these risks. Feel free to audit the code and report security 
 Build image:
 
 ```bash
-docker build -t lean-lsp-mcp:secure .
+docker build -t lean-lsp-mcp:containerized .
 ```
 
-Run with a mounted project root:
+Run with a mounted project root (read-only source + writable Lake cache):
 
 ```bash
 docker run --rm -i \
-  --network none \
-  -v "$PWD":/workspace \
+  -v "$PWD":/workspace:ro \
+  -v lean-lsp-mcp-lake-cache:/workspace/.lake \
   -e LEAN_PROJECT_PATH=/workspace \
-  -e LEAN_MCP_STRICT_PROJECT_ROOT=true \
-  lean-lsp-mcp:secure
+  lean-lsp-mcp:containerized
 ```
 
 The included Docker image defaults to:
 
 - `LEAN_PROJECT_PATH=/workspace`
-- `LEAN_MCP_STRICT_PROJECT_ROOT=true`
 - `LEAN_MCP_DISABLED_TOOLS=lean_run_code`
+
+Notes:
+
+- `LEAN_MCP_DISABLED_TOOLS` is a startup default and can be overridden by `docker run -e`.
+- Using `--network none` can break tools that require network access (`leansearch`, `loogle`, `leanfinder`, `state_search`, `hammer_premise`) and dependency downloads.
+- The entrypoint exits immediately if `LEAN_PROJECT_PATH` does not exist.
 
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
 
