@@ -213,6 +213,29 @@ class PremiseResults(BaseModel):
     )
 
 
+class WidgetsResult(BaseModel):
+    """Wrapper for widget instances at a position."""
+
+    widgets: List[dict] = Field(
+        default_factory=list, description="Widget instances (id, name, range, props)"
+    )
+
+
+class InteractiveDiagnosticsResult(BaseModel):
+    """Wrapper for interactive diagnostics with embedded widgets."""
+
+    diagnostics: List[dict] = Field(
+        default_factory=list,
+        description="Interactive diagnostic objects with TaggedText messages",
+    )
+
+
+class WidgetSourceResult(BaseModel):
+    """Widget JavaScript source for a given hash."""
+
+    source: dict = Field(description="Widget source data including JavaScript module")
+
+
 class LineProfile(BaseModel):
     """Timing for a single source line."""
 

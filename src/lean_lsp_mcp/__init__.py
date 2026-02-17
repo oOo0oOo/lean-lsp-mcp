@@ -83,4 +83,8 @@ def main():
 
     mcp.settings.host = args.host
     mcp.settings.port = args.port
-    mcp.run(transport=args.transport)
+    try:
+        mcp.run(transport=args.transport)
+    except KeyboardInterrupt:
+        return 130
+    return 0

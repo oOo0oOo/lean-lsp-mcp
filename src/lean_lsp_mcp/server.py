@@ -41,6 +41,7 @@ from lean_lsp_mcp.models import (
     DiagnosticMessage,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
+    InteractiveDiagnosticsResult,
     FileOutline,
     GoalState,
     HoverInfo,
@@ -57,6 +58,8 @@ from lean_lsp_mcp.models import (
     PremiseResults,
     ProofProfileResult,
     RunResult,
+    WidgetSourceResult,
+    WidgetsResult,
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
@@ -606,7 +609,13 @@ def diagnostic_messages(
     declaration_name: Annotated[
         Optional[str], Field(description="Filter to declaration (slow)")
     ] = None,
-) -> DiagnosticsResult:
+    interactive: Annotated[
+        bool,
+        Field(
+            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient, e.g. to extract 'Try This' code suggestions."
+        ),
+    ] = False,
+) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
@@ -627,6 +636,12 @@ def diagnostic_messages(
     # Convert 1-indexed to 0-indexed for leanclient
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
+
+    if interactive:
+        diagnostics = client.get_interactive_diagnostics(
+            rel_path, start_line=start_line_0, end_line=end_line_0
+        )
+        return InteractiveDiagnosticsResult(diagnostics=diagnostics)
 
     result = client.get_diagnostics(
         rel_path,
@@ -1510,6 +1525,65 @@ async def hammer_premise(
     results = await _query_hammer_remote(ctx, goal_state, num_results)
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+
+@mcp.tool(
+    "lean_get_widgets",
+    annotations=ToolAnnotations(
+        title="Get Widgets",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widgets(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> WidgetsResult:
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data — may be large."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    widgets = client.get_widgets(rel_path, line - 1, column - 1)
+    return WidgetsResult(widgets=widgets)
+
+
+@mcp.tool(
+    "lean_get_widget_source",
+    annotations=ToolAnnotations(
+        title="Widget Source",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widget_source(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    javascript_hash: Annotated[
+        str, Field(description="javascriptHash from a widget instance")
+    ],
+) -> WidgetSourceResult:
+    """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    source = client.get_widget_source(
+        rel_path, 0, 0, {"javascriptHash": javascript_hash}
+    )
+    return WidgetSourceResult(source=source)
 
 
 @mcp.tool(
