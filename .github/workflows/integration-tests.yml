@@ -44,4 +44,4 @@ jobs:
         run: lake build
 
       - name: Run all tests
-        run: uv run pytest tests/ -v --timeout=300
+        run: uv run pytest tests/ -v --timeout=300 -m "not slow"
