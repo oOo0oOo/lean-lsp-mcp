@@ -550,57 +550,6 @@ def _process_diagnostics(
     )
 
 
-def _collect_diagnostics_snapshot(
-    client: LeanLSPClient,
-    rel_path: str,
-    start_line: int | None,
-    end_line: int | None,
-    timeout_seconds: float,
-    poll_interval: float,
-) -> tuple[List[Dict], bool]:
-    """Poll diagnostics without using waitForDiagnostics RPC.
-
-    Returns (diagnostics, success). success is False on timeout or fatal errors.
-    """
-    use_range = start_line is not None or end_line is not None
-    deadline = time.monotonic() + timeout_seconds
-
-    while True:
-        with client._opened_files_lock:
-            state = client.opened_files.get(rel_path)
-            if state is not None:
-                ready = (
-                    state.is_line_range_complete(start_line, end_line)
-                    and state.is_ready()
-                    if use_range
-                    else state.is_ready()
-                )
-                if ready:
-                    diagnostics = (
-                        state.filter_diagnostics_by_range(start_line, end_line)
-                        if use_range
-                        else list(state.diagnostics)
-                    )
-                    has_errors = any(d.get("severity") == 1 for d in state.diagnostics)
-                    success = not has_errors and not state.fatal_error
-                    return diagnostics, success
-
-        if time.monotonic() >= deadline:
-            with client._opened_files_lock:
-                state = client.opened_files.get(rel_path)
-                if state is not None:
-                    diagnostics = (
-                        state.filter_diagnostics_by_range(start_line, end_line)
-                        if use_range
-                        else list(state.diagnostics)
-                    )
-                else:
-                    diagnostics = []
-            return diagnostics, False
-
-        time.sleep(poll_interval)
-
-
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -632,17 +581,6 @@ def diagnostic_messages(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    content = get_file_contents(file_path)
-    if content is not None:
-        try:
-            current_content = client.get_file_content(rel_path)
-        except FileNotFoundError:
-            current_content = None
-        try:
-            if current_content != content:
-                client.update_file_content(rel_path, content)
-        except Exception as exc:
-            logger.debug("Failed to sync file content for `%s`: %s", rel_path, exc)
 
     # If declaration_name is provided, get its range and use that for filtering
     if declaration_name:
@@ -655,18 +593,14 @@ def diagnostic_messages(
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
-    timeout_seconds = float(os.environ.get("LEAN_DIAGNOSTICS_TIMEOUT", "30"))
-    poll_interval = float(os.environ.get("LEAN_DIAGNOSTICS_POLL_INTERVAL", "0.05"))
-    diagnostics, success = _collect_diagnostics_snapshot(
-        client,
+    result = client.get_diagnostics(
         rel_path,
-        start_line_0,
-        end_line_0,
-        timeout_seconds=timeout_seconds,
-        poll_interval=poll_interval,
+        start_line=start_line_0,
+        end_line=end_line_0,
+        inactivity_timeout=15.0,
     )
 
-    return _process_diagnostics(diagnostics, success)
+    return _process_diagnostics(result.diagnostics, result.success)
 
 
 @mcp.tool(

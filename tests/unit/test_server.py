@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import types
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -171,62 +169,3 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
-
-
-class DummyDiagState:
-    def __init__(self, diagnostics: list[dict], ready: bool = True) -> None:
-        self.diagnostics = diagnostics
-        self.fatal_error = False
-        self._ready = ready
-        self._range_complete = True
-
-    def is_ready(self, _current_time: float | None = None) -> bool:
-        return self._ready
-
-    def is_line_range_complete(self, _start: int | None, _end: int | None) -> bool:
-        return self._range_complete
-
-    def filter_diagnostics_by_range(
-        self, _start: int | None, _end: int | None
-    ) -> list[dict]:
-        return self.diagnostics
-
-
-class DummyDiagClient:
-    def __init__(self, state: DummyDiagState, rel_path: str) -> None:
-        self._opened_files_lock = threading.Lock()
-        self.opened_files = {rel_path: state}
-
-
-def test_collect_diagnostics_snapshot_ready() -> None:
-    state = DummyDiagState(diagnostics=[{"severity": 2, "message": "ok"}], ready=True)
-    client = DummyDiagClient(state, "Foo.lean")
-    diagnostics, success = server._collect_diagnostics_snapshot(
-        client,
-        "Foo.lean",
-        None,
-        None,
-        timeout_seconds=0.1,
-        poll_interval=0.0,
-    )
-    assert diagnostics == state.diagnostics
-    assert success
-
-
-def test_collect_diagnostics_snapshot_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    state = DummyDiagState(diagnostics=[], ready=False)
-    client = DummyDiagClient(state, "Foo.lean")
-
-    monkeypatch.setattr(server.time, "sleep", lambda _s: None)
-    start = time.monotonic()
-    diagnostics, success = server._collect_diagnostics_snapshot(
-        client,
-        "Foo.lean",
-        None,
-        None,
-        timeout_seconds=0.0,
-        poll_interval=0.0,
-    )
-    assert time.monotonic() >= start
-    assert diagnostics == []
-    assert success is False
