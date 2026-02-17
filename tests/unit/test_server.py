@@ -171,37 +171,39 @@ async def test_local_search_requires_project_root_when_unset(
     assert "does not exist" in str(exc_info.value)
 
 
+class _BaseMultiAttemptClient:
+    def __init__(self) -> None:
+        self.open_calls: list[tuple[str, bool]] = []
+        self.restore_calls: list[tuple[str, str]] = []
+
+    def open_file(
+        self,
+        path: str,
+        dependency_build_mode: str = "never",
+        force_reopen: bool = False,
+    ) -> None:
+        _ = dependency_build_mode
+        self.open_calls.append((path, force_reopen))
+
+    def update_file(self, _path: str, _changes: list[object]) -> None:
+        return
+
+    def get_diagnostics(self, _path: str) -> list[dict]:
+        return []
+
+    def get_goal(self, _path: str, _line: int, _column: int) -> dict:
+        return {}
+
+    def update_file_content(self, path: str, content: str) -> None:
+        self.restore_calls.append((path, content))
+
+
 def test_multi_attempt_force_reopens_after_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeClient:
-        def __init__(self) -> None:
-            self.open_calls: list[tuple[str, bool]] = []
-            self.restore_calls: list[tuple[str, str]] = []
-
-        def open_file(
-            self,
-            path: str,
-            dependency_build_mode: str = "never",
-            force_reopen: bool = False,
-        ) -> None:
-            _ = dependency_build_mode
-            self.open_calls.append((path, force_reopen))
-
-        def update_file(self, _path: str, _changes: list[object]) -> None:
-            return
-
-        def get_diagnostics(self, _path: str) -> list[dict]:
-            return []
-
-        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
-            return {}
-
+    class FakeClient(_BaseMultiAttemptClient):
         def get_file_content(self, _path: str) -> str:
             return "buffer-content"
-
-        def update_file_content(self, path: str, content: str) -> None:
-            self.restore_calls.append((path, content))
 
     fake_client = FakeClient()
     ctx = _make_ctx()
@@ -220,32 +222,9 @@ def test_multi_attempt_force_reopens_after_restore(
 def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeClient:
-        def __init__(self) -> None:
-            self.restore_calls: list[tuple[str, str]] = []
-
-        def open_file(
-            self,
-            path: str,
-            dependency_build_mode: str = "never",
-            force_reopen: bool = False,
-        ) -> None:
-            _ = (path, dependency_build_mode, force_reopen)
-
-        def update_file(self, _path: str, _changes: list[object]) -> None:
-            return
-
-        def get_diagnostics(self, _path: str) -> list[dict]:
-            return []
-
-        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
-            return {}
-
+    class FakeClient(_BaseMultiAttemptClient):
         def get_file_content(self, _path: str) -> str:
             raise RuntimeError("buffer unavailable")
-
-        def update_file_content(self, path: str, content: str) -> None:
-            self.restore_calls.append((path, content))
 
     fake_client = FakeClient()
     ctx = _make_ctx()
