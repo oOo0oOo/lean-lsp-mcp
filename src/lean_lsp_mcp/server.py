@@ -1108,6 +1108,169 @@ class LocalSearchError(Exception):
     pass
 
 
+def _local_search_module_name(file_path: str) -> str:
+    normalized = file_path.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part and part != "."]
+
+    if len(parts) >= 3 and parts[0] == ".lake" and parts[1] == "packages":
+        parts = parts[3:]
+    if parts and parts[0] in {"src", "Source", "source", "lean", "Lean"}:
+        parts = parts[1:]
+
+    if not parts:
+        return file_path
+
+    if parts[-1].endswith(".lean"):
+        parts[-1] = parts[-1][:-5]
+
+    parts = [part for part in parts if part]
+    return ".".join(parts) if parts else file_path
+
+
+def _leansearch_name_field(value: object) -> str:
+    if isinstance(value, list):
+        components = [str(item) for item in value if item is not None]
+        return ".".join(components)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _leansearch_parse_remote_results(
+    payload: object, num_results: int
+) -> List[LeanSearchResult]:
+    entries: List[object] = []
+    if isinstance(payload, list):
+        if payload and isinstance(payload[0], list):
+            entries = payload[0]
+        else:
+            entries = payload
+    elif isinstance(payload, dict):
+        for key in ("results", "items", "hits"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                entries = candidate
+                break
+    if not entries:
+        return []
+
+    parsed: List[LeanSearchResult] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            result = entry
+
+        name = _leansearch_name_field(
+            result.get("name") or result.get("lean_name") or result.get("full_name")
+        )
+        module_name = _leansearch_name_field(
+            result.get("module_name") or result.get("module")
+        )
+        if not name or not module_name:
+            continue
+        parsed.append(
+            LeanSearchResult(
+                name=name,
+                module_name=module_name,
+                kind=result.get("kind"),
+                type=result.get("type") or result.get("signature"),
+            )
+        )
+        if len(parsed) >= num_results:
+            break
+    return parsed
+
+
+def _leansearch_candidate_terms(query: str) -> List[str]:
+    raw_terms = re.findall(r"[A-Za-z0-9_'.]+", query)
+    terms: List[str] = []
+    seen: set[str] = set()
+
+    for term in raw_terms:
+        normalized = term.strip().strip(".").strip("'")
+        if len(normalized) < 2:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append(normalized)
+
+    terms.sort(key=lambda term: (-len(term), term.casefold()))
+    return terms[:4]
+
+
+async def _leansearch_local_fallback(
+    ctx: Context,
+    *,
+    query: str,
+    num_results: int,
+    project_root: str | None,
+) -> List[LeanSearchResult]:
+    if not _RG_AVAILABLE:
+        return []
+
+    lifespan = ctx.request_context.lifespan_context
+    resolved_root: Path | None = lifespan.lean_project_path
+
+    if project_root:
+        try:
+            resolved_root = Path(project_root).expanduser().resolve()
+        except OSError:
+            return []
+        if not resolved_root.exists():
+            return []
+        lifespan.lean_project_path = resolved_root
+
+    if resolved_root is None:
+        return []
+
+    search_terms = _leansearch_candidate_terms(query)
+    if not search_terms:
+        return []
+
+    local_limit = max(num_results * 2, num_results)
+    results: List[LeanSearchResult] = []
+    seen_names: set[tuple[str, str]] = set()
+
+    for term in search_terms:
+        try:
+            matches = await asyncio.to_thread(
+                lean_local_search,
+                query=term,
+                limit=local_limit,
+                project_root=resolved_root,
+            )
+        except Exception:
+            continue
+
+        for match in matches:
+            name = str(match.get("name", "")).strip()
+            kind = str(match.get("kind", "")).strip() or None
+            file_path = str(match.get("file", "")).strip()
+            module_name = _local_search_module_name(file_path)
+            if not name or not module_name:
+                continue
+            dedupe_key = (name, module_name)
+            if dedupe_key in seen_names:
+                continue
+            seen_names.add(dedupe_key)
+            results.append(
+                LeanSearchResult(
+                    name=name,
+                    module_name=module_name,
+                    kind=kind,
+                    type=None,
+                )
+            )
+            if len(results) >= num_results:
+                return results
+    return results
+
+
 @mcp.tool(
     "lean_local_search",
     annotations=ToolAnnotations(
@@ -1178,6 +1341,23 @@ async def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
+    local_fallback: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, fall back to lean_local_search if leansearch.net "
+                "fails or returns no results."
+            )
+        ),
+    ] = True,
+    project_root: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Project root used by local fallback (inferred from context if omitted)."
+            )
+        ),
+    ] = None,
 ) -> LeanSearchResults:
     """Search Mathlib via leansearch.net using natural language.
 
@@ -1197,22 +1377,33 @@ async def leansearch(
     await _safe_report_progress(
         ctx, progress=1, total=10, message="Awaiting response from leansearch.net"
     )
-    results = await _urlopen_json(req, timeout=10)
+    remote_error: Exception | None = None
+    remote_items: List[LeanSearchResult] = []
+    try:
+        remote_payload = await _urlopen_json(req, timeout=10)
+        remote_items = _leansearch_parse_remote_results(remote_payload, num_results)
+    except Exception as exc:
+        remote_error = exc
 
-    if not results or not results[0]:
-        return LeanSearchResults(items=[])
+    if remote_items:
+        return LeanSearchResults(items=remote_items)
 
-    raw_results = [r["result"] for r in results[0][:num_results]]
-    items = [
-        LeanSearchResult(
-            name=".".join(r["name"]),
-            module_name=".".join(r["module_name"]),
-            kind=r.get("kind"),
-            type=r.get("type"),
+    if local_fallback:
+        fallback_items = await _leansearch_local_fallback(
+            ctx,
+            query=query.strip(),
+            num_results=num_results,
+            project_root=project_root,
         )
-        for r in raw_results
-    ]
-    return LeanSearchResults(items=items)
+        if fallback_items:
+            return LeanSearchResults(items=fallback_items)
+
+    if remote_error is not None:
+        raise LeanToolError(
+            f"leansearch.net request failed: {remote_error}"
+        ) from remote_error
+
+    return LeanSearchResults(items=[])
 
 
 @mcp.tool(
