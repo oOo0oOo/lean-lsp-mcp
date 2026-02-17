@@ -971,7 +971,10 @@ def _multi_attempt_lsp(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    original_content = get_file_contents(file_path)
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
 
     try:
         results: List[AttemptResult] = []
@@ -988,6 +991,7 @@ def _multi_attempt_lsp(
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
+            check_lsp_response(goal_result, "get_goal", allow_none=True)
             goals = extract_goals_list(goal_result)
             results.append(
                 AttemptResult(
@@ -1005,6 +1009,16 @@ def _multi_attempt_lsp(
             except Exception as exc:
                 logger.warning(
                     "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
+            try:
+                # Force a disk resync so transient snippet edits do not leak
+                # into subsequent tool calls for already-open documents.
+                client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to force-reopen `%s` after multi_attempt: %s",
+                    rel_path,
+                    exc,
                 )
 
 
