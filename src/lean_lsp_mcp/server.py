@@ -154,50 +154,80 @@ class BuildCoordinator:
         self.mode = mode
         self._lock = asyncio.Lock()
         self._current_task: asyncio.Task | None = None
-        self._waiters: list[asyncio.Future] = []
+        self._task_waiters: dict[asyncio.Task, int] = {}
+        self._superseded_waiters: dict[asyncio.Task, int] = {}
 
     async def run(self, build_factory) -> BuildResult:
         if self.mode == "allow":
             return await build_factory()
 
-        loop = asyncio.get_running_loop()
-        waiter = loop.create_future()
+        join_latest = False
+        while True:
+            task = await self._select_task(build_factory, start_new=not join_latest)
+            await self._register_waiter(task)
+            try:
+                return await task
+            except asyncio.CancelledError:
+                if await self._consume_superseded(task):
+                    return BuildResult(
+                        success=False,
+                        output="",
+                        errors=["Build superseded by newer request."],
+                    )
+                join_latest = True
+                continue
+            except Exception as exc:
+                return BuildResult(success=False, output="", errors=[str(exc)])
+            finally:
+                await self._unregister_waiter(task)
 
+    async def _select_task(self, build_factory, *, start_new: bool) -> asyncio.Task:
         async with self._lock:
-            if self._current_task is None or self._current_task.done():
+            if self._current_task is None:
                 self._current_task = asyncio.create_task(build_factory())
-                self._current_task.add_done_callback(self._handle_completion)
-            else:
-                if self.mode in {"cancel", "share"}:
-                    self._current_task.cancel()
+                return self._current_task
+
+            if start_new and self.mode in {"cancel", "share"}:
+                if not self._current_task.done():
                     if self.mode == "cancel":
-                        self._resolve_waiters(
-                            BuildResult(
-                                success=False,
-                                output="",
-                                errors=["Build superseded by newer request."],
+                        waiters = self._task_waiters.get(self._current_task, 0)
+                        if waiters:
+                            self._superseded_waiters[self._current_task] = (
+                                self._superseded_waiters.get(self._current_task, 0) + waiters
                             )
-                        )
-                    self._current_task = asyncio.create_task(build_factory())
-                    self._current_task.add_done_callback(self._handle_completion)
-            self._waiters.append(waiter)
+                    self._current_task.cancel()
+                self._current_task = asyncio.create_task(build_factory())
+                return self._current_task
 
-        return await waiter
+            if self._current_task.done() and start_new:
+                self._current_task = asyncio.create_task(build_factory())
+            return self._current_task
 
-    def _handle_completion(self, task: asyncio.Task) -> None:
-        try:
-            result = task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            result = BuildResult(success=False, output="", errors=[str(exc)])
-        self._resolve_waiters(result)
+    async def _register_waiter(self, task: asyncio.Task) -> None:
+        async with self._lock:
+            self._task_waiters[task] = self._task_waiters.get(task, 0) + 1
 
-    def _resolve_waiters(self, result: BuildResult) -> None:
-        for waiter in self._waiters:
-            if not waiter.done():
-                waiter.set_result(result)
-        self._waiters.clear()
+    async def _unregister_waiter(self, task: asyncio.Task) -> None:
+        async with self._lock:
+            remaining = self._task_waiters.get(task, 0) - 1
+            if remaining > 0:
+                self._task_waiters[task] = remaining
+                return
+
+            self._task_waiters.pop(task, None)
+            if task.done():
+                self._superseded_waiters.pop(task, None)
+
+    async def _consume_superseded(self, task: asyncio.Task) -> bool:
+        async with self._lock:
+            waiters = self._superseded_waiters.get(task, 0)
+            if waiters <= 0:
+                return False
+            if waiters == 1:
+                self._superseded_waiters.pop(task, None)
+            else:
+                self._superseded_waiters[task] = waiters - 1
+            return True
 
 
 @dataclass
