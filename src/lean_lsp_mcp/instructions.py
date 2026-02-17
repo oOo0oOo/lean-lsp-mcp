@@ -25,12 +25,12 @@ INSTRUCTIONS = """## General Rules
 
 ## Search Decision Tree
 1. "Does X exist locally?" -> lean_local_search
-1. "Find semantically related local declarations" -> lean_local_semantic_search
-2. "I need a lemma that says X" -> lean_leansearch
-3. "Find lemma with type pattern" -> lean_loogle
-4. "What's the Lean name for concept X?" -> lean_leanfinder
-5. "What closes this goal?" -> lean_state_search
-6. "What to feed simp?" -> lean_hammer_premise
+2. "Find semantically related local declarations" -> lean_local_semantic_search
+3. "I need a lemma that says X" -> lean_leansearch
+4. "Find lemma with type pattern" -> lean_loogle
+5. "What's the Lean name for concept X?" -> lean_leanfinder
+6. "What closes this goal?" -> lean_state_search
+7. "What to feed simp?" -> lean_hammer_premise
 
 After finding a name: lean_local_search to verify, lean_hover_info for signature.
 
