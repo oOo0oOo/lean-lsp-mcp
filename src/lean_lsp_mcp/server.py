@@ -550,6 +550,28 @@ def _process_diagnostics(
     )
 
 
+def _file_changed_since_last_diagnostics(
+    ctx: Context,
+    rel_path: str,
+    file_path: str,
+) -> bool:
+    """Return True only when file stat changed since previous diagnostics request."""
+    try:
+        stat = Path(file_path).stat()
+    except OSError:
+        return False
+
+    lifespan = ctx.request_context.lifespan_context
+    cache: dict[str, tuple[int, int]] = getattr(lifespan, "_diagnostics_file_state", {})
+    if not hasattr(lifespan, "_diagnostics_file_state"):
+        lifespan._diagnostics_file_state = cache
+
+    current_state = (stat.st_mtime_ns, stat.st_size)
+    previous_state = cache.get(rel_path)
+    cache[rel_path] = current_state
+    return previous_state is not None and previous_state != current_state
+
+
 @mcp.tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
@@ -593,6 +615,7 @@ def diagnostic_messages(
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
+    file_changed = _file_changed_since_last_diagnostics(ctx, rel_path, file_path)
     result = client.get_diagnostics(
         rel_path,
         start_line=start_line_0,
@@ -600,7 +623,7 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    if not result.diagnostics and result.success:
+    if file_changed and not result.diagnostics and result.success:
         content = get_file_contents(file_path)
         if content and content.strip():
             client.open_file(

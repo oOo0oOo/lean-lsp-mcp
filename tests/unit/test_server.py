@@ -171,7 +171,7 @@ async def test_local_search_requires_project_root_when_unset(
     assert "does not exist" in str(exc_info.value)
 
 
-def test_diagnostic_messages_reopen_on_empty(
+def test_diagnostic_messages_skips_reopen_when_file_unchanged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     file_path = tmp_path / "Foo.lean"
@@ -194,7 +194,53 @@ def test_diagnostic_messages_reopen_on_empty(
             self, path, start_line=None, end_line=None, inactivity_timeout=15.0
         ):
             self.diag_calls += 1
-            if self.diag_calls == 1:
+            return DummyResult([], True)
+
+    dummy_client = DummyClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.lean_project_path = tmp_path
+    ctx.request_context.lifespan_context.client = dummy_client
+
+    monkeypatch.setattr(
+        server, "setup_client_for_file", lambda *_args, **_kwargs: "Foo.lean"
+    )
+
+    first = server.diagnostic_messages(ctx=ctx, file_path=str(file_path))
+    second = server.diagnostic_messages(ctx=ctx, file_path=str(file_path))
+
+    assert first.items == []
+    assert second.items == []
+    assert dummy_client.diag_calls == 2
+    assert dummy_client.open_calls == [
+        ("never", False),
+        ("never", False),
+    ]
+
+
+def test_diagnostic_messages_reopen_on_empty_after_file_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    file_path = tmp_path / "Foo.lean"
+    file_path.write_text("theorem foo : True := by trivial\n", encoding="utf-8")
+
+    class DummyResult:
+        def __init__(self, diagnostics, success):
+            self.diagnostics = diagnostics
+            self.success = success
+
+    class DummyClient:
+        def __init__(self):
+            self.open_calls = []
+            self.diag_calls = 0
+
+        def open_file(self, path, dependency_build_mode="never", force_reopen=False):
+            self.open_calls.append((dependency_build_mode, force_reopen))
+
+        def get_diagnostics(
+            self, path, start_line=None, end_line=None, inactivity_timeout=15.0
+        ):
+            self.diag_calls += 1
+            if self.diag_calls < 4:
                 return DummyResult([], True)
             return DummyResult(
                 [
@@ -219,10 +265,20 @@ def test_diagnostic_messages_reopen_on_empty(
         server, "setup_client_for_file", lambda *_args, **_kwargs: "Foo.lean"
     )
 
+    # Seed cache state with unchanged file calls (no fallback).
+    server.diagnostic_messages(ctx=ctx, file_path=str(file_path))
+    server.diagnostic_messages(ctx=ctx, file_path=str(file_path))
+
+    file_path.write_text(
+        "theorem foo : True := by\n  trivial\n",
+        encoding="utf-8",
+    )
     result = server.diagnostic_messages(ctx=ctx, file_path=str(file_path))
 
     assert len(result.items) == 1
     assert dummy_client.open_calls == [
+        ("never", False),
+        ("never", False),
         ("never", False),
         ("once", True),
     ]
