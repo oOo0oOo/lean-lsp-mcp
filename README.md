@@ -31,7 +31,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
 3. Configure your IDE/Setup
-4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to reduce hallucinations using local search.
+4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) for local search and source scanning (`lean_verify` warnings).
 
 ### 1. Install uv
 
@@ -351,6 +351,23 @@ Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated
     "simp": 35.1,
     "typeclass inference": 4.2
   }
+}
+```
+</details>
+
+#### lean_verify
+
+Check theorem soundness: returns axioms used + optional source pattern scan for `unsafe`, `set_option debug.*`, `@[implemented_by]`, etc. Standard axioms are `propext`, `Classical.choice`, `Quot.sound` — anything else (e.g. `sorryAx`) indicates an unsound proof. Source warnings require [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
+
+<details>
+<summary>Example output (theorem using sorry)</summary>
+
+```json
+{
+  "axioms": ["propext", "sorryAx"],
+  "warnings": [
+    {"line": 5, "pattern": "set_option debug.skipKernelTC"}
+  ]
 }
 ```
 </details>
