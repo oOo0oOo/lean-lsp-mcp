@@ -1165,7 +1165,11 @@ def verify_theorem(
                 for w in scan_warnings(abs_path)
             ]
         else:
-            w = [SourceWarning(line=0, pattern="ripgrep (rg) not installed — warnings unavailable")]
+            w = [
+                SourceWarning(
+                    line=0, pattern="ripgrep (rg) not installed — warnings unavailable"
+                )
+            ]
 
     return VerifyResult(axioms=axioms, warnings=w)
 
