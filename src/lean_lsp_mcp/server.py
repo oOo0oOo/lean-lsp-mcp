@@ -34,6 +34,9 @@ from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
+    CodeAction,
+    CodeActionEdit,
+    CodeActionsResult,
     CompletionItem,
     CompletionsResult,
     DeclarationInfo,
@@ -577,7 +580,7 @@ def diagnostic_messages(
     interactive: Annotated[
         bool,
         Field(
-            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient, e.g. to extract 'Try This' code suggestions."
+            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient. For 'Try This' suggestions, prefer lean_code_actions."
         ),
     ] = False,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
@@ -1461,6 +1464,77 @@ async def hammer_premise(
 
     items = [PremiseResult(name=r["name"]) for r in results]
     return PremiseResults(items=items)
+
+
+@mcp.tool(
+    "lean_code_actions",
+    annotations=ToolAnnotations(
+        title="Code Actions",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def code_actions(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+) -> CodeActionsResult:
+    """Get code actions on a line (TryThis suggestions, refactorings). Returns structured edits."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Get diagnostics on line to discover code action ranges
+    diags = client.get_diagnostics(
+        rel_path, start_line=line - 1, end_line=line - 1, inactivity_timeout=15.0
+    )
+
+    # Query code actions for each diagnostic's range, dedup by title
+    seen: set[str] = set()
+    raw_actions: list[dict] = []
+    for diag in diags.diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if not r:
+            continue
+        s, e = r["start"], r["end"]
+        for action in client.get_code_actions(
+            rel_path, s["line"], s["character"], e["line"], e["character"]
+        ):
+            if action.get("title", "") not in seen:
+                seen.add(action.get("title", ""))
+                raw_actions.append(action)
+
+    # Resolve and convert
+    actions: list[CodeAction] = []
+    for raw in raw_actions:
+        resolved = raw if "edit" in raw else client.get_code_action_resolve(raw)
+        if isinstance(resolved, dict) and "error" in resolved:
+            continue
+        actions.append(
+            CodeAction(
+                title=raw.get("title", ""),
+                is_preferred=raw.get("isPreferred", False),
+                edits=[
+                    CodeActionEdit(
+                        new_text=edit["newText"],
+                        start_line=edit["range"]["start"]["line"] + 1,
+                        start_column=edit["range"]["start"]["character"] + 1,
+                        end_line=edit["range"]["end"]["line"] + 1,
+                        end_column=edit["range"]["end"]["character"] + 1,
+                    )
+                    for dc in resolved.get("edit", {}).get("documentChanges", [])
+                    for edit in dc.get("edits", [])
+                ],
+            )
+        )
+
+    return CodeActionsResult(actions=actions)
 
 
 @mcp.tool(
