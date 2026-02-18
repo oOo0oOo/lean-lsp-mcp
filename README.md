@@ -355,6 +355,10 @@ Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated
 ```
 </details>
 
+#### lean_verify
+
+Check theorem soundness: returns axioms used + optional source pattern scan for `unsafe`, `set_option debug.*`, `@[implemented_by]`, etc.
+
 ### Local Search Tools
 
 #### lean_local_search
