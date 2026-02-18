@@ -109,10 +109,6 @@ async def _safe_report_progress(
         return
 
 
-def _is_truthy_env(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _parse_disabled_tools(raw_value: str | None) -> set[str]:
     if not raw_value:
         return set()
