@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,9 +16,26 @@ class _MockLeanClient:
     def __init__(self, project_path: Path) -> None:
         self.project_path = project_path
         self.closed = False
+        self.opened_files: dict[str, str] = {}
+        self.open_calls: list[tuple[str, bool]] = []
+        self.update_calls: list[tuple[str, str]] = []
 
     def close(self) -> None:
         self.closed = True
+
+    def open_file(self, path: str, force_reopen: bool = False) -> None:
+        self.open_calls.append((path, force_reopen))
+        abs_path = self.project_path / path
+        self.opened_files[path] = abs_path.read_text(encoding="utf-8")
+
+    def get_file_content(self, path: str) -> str:
+        if path not in self.opened_files:
+            raise FileNotFoundError(path)
+        return self.opened_files[path]
+
+    def update_file_content(self, path: str, content: str) -> None:
+        self.update_calls.append((path, content))
+        self.opened_files[path] = content
 
 
 class _LifespanContext:
@@ -201,3 +216,31 @@ def test_startup_client_serializes_concurrent_calls(
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+def test_setup_client_for_file_forces_reopen_on_import_change(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+
+    lean_file = project / "Foo.lean"
+    lean_file.write_text("import Mathlib\n\n#check Nat", encoding="utf-8")
+
+    ctx = _Context(_LifespanContext(None, None))
+
+    rel_path = setup_client_for_file(ctx, str(lean_file))
+    assert rel_path == "Foo.lean"
+
+    client = patched_clients[0]
+    assert client.open_calls == [("Foo.lean", False)]
+    assert client.update_calls == []
+
+    # Change imports: this should force reopen instead of plain didChange update.
+    lean_file.write_text("import Std\n\n#check Nat", encoding="utf-8")
+    rel_path_again = setup_client_for_file(ctx, str(lean_file))
+    assert rel_path_again == "Foo.lean"
+
+    assert ("Foo.lean", True) in client.open_calls
+    assert client.update_calls == []
