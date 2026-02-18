@@ -428,44 +428,6 @@ async def lsp_build(
 
 
 @mcp.tool(
-    "lean_file_contents",
-    annotations=ToolAnnotations(
-        title="File Contents (Deprecated)",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-@deprecated
-def file_contents(
-    ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    annotate_lines: Annotated[bool, Field(description="Add line numbers")] = True,
-) -> str:
-    """DEPRECATED. Get file contents with optional line numbers."""
-    # Infer project path but do not start a client
-    if file_path.endswith(".lean"):
-        infer_project_path(ctx, file_path)  # Silently fails for non-project files
-
-    try:
-        data = get_file_contents(file_path)
-    except FileNotFoundError:
-        return (
-            f"File `{file_path}` does not exist. Please check the path and try again."
-        )
-
-    if annotate_lines:
-        data = data.split("\n")
-        max_digits = len(str(len(data)))
-        annotated = ""
-        for i, line in enumerate(data):
-            annotated += f"{i + 1}{' ' * (max_digits - len(str(i + 1)))}: {line}\n"
-        return annotated
-    else:
-        return data
-
-
-@mcp.tool(
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
