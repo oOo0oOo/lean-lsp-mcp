@@ -315,7 +315,7 @@ Semantic search over local declarations using embeddings. This tool indexes your
 Requires optional dependencies:
 
 ```bash
-uv add --optional semantic-search sentence-transformers numpy
+uv sync --extra semantic-search
 ```
 
 Environment variables:

@@ -1195,6 +1195,12 @@ async def local_semantic_search_tool(
         "yes",
     )
 
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=3,
+        message="Preparing semantic index (first run may take longer)",
+    )
     results = await asyncio.to_thread(
         local_semantic_search,
         query=query.strip(),
@@ -1202,6 +1208,9 @@ async def local_semantic_search_tool(
         limit=limit,
         model_name=model,
         rebuild=force_rebuild,
+    )
+    await _safe_report_progress(
+        ctx, progress=3, total=3, message=f"Semantic search complete ({len(results)} hits)"
     )
 
     items = [

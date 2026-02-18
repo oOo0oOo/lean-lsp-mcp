@@ -25,6 +25,45 @@ def test_check_ripgrep_status_when_rg_available(monkeypatch, reload_search_utils
     assert message == ""
 
 
+def test_list_lean_files_returns_paths(monkeypatch, reload_search_utils):
+    search_utils = reload_search_utils
+    project_root = Path("/proj")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, *, cwd, capture_output, text, check):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        return _DummyCompletedProcess(
+            ["/proj/Foo.lean", "/proj/src/Bar.lean"],
+            returncode=0,
+        )
+
+    monkeypatch.setattr(search_utils.subprocess, "run", fake_run)
+
+    files = search_utils.list_lean_files(project_root)
+
+    assert files == [Path("/proj/Foo.lean"), Path("/proj/src/Bar.lean")]
+    assert captured["cwd"] == str(project_root.resolve())
+    assert "rg" in captured["cmd"]
+    assert "*.lean" in captured["cmd"]
+
+
+def test_list_lean_files_raises_on_ripgrep_error(monkeypatch, reload_search_utils):
+    search_utils = reload_search_utils
+
+    monkeypatch.setattr(
+        search_utils.subprocess,
+        "run",
+        lambda *args, **kwargs: _DummyCompletedProcess([], returncode=2, stderr_text="boom"),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        search_utils.list_lean_files(Path("/proj"))
+
+
 @pytest.mark.parametrize(
     "platform_name, expected_snippets",
     [

@@ -191,3 +191,129 @@ def test_prepare_index_uses_content_hash_for_touched_files(
     assert items == [cached_item]
     assert embeddings is cached_embeddings
     assert len(saved) == 1
+
+
+class _FakeScores(list):
+    def argsort(self):
+        return sorted(range(len(self)), key=lambda idx: self[idx])
+
+
+class _FakeEmbeddings:
+    def __init__(self, rows: list[list[float]]) -> None:
+        self._rows = rows
+
+    def __matmul__(self, vector: list[float]) -> _FakeScores:
+        return _FakeScores(
+            [sum(left * right for left, right in zip(row, vector)) for row in self._rows]
+        )
+
+
+class _FakeNP:
+    @staticmethod
+    def array(value):
+        return value
+
+    @staticmethod
+    def vstack(chunks):
+        merged = []
+        for chunk in chunks:
+            merged.extend(chunk)
+        return merged
+
+
+def test_local_semantic_search_ranks_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [
+        semantic_search.SemanticSearchItem(
+            name="low", kind="def", file="A.lean", line=1, snippet="def low := 0"
+        ),
+        semantic_search.SemanticSearchItem(
+            name="high", kind="def", file="B.lean", line=1, snippet="def high := 0"
+        ),
+        semantic_search.SemanticSearchItem(
+            name="mid", kind="def", file="C.lean", line=1, snippet="def mid := 0"
+        ),
+    ]
+
+    monkeypatch.setattr(
+        semantic_search,
+        "_prepare_index",
+        lambda **_kwargs: (items, _FakeEmbeddings([[0.1], [0.9], [0.4]])),
+    )
+    monkeypatch.setattr(
+        semantic_search,
+        "_load_model",
+        lambda _model_name: type(
+            "_Model",
+            (),
+            {"encode": lambda self, _texts, normalize_embeddings=True: [[1.0]]},
+        )(),
+    )
+    monkeypatch.setattr(semantic_search, "_require_numpy", lambda: _FakeNP)
+
+    results = semantic_search.local_semantic_search(
+        query="def",
+        project_root=Path("/proj"),
+        limit=2,
+        model_name="fake-model",
+        rebuild=False,
+    )
+
+    assert [item.name for item, _score in results] == ["high", "mid"]
+
+
+def test_prepare_index_persists_and_reuses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    file_path = project / "Sample.lean"
+    file_path.write_text("def foo := 1\n", encoding="utf-8")
+    stat = file_path.stat()
+
+    monkeypatch.setattr(
+        semantic_search,
+        "_list_file_states",
+        lambda _project_root: {"Sample.lean": (file_path, stat.st_mtime_ns, stat.st_size)},
+    )
+
+    store: dict[str, tuple[list[semantic_search.SemanticSearchItem], list[list[float]], dict]] = {}
+
+    monkeypatch.setattr(
+        semantic_search,
+        "_load_index",
+        lambda _index_dir, prefix: store.get(prefix),
+    )
+
+    monkeypatch.setattr(
+        semantic_search,
+        "_save_index",
+        lambda _index_dir, prefix, items, embeddings, states: store.__setitem__(
+            prefix, (items, embeddings, states)
+        ),
+    )
+
+    class _Model:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def encode(self, texts, normalize_embeddings=True):
+            self.calls += 1
+            return [[float(i + 1)] for i, _ in enumerate(texts)]
+
+    model = _Model()
+    monkeypatch.setattr(semantic_search, "_load_model", lambda _model_name: model)
+    monkeypatch.setattr(semantic_search, "_require_numpy", lambda: _FakeNP)
+
+    first_items, first_embeddings = semantic_search._prepare_index(
+        project_root=project,
+        model_name="fake-model",
+        rebuild=False,
+    )
+    second_items, second_embeddings = semantic_search._prepare_index(
+        project_root=project,
+        model_name="fake-model",
+        rebuild=False,
+    )
+
+    assert first_items
+    assert model.calls == 1
+    assert [item.name for item in second_items] == [item.name for item in first_items]
+    assert second_embeddings == first_embeddings

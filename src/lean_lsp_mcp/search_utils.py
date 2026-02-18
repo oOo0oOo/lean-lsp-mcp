@@ -14,6 +14,19 @@ from pathlib import Path
 
 
 INSTALL_URL = "https://github.com/BurntSushi/ripgrep#installation"
+LEAN_DECL_KEYWORDS = (
+    "theorem",
+    "lemma",
+    "def",
+    "axiom",
+    "class",
+    "instance",
+    "structure",
+    "inductive",
+    "abbrev",
+    "opaque",
+)
+LEAN_DECL_KEYWORDS_GROUP = "|".join(LEAN_DECL_KEYWORDS)
 
 _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
     "Windows": (
@@ -65,6 +78,36 @@ def check_ripgrep_status() -> tuple[bool, str]:
     return False, "\n".join(lines)
 
 
+def list_lean_files(project_root: Path) -> list[Path]:
+    """Return Lean source files under project root using ripgrep file listing."""
+    root = project_root.resolve()
+
+    command = [
+        "rg",
+        "--files",
+        "--hidden",
+        "-g",
+        "*.lean",
+        "-g",
+        "!.git/**",
+        "-g",
+        "!.lake/build/**",
+        str(root),
+    ]
+
+    completed = subprocess.run(
+        command,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode not in (0, 1):
+        raise RuntimeError(completed.stderr.strip() or "Failed to list Lean files")
+
+    return [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
+
+
 def lean_local_search(
     query: str,
     limit: int = 32,
@@ -74,7 +117,7 @@ def lean_local_search(
     root = (project_root or Path.cwd()).resolve()
 
     pattern = (
-        rf"^\s*(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
+        rf"^\s*(?:{LEAN_DECL_KEYWORDS_GROUP})\s+"
         rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(query)}[A-Za-z0-9_'.]*(?:\s|:)"
     )
 

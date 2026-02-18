@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Iterable
 
-from lean_lsp_mcp.search_utils import check_ripgrep_status
+from lean_lsp_mcp.search_utils import (
+    LEAN_DECL_KEYWORDS_GROUP,
+    check_ripgrep_status,
+    list_lean_files,
+)
 from lean_lsp_mcp.utils import LeanToolError
 
 _DECL_PATTERN = re.compile(
-    r"^\s*(theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+([A-Za-z0-9_'.]+)"
+    rf"^\s*({LEAN_DECL_KEYWORDS_GROUP})\s+([A-Za-z0-9_'.]+)"
 )
 
 
@@ -46,37 +49,6 @@ def _content_hash(value: str) -> str:
 
 def _index_prefix(project_root: Path, model_name: str) -> str:
     return f"{_hash_token(str(project_root))}-{_hash_token(model_name)}"
-
-
-def _list_lean_files(project_root: Path) -> list[Path]:
-    ok, msg = check_ripgrep_status()
-    if not ok:
-        raise LeanToolError(msg)
-
-    command = [
-        "rg",
-        "--files",
-        "--hidden",
-        "-g",
-        "*.lean",
-        "-g",
-        "!.git/**",
-        "-g",
-        "!.lake/build/**",
-        str(project_root),
-    ]
-
-    result = subprocess.run(
-        command,
-        cwd=str(project_root),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode not in (0, 1):
-        raise LeanToolError(result.stderr.strip() or "Failed to list Lean files")
-
-    return [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
 
 
 def _extract_decls_from_text(text: str, rel_file: str) -> list[SemanticSearchItem]:
@@ -112,8 +84,12 @@ def _extract_decls(file_path: Path, project_root: Path) -> Iterable[SemanticSear
 
 
 def _list_file_states(project_root: Path) -> dict[str, tuple[Path, int, int]]:
+    ok, msg = check_ripgrep_status()
+    if not ok:
+        raise LeanToolError(msg)
+
     states: dict[str, tuple[Path, int, int]] = {}
-    for file_path in _list_lean_files(project_root):
+    for file_path in list_lean_files(project_root):
         try:
             stat = file_path.stat()
             rel = str(file_path.relative_to(project_root))

@@ -169,3 +169,44 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_local_semantic_search_reports_progress(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    progress_events: list[tuple[int, int, str]] = []
+
+    async def fake_report(ctx, *, progress: int, total: int, message: str) -> None:
+        progress_events.append((progress, total, message))
+
+    def fake_search(*, query: str, project_root: Path, limit: int, model_name: str, rebuild: bool):
+        assert query == "foo"
+        assert project_root == tmp_path.resolve()
+        assert limit == 5
+        assert model_name == "fake-model"
+        assert rebuild is False
+        item = types.SimpleNamespace(
+            name="foo",
+            kind="def",
+            file="Foo.lean",
+            line=1,
+            snippet="def foo := 1",
+        )
+        return [(item, 0.9)]
+
+    monkeypatch.setattr(server, "_safe_report_progress", fake_report)
+    monkeypatch.setattr(server, "local_semantic_search", fake_search)
+    monkeypatch.setenv("LEAN_SEMANTIC_SEARCH_MODEL", "fake-model")
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.lean_project_path = tmp_path.resolve()
+
+    result = await server.local_semantic_search_tool(ctx=ctx, query=" foo ", limit=5)
+
+    assert len(result.items) == 1
+    assert result.items[0].name == "foo"
+    assert progress_events == [
+        (1, 3, "Preparing semantic index (first run may take longer)"),
+        (3, 3, "Semantic search complete (1 hits)"),
+    ]
