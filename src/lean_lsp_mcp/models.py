@@ -99,6 +99,9 @@ class FileOutline(BaseModel):
     declarations: List[OutlineEntry] = Field(
         default_factory=list, description="Top-level declarations"
     )
+    total_declarations: Optional[int] = Field(
+        None, description="Total count (set when truncated)"
+    )
 
 
 class AttemptResult(BaseModel):

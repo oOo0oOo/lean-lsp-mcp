@@ -77,7 +77,6 @@ from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
     OutputCapture,
     check_lsp_response,
-    deprecated,
     extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
@@ -439,6 +438,9 @@ async def lsp_build(
 def file_outline(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    max_declarations: Annotated[
+        Optional[int], Field(description="Max declarations to return", ge=1)
+    ] = None,
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -448,7 +450,7 @@ def file_outline(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path)
+    return generate_outline_data(client, rel_path, max_declarations)
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
