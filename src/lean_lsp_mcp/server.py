@@ -62,9 +62,11 @@ from lean_lsp_mcp.models import (
     RunResult,
     WidgetSourceResult,
     WidgetsResult,
+    SourceWarning,
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    VerifyResult,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -1083,6 +1085,88 @@ def run_code(
     has_errors = any(d.severity == "error" for d in diagnostics)
 
     return RunResult(success=not has_errors, diagnostics=diagnostics)
+
+
+@mcp.tool(
+    "lean_verify",
+    annotations=ToolAnnotations(
+        title="Verify Theorem",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def verify_theorem(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    theorem_name: Annotated[str, Field(description="Fully qualified theorem name")],
+    warnings: Annotated[
+        bool, Field(description="Scan source for suspicious patterns")
+    ] = True,
+) -> VerifyResult:
+    """Check theorem soundness via axioms + optional source pattern scan."""
+    from lean_lsp_mcp.verify import (
+        check_axiom_errors,
+        make_axiom_check,
+        parse_axioms,
+        scan_warnings,
+    )
+
+    lifespan = ctx.request_context.lifespan_context
+    project_path = lifespan.lean_project_path
+    if project_path is None:
+        infer_project_path(ctx, file_path)
+        project_path = lifespan.lean_project_path
+    if project_path is None:
+        raise LeanToolError("No Lean project found")
+
+    abs_path = Path(file_path)
+    if not abs_path.exists():
+        raise LeanToolError(f"File not found: {file_path}")
+
+    try:
+        rel_path, tmp_path = make_axiom_check(abs_path, project_path, theorem_name)
+    except (ValueError, OSError) as e:
+        raise LeanToolError(str(e))
+
+    client: LeanLSPClient | None = lifespan.client
+    opened = False
+    try:
+        if client is None:
+            startup_client(ctx)
+            client = lifespan.client
+        if client is None:
+            raise LeanToolError("Failed to initialize Lean client")
+        assert client is not None
+        client.open_file(rel_path)
+        opened = True
+        raw = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
+        check_lsp_response(raw, "get_diagnostics")
+    finally:
+        if opened:
+            try:
+                client.close_files([rel_path])
+            except Exception as exc:
+                logger.warning("Failed to close verify temp file: %s", exc)
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    if err := check_axiom_errors(raw):
+        raise LeanToolError(f"Axiom check failed: {err}")
+
+    axioms = parse_axioms(raw)
+    w = (
+        [
+            SourceWarning(line=w["line"], pattern=w["pattern"])
+            for w in scan_warnings(abs_path)
+        ]
+        if warnings and _RG_AVAILABLE
+        else []
+    )
+
+    return VerifyResult(axioms=axioms, warnings=w)
 
 
 class LocalSearchError(Exception):

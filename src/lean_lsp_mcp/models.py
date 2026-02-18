@@ -283,3 +283,19 @@ class CodeActionsResult(BaseModel):
     actions: List[CodeAction] = Field(
         default_factory=list, description="List of available code actions"
     )
+
+
+class SourceWarning(BaseModel):
+    line: int = Field(description="Line number (1-indexed)")
+    pattern: str = Field(description="Matched pattern text")
+
+
+class VerifyResult(BaseModel):
+    axioms: List[str] = Field(
+        default_factory=list,
+        description="Axioms used. Standard 3: propext, Classical.choice, Quot.sound",
+    )
+    warnings: List[SourceWarning] = Field(
+        default_factory=list,
+        description="Suspicious source patterns (if enabled)",
+    )
