@@ -1480,7 +1480,7 @@ def code_actions(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
 ) -> CodeActionsResult:
-    """Get code actions on a line (TryThis suggestions, refactorings). Returns structured edits."""
+    """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(

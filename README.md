@@ -154,7 +154,7 @@ Get the contents of a Lean file, optionally with line number annotations.
 
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. Only use when plain text is insufficient, e.g. to extract "Try This" code suggestions.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
 
 <details>
 <summary>Example output</summary>
@@ -275,6 +275,34 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ⊢ False
 
 ...
+```
+</details>
+
+#### lean_code_actions
+
+Get LSP code actions for a line. Returns resolved edits for "Try This" suggestions (`simp?`, `exact?`, `apply?`) and other quick fixes. The agent applies the edits using its own editing tools.
+
+<details>
+<summary>Example output (line with <code>simp?</code>)</summary>
+
+```json
+{
+  "actions": [
+    {
+      "title": "Try this: simp only [zero_add]",
+      "is_preferred": false,
+      "edits": [
+        {
+          "new_text": "simp only [zero_add]",
+          "start_line": 3,
+          "start_column": 37,
+          "end_line": 3,
+          "end_column": 42
+        }
+      ]
+    }
+  ]
+}
 ```
 </details>
 
