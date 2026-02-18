@@ -15,6 +15,9 @@ def build_mocks():
     ctx = MagicMock()
     ctx.request_context.lifespan_context.lean_project_path = None
     ctx.request_context.lifespan_context.client = None
+    ctx.request_context.lifespan_context.build_coordinator = None
+    ctx.info = AsyncMock()
+    ctx.debug = AsyncMock()
     ctx.report_progress = AsyncMock()
 
     # Simple process for cache (no stdout needed)

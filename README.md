@@ -542,6 +542,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
