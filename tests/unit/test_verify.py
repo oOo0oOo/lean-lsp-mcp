@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+
+import pytest
 
 from lean_lsp_mcp.verify import (
     check_axiom_errors,
@@ -10,6 +13,8 @@ from lean_lsp_mcp.verify import (
     parse_axioms,
     scan_warnings,
 )
+
+_has_rg = shutil.which("rg") is not None
 
 
 class TestParseAxioms:
@@ -82,6 +87,7 @@ class TestMakeAxiomCheck:
 
 
 class TestScanWarnings:
+    @pytest.mark.skipif(not _has_rg, reason="ripgrep not installed")
     def test_finds_patterns(self, tmp_path: Path):
         f = tmp_path / "test.lean"
         f.write_text(

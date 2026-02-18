@@ -1157,14 +1157,15 @@ def verify_theorem(
         raise LeanToolError(f"Axiom check failed: {err}")
 
     axioms = parse_axioms(raw)
-    w = (
-        [
-            SourceWarning(line=w["line"], pattern=w["pattern"])
-            for w in scan_warnings(abs_path)
-        ]
-        if warnings and _RG_AVAILABLE
-        else []
-    )
+    w: list[SourceWarning] = []
+    if warnings:
+        if _RG_AVAILABLE:
+            w = [
+                SourceWarning(line=w["line"], pattern=w["pattern"])
+                for w in scan_warnings(abs_path)
+            ]
+        else:
+            w = [SourceWarning(line=0, pattern="ripgrep (rg) not installed — warnings unavailable")]
 
     return VerifyResult(axioms=axioms, warnings=w)
 
