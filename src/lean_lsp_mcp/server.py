@@ -1573,4 +1573,5 @@ async def profile_proof(
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
     mcp.run()
