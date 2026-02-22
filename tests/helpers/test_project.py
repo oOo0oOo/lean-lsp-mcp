@@ -20,6 +20,9 @@ rev = \"v4.25.0\"
 
 [[lean_lib]]
 name = \"McpTestProject\"
+
+[[lean_lib]]
+name = \"VerifyTest\"
 """
 
 LIB_MAIN_LEAN: Final[str] = """import Mathlib

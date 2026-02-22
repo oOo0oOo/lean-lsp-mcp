@@ -9,3 +9,6 @@ rev = "v4.25.0"
 
 [[lean_lib]]
 name = "McpTestProject"
+
+[[lean_lib]]
+name = "VerifyTest"

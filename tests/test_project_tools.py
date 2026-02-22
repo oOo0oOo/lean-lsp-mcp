@@ -37,16 +37,14 @@ async def test_mathlib_file_roundtrip(
     target_file = _mathlib_file(test_project_path)
 
     async with mcp_client_factory() as mcp_client:
-        # Test reading file contents
-        contents = await mcp_client.call_tool(
-            "lean_file_contents",
+        # Test reading file outline
+        outline = await mcp_client.call_tool(
+            "lean_file_outline",
             {
                 "file_path": str(target_file),
-                "annotate_lines": False,
             },
         )
-        text = result_text(contents)
-        assert "import Mathlib" in text
+        text = result_text(outline)
         assert "Nat" in text
 
         # Test hover on a stable position (line 33: "le := Nat.le" in instance declaration)
