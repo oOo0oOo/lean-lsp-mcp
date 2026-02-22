@@ -89,15 +89,15 @@ class TestMakeAxiomCheck:
         except ValueError:
             pass
 
-    def test_cleans_stale_files(self, tmp_path: Path):
+    def test_does_not_remove_other_verify_temp_files(self, tmp_path: Path):
         proj = tmp_path / "proj"
         proj.mkdir()
         src = proj / "Foo.lean"
         src.write_text("theorem bar : True := trivial\n")
-        stale = proj / "_mcp_verify_deadbeef.lean"
-        stale.write_text("stale")
-        make_axiom_check(src, proj, "bar")
-        assert not stale.exists()
+        _, first_tmp = make_axiom_check(src, proj, "bar")
+        _, second_tmp = make_axiom_check(src, proj, "bar")
+        assert first_tmp.exists()
+        assert second_tmp.exists()
 
 
 class TestScanWarnings:

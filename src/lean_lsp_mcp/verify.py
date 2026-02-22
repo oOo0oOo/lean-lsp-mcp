@@ -29,19 +29,10 @@ _WARNING_PATTERNS: list[str] = [
 _COMBINED_PATTERN = "|".join(f"(?:{p})" for p in _WARNING_PATTERNS)
 
 
-def _cleanup_stale_verify_files(project_path: Path) -> None:
-    for f in project_path.glob("_mcp_verify_*.lean"):
-        try:
-            f.unlink()
-        except OSError:
-            pass
-
-
 def make_axiom_check(
     file_path: Path, project_path: Path, theorem_name: str
 ) -> tuple[str, Path]:
     """Create temp file for axiom checking. Returns (rel_path, abs_path)."""
-    _cleanup_stale_verify_files(project_path)
     rel = file_path.resolve().relative_to(project_path.resolve())
     module = str(rel.with_suffix("")).replace("/", ".").replace("\\", ".")
     rel_path = f"_mcp_verify_{uuid.uuid4().hex}.lean"
