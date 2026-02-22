@@ -231,12 +231,14 @@ def generate_outline_data(
     client.open_file(path)
     content = client.get_file_content(path)
 
-    # Extract imports
-    imports = [
-        line.strip()[7:]
-        for line in content.splitlines()
-        if line.strip().startswith("import ")
-    ]
+    # Extract imports (handles both 'import X' and 'public import X')
+    imports = []
+    for line in content.splitlines():
+        s = line.strip()
+        if s.startswith("public import "):
+            imports.append(s[14:])
+        elif s.startswith("import "):
+            imports.append(s[7:])
 
     symbols = client.get_document_symbols(path)
     if not symbols and not imports:
@@ -289,12 +291,14 @@ def generate_outline(client: LeanLSPClient, path: str) -> str:
     client.open_file(path)
     content = client.get_file_content(path)
 
-    # Extract imports
-    imports = [
-        line.strip()[7:]
-        for line in content.splitlines()
-        if line.strip().startswith("import ")
-    ]
+    # Extract imports (handles both 'import X' and 'public import X')
+    imports = []
+    for line in content.splitlines():
+        s = line.strip()
+        if s.startswith("public import "):
+            imports.append(s[14:])
+        elif s.startswith("import "):
+            imports.append(s[7:])
 
     symbols = client.get_document_symbols(path)
     if not symbols and not imports:

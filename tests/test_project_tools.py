@@ -47,13 +47,13 @@ async def test_mathlib_file_roundtrip(
         text = result_text(outline)
         assert "Nat" in text
 
-        # Test hover on a stable position (line 33: "le := Nat.le" in instance declaration)
+        # Test hover on a stable position (line 35: "le := Nat.le" in instance declaration)
         hover = await mcp_client.call_tool(
             "lean_hover_info",
             {
                 "file_path": str(target_file),
-                "line": 33,
-                "column": 11,  # Position on 'Nat.le'
+                "line": 35,
+                "column": 8,  # Position on 'le'
             },
         )
         hover_text = result_text(hover)
@@ -64,8 +64,8 @@ async def test_mathlib_file_roundtrip(
             "lean_term_goal",
             {
                 "file_path": str(target_file),
-                "line": 33,
-                "column": 11,
+                "line": 35,
+                "column": 8,
             },
         )
         type_text = result_text(term_goal)

@@ -7,7 +7,7 @@ from typing import Final, Sequence
 __all__ = ["ensure_test_project"]
 
 PROJECT_DIRNAME: Final[str] = "test_project"
-LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.25.0\n"
+LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.28.0\n"
 
 LAKEFILE_TOML: Final[str] = """name = \"McpTestProject\"
 version = \"0.1.0\"
@@ -16,7 +16,12 @@ defaultTargets = [\"McpTestProject\"]
 [[require]]
 name = \"mathlib\"
 scope = \"leanprover-community\"
-rev = \"v4.25.0\"
+rev = \"v4.28.0\"
+
+[[require]]
+name = \"REPL\"
+git = \"https://github.com/leanprover-community/repl\"
+rev = \"v4.28.0\"
 
 [[lean_lib]]
 name = \"McpTestProject\"

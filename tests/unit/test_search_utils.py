@@ -566,7 +566,7 @@ def test_lean_search_integration_mathlib(reload_search_utils):
         == {
             "name": "map_mul_right",
             "kind": "theorem",
-            "file": ".lake/packages/mathlib/Mathlib/GroupTheory/MonoidLocalization/Basic.lean",
+            "file": ".lake/packages/mathlib/Mathlib/GroupTheory/MonoidLocalization/Maps.lean",
         }
         for item in results
     )

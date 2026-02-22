@@ -328,7 +328,9 @@ class TestLoogleQuery:
     async def test_start_query_stop(self):
         mgr = LoogleManager()  # real cache dir
         if not mgr.is_installed:
-            pytest.skip("loogle not installed (run: pytest -m slow tests/unit/test_loogle.py)")
+            pytest.skip(
+                "loogle not installed (run: pytest -m slow tests/unit/test_loogle.py)"
+            )
 
         try:
             assert await mgr.start(), "Failed to start loogle"
