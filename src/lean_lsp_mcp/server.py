@@ -157,7 +157,6 @@ _shared_loogle_manager: LoogleManager | None = None
 _shared_loogle_available: bool = False
 _shared_loogle_init_done: bool = False
 _shared_loogle_lock = asyncio.Lock()
-_shared_session_count: int = 0
 
 
 async def _ensure_shared_loogle(
@@ -206,8 +205,6 @@ class AppContext:
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    global _shared_session_count
-
     repl: Repl | None = None
     repl_on = False
 
@@ -222,7 +219,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         loogle_manager, loogle_local_available = await _ensure_shared_loogle(
             lean_project_path
         )
-        _shared_session_count += 1
 
         # Initialize REPL if enabled
         if repl_enabled():
@@ -263,15 +259,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         yield context
     finally:
         logger.info("Closing Lean LSP client")
-        _shared_session_count -= 1
 
         if context.client:
             context.client.close()
-
-        # Only tear down loogle when the *last* session exits
-        if _shared_session_count <= 0 and _shared_loogle_manager:
-            logger.info("Last session closed, stopping shared loogle")
-            await _shared_loogle_manager.stop()
 
         if repl:
             await repl.close()
