@@ -12,7 +12,7 @@ INSTRUCTIONS = """## General Rules
 - **lean_multi_attempt**: Test tactics without editing: `["simp", "ring", "omega"]`
 - **lean_declaration_file**: Get declaration source. Use sparingly (large output).
 - **lean_run_code**: Run standalone snippet. Use rarely.
-- **lean_verify**: Check theorem soundness via axioms + source scan.
+- **lean_verify**: Axiom check + source scan. Use fully qualified name (e.g. `Ns.thm`).
 - **lean_build**: Rebuild + restart LSP. Only if needed (new imports). SLOW!
 - **lean_profile_proof**: Profile a theorem for performance. Shows tactic hotspots. SLOW!
 
