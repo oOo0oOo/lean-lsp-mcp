@@ -62,7 +62,7 @@ async def test_verify_warnings(
             {
                 "file_path": str(verify_file),
                 "theorem_name": "verify_clean",
-                "warnings": True,
+                "scan_source": True,
             },
         )
         data = result_json(result)
@@ -83,7 +83,7 @@ async def test_verify_no_warnings(
             {
                 "file_path": str(verify_file),
                 "theorem_name": "verify_clean",
-                "warnings": False,
+                "scan_source": False,
             },
         )
         data = result_json(result)

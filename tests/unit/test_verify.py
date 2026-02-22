@@ -18,17 +18,21 @@ _has_rg = shutil.which("rg") is not None
 
 
 class TestParseAxioms:
-    def test_standard(self):
+    def test_single_axiom(self):
+        diags = [{"severity": 3, "message": "'x' depends on axioms: [propext]"}]
+        assert parse_axioms(diags) == ["propext"]
+
+    def test_multiple_axioms(self):
         diags = [
             {
                 "severity": 3,
-                "message": "'x' depends on axioms:\n  [propext]\n  [Classical.choice]",
+                "message": "'x' depends on axioms: [propext, Classical.choice]",
             }
         ]
         assert parse_axioms(diags) == ["propext", "Classical.choice"]
 
     def test_sorry(self):
-        diags = [{"severity": 3, "message": "'x' depends on axioms:\n  [sorryAx]"}]
+        diags = [{"severity": 3, "message": "'x' depends on axioms: [sorryAx]"}]
         assert parse_axioms(diags) == ["sorryAx"]
 
     def test_no_axioms(self):
@@ -36,7 +40,7 @@ class TestParseAxioms:
         assert parse_axioms(diags) == []
 
     def test_ignores_non_info(self):
-        diags = [{"severity": 1, "message": "'x' depends on axioms:\n  [sorryAx]"}]
+        diags = [{"severity": 1, "message": "'x' depends on axioms: [sorryAx]"}]
         assert parse_axioms(diags) == []
 
     def test_empty(self):
@@ -84,6 +88,16 @@ class TestMakeAxiomCheck:
             assert False, "Should have raised"
         except ValueError:
             pass
+
+    def test_cleans_stale_files(self, tmp_path: Path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        src = proj / "Foo.lean"
+        src.write_text("theorem bar : True := trivial\n")
+        stale = proj / "_mcp_verify_deadbeef.lean"
+        stale.write_text("stale")
+        make_axiom_check(src, proj, "bar")
+        assert not stale.exists()
 
 
 class TestScanWarnings:

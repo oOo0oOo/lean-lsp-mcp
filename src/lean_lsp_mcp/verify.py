@@ -9,7 +9,7 @@ from pathlib import Path
 
 from orjson import loads as _json_loads
 
-# Patterns that may affect soundness — all warnings, LLM decides risk
+# Patterns that may affect soundness - all warnings, LLM decides risk
 _WARNING_PATTERNS: list[str] = [
     r"set_option\s+debug\.",
     r"\bunsafe\b",
@@ -29,10 +29,19 @@ _WARNING_PATTERNS: list[str] = [
 _COMBINED_PATTERN = "|".join(f"(?:{p})" for p in _WARNING_PATTERNS)
 
 
+def _cleanup_stale_verify_files(project_path: Path) -> None:
+    for f in project_path.glob("_mcp_verify_*.lean"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
 def make_axiom_check(
     file_path: Path, project_path: Path, theorem_name: str
 ) -> tuple[str, Path]:
     """Create temp file for axiom checking. Returns (rel_path, abs_path)."""
+    _cleanup_stale_verify_files(project_path)
     rel = file_path.resolve().relative_to(project_path.resolve())
     module = str(rel.with_suffix("")).replace("/", ".").replace("\\", ".")
     rel_path = f"_mcp_verify_{uuid.uuid4().hex}.lean"
@@ -48,11 +57,8 @@ def parse_axioms(diagnostics: list[dict]) -> list[str]:
         if diag.get("severity") != 3:  # info
             continue
         msg = diag.get("message", "")
-        if "axioms" not in msg:
-            continue
-        for line in msg.splitlines():
-            if m := re.match(r"\s*\[(.+)\]", line):
-                axioms.append(m.group(1))
+        if m := re.search(r"depends on axioms:\s*\[(.+)\]", msg):
+            axioms.extend(a.strip() for a in m.group(1).split(","))
     return axioms
 
 

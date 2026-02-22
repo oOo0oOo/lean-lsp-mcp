@@ -1124,7 +1124,7 @@ def run_code(
     "lean_verify",
     annotations=ToolAnnotations(
         title="Verify Theorem",
-        readOnlyHint=True,
+        readOnlyHint=False,
         idempotentHint=True,
         openWorldHint=False,
     ),
@@ -1132,12 +1132,14 @@ def run_code(
 def verify_theorem(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    theorem_name: Annotated[str, Field(description="Fully qualified theorem name")],
-    warnings: Annotated[
-        bool, Field(description="Scan source for suspicious patterns")
+    theorem_name: Annotated[
+        str, Field(description="Fully qualified name (e.g. `Namespace.theorem`)")
+    ],
+    scan_source: Annotated[
+        bool, Field(description="Scan source file for suspicious patterns")
     ] = True,
 ) -> VerifyResult:
-    """Check theorem soundness via axioms + optional source pattern scan."""
+    """Check theorem axioms + optional source scan. Only scans the given file, not imports."""
     from lean_lsp_mcp.verify import (
         check_axiom_errors,
         make_axiom_check,
@@ -1191,7 +1193,7 @@ def verify_theorem(
 
     axioms = parse_axioms(raw)
     w: list[SourceWarning] = []
-    if warnings:
+    if scan_source:
         if _RG_AVAILABLE:
             w = [
                 SourceWarning(line=w["line"], pattern=w["pattern"])
@@ -1200,7 +1202,7 @@ def verify_theorem(
         else:
             w = [
                 SourceWarning(
-                    line=0, pattern="ripgrep (rg) not installed — warnings unavailable"
+                    line=0, pattern="ripgrep (rg) not installed - warnings unavailable"
                 )
             ]
 
@@ -1638,7 +1640,7 @@ def get_widgets(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
 ) -> WidgetsResult:
-    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data — may be large."""
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
