@@ -77,84 +77,35 @@ class OutputCapture:
         self.captured_output = ""
 
     def __enter__(self):
-        try:
-            self.temp_file = tempfile.NamedTemporaryFile(
-                mode="w+", delete=False, encoding="utf-8"
-            )
-            temp_fd = self.temp_file.fileno()
+        self.temp_file = tempfile.NamedTemporaryFile(
+            mode="w+", delete=False, encoding="utf-8"
+        )
+        temp_fd = self.temp_file.fileno()
 
-            if not _active_transport_is_stdio():
-                self.original_stdout_fd = os.dup(sys.stdout.fileno())
-                os.dup2(temp_fd, sys.stdout.fileno())
+        if not _active_transport_is_stdio():
+            self.original_stdout_fd = os.dup(sys.stdout.fileno())
+            os.dup2(temp_fd, sys.stdout.fileno())
 
-            self.original_stderr_fd = os.dup(sys.stderr.fileno())
-            os.dup2(temp_fd, sys.stderr.fileno())
-            return self
-        except Exception:
-            if self.original_stdout_fd is not None:
-                try:
-                    os.dup2(self.original_stdout_fd, sys.stdout.fileno())
-                except Exception:
-                    pass
-                try:
-                    os.close(self.original_stdout_fd)
-                except Exception:
-                    pass
-                self.original_stdout_fd = None
-
-            if self.original_stderr_fd is not None:
-                try:
-                    os.dup2(self.original_stderr_fd, sys.stderr.fileno())
-                except Exception:
-                    pass
-                try:
-                    os.close(self.original_stderr_fd)
-                except Exception:
-                    pass
-                self.original_stderr_fd = None
-
-            if self.temp_file is not None:
-                temp_name = self.temp_file.name
-                try:
-                    self.temp_file.close()
-                finally:
-                    try:
-                        os.unlink(temp_name)
-                    except FileNotFoundError:
-                        pass
-                self.temp_file = None
-            raise
+        self.original_stderr_fd = os.dup(sys.stderr.fileno())
+        os.dup2(temp_fd, sys.stderr.fileno())
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            if self.original_stdout_fd is not None:
-                os.dup2(self.original_stdout_fd, sys.stdout.fileno())
+        if self.original_stdout_fd is not None:
+            os.dup2(self.original_stdout_fd, sys.stdout.fileno())
+            os.close(self.original_stdout_fd)
 
-            if self.original_stderr_fd is not None:
-                os.dup2(self.original_stderr_fd, sys.stderr.fileno())
+        if self.original_stderr_fd is not None:
+            os.dup2(self.original_stderr_fd, sys.stderr.fileno())
+            os.close(self.original_stderr_fd)
 
-            if self.temp_file is None:
-                return
+        if self.temp_file is not None:
             self.temp_file.flush()
             self.temp_file.seek(0)
             self.captured_output = self.temp_file.read()
-        finally:
-            if self.original_stdout_fd is not None:
-                os.close(self.original_stdout_fd)
-                self.original_stdout_fd = None
-
-            if self.original_stderr_fd is not None:
-                os.close(self.original_stderr_fd)
-                self.original_stderr_fd = None
-
-            if self.temp_file is not None:
-                temp_name = self.temp_file.name
-                self.temp_file.close()
-                try:
-                    os.unlink(temp_name)
-                except FileNotFoundError:
-                    pass
-                self.temp_file = None
+            temp_name = self.temp_file.name
+            self.temp_file.close()
+            os.unlink(temp_name)
 
     def get_output(self):
         return self.captured_output
