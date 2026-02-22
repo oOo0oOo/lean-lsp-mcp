@@ -1,7 +1,6 @@
 import argparse
 import os
 import sys
-from collections.abc import Iterator
 from contextlib import suppress
 
 import anyio
@@ -23,7 +22,8 @@ _TRANSPORT_CLOSE_EXCEPTIONS = (
 )
 
 
-def _iter_nested_exceptions(exc: BaseException) -> Iterator[BaseException]:
+def _is_transport_closed_error(exc: BaseException) -> bool:
+    """Walk exception tree (groups, __cause__, __context__) for transport errors."""
     stack: list[BaseException] = [exc]
     seen: set[int] = set()
 
@@ -32,31 +32,21 @@ def _iter_nested_exceptions(exc: BaseException) -> Iterator[BaseException]:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        yield current
 
-        nested = getattr(current, "exceptions", None)
-        if isinstance(nested, (tuple, list)):
-            stack.extend(
-                nested_exc
-                for nested_exc in nested
-                if isinstance(nested_exc, BaseException)
-            )
-        stack.extend(
-            linked
-            for linked in (current.__cause__, current.__context__)
-            if isinstance(linked, BaseException)
-        )
-
-
-def _is_transport_closed_error(exc: BaseException) -> bool:
-    for current in _iter_nested_exceptions(exc):
         if isinstance(current, _TRANSPORT_CLOSE_EXCEPTIONS):
             return True
-        current_message = str(current).lower()
-        if any(hint in current_message for hint in _TRANSPORT_CLOSE_HINTS):
+        if any(h in str(current).lower() for h in _TRANSPORT_CLOSE_HINTS):
             return True
-    return False
 
+        # Traverse ExceptionGroup-like .exceptions and chained causes
+        nested = getattr(current, "exceptions", None)
+        if isinstance(nested, (tuple, list)):
+            stack.extend(e for e in nested if isinstance(e, BaseException))
+        for linked in (current.__cause__, current.__context__):
+            if isinstance(linked, BaseException):
+                stack.append(linked)
+
+    return False
 
 def _silence_stdout() -> None:
     with suppress(Exception):
