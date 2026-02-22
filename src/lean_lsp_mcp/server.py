@@ -34,6 +34,9 @@ from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
+    CodeAction,
+    CodeActionEdit,
+    CodeActionsResult,
     CompletionItem,
     CompletionsResult,
     DeclarationInfo,
@@ -59,9 +62,11 @@ from lean_lsp_mcp.models import (
     RunResult,
     WidgetSourceResult,
     WidgetsResult,
+    SourceWarning,
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    VerifyResult,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -74,7 +79,6 @@ from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
     OutputCapture,
     check_lsp_response,
-    deprecated,
     extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
@@ -458,44 +462,6 @@ async def lsp_build(
 
 
 @mcp.tool(
-    "lean_file_contents",
-    annotations=ToolAnnotations(
-        title="File Contents (Deprecated)",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-@deprecated
-def file_contents(
-    ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    annotate_lines: Annotated[bool, Field(description="Add line numbers")] = True,
-) -> str:
-    """DEPRECATED. Get file contents with optional line numbers."""
-    # Infer project path but do not start a client
-    if file_path.endswith(".lean"):
-        infer_project_path(ctx, file_path)  # Silently fails for non-project files
-
-    try:
-        data = get_file_contents(file_path)
-    except FileNotFoundError:
-        return (
-            f"File `{file_path}` does not exist. Please check the path and try again."
-        )
-
-    if annotate_lines:
-        data = data.split("\n")
-        max_digits = len(str(len(data)))
-        annotated = ""
-        for i, line in enumerate(data):
-            annotated += f"{i + 1}{' ' * (max_digits - len(str(i + 1)))}: {line}\n"
-        return annotated
-    else:
-        return data
-
-
-@mcp.tool(
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
@@ -507,6 +473,9 @@ def file_contents(
 def file_outline(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    max_declarations: Annotated[
+        Optional[int], Field(description="Max declarations to return", ge=1)
+    ] = None,
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -516,7 +485,7 @@ def file_outline(
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path)
+    return generate_outline_data(client, rel_path, max_declarations)
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
@@ -610,7 +579,7 @@ def diagnostic_messages(
     interactive: Annotated[
         bool,
         Field(
-            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient, e.g. to extract 'Try This' code suggestions."
+            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient. For 'Try This' suggestions, prefer lean_code_actions."
         ),
     ] = False,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
@@ -1004,7 +973,10 @@ def _multi_attempt_lsp(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    original_content = get_file_contents(file_path)
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
 
     try:
         results: List[AttemptResult] = []
@@ -1021,6 +993,7 @@ def _multi_attempt_lsp(
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
+            check_lsp_response(goal_result, "get_goal", allow_none=True)
             goals = extract_goals_list(goal_result)
             results.append(
                 AttemptResult(
@@ -1038,6 +1011,16 @@ def _multi_attempt_lsp(
             except Exception as exc:
                 logger.warning(
                     "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
+            try:
+                # Force a disk resync so transient snippet edits do not leak
+                # into subsequent tool calls for already-open documents.
+                client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to force-reopen `%s` after multi_attempt: %s",
+                    rel_path,
+                    exc,
                 )
 
 
@@ -1135,6 +1118,93 @@ def run_code(
     has_errors = any(d.severity == "error" for d in diagnostics)
 
     return RunResult(success=not has_errors, diagnostics=diagnostics)
+
+
+@mcp.tool(
+    "lean_verify",
+    annotations=ToolAnnotations(
+        title="Verify Theorem",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def verify_theorem(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    theorem_name: Annotated[str, Field(description="Fully qualified theorem name")],
+    warnings: Annotated[
+        bool, Field(description="Scan source for suspicious patterns")
+    ] = True,
+) -> VerifyResult:
+    """Check theorem soundness via axioms + optional source pattern scan."""
+    from lean_lsp_mcp.verify import (
+        check_axiom_errors,
+        make_axiom_check,
+        parse_axioms,
+        scan_warnings,
+    )
+
+    lifespan = ctx.request_context.lifespan_context
+    project_path = lifespan.lean_project_path
+    if project_path is None:
+        infer_project_path(ctx, file_path)
+        project_path = lifespan.lean_project_path
+    if project_path is None:
+        raise LeanToolError("No Lean project found")
+
+    abs_path = Path(file_path)
+    if not abs_path.exists():
+        raise LeanToolError(f"File not found: {file_path}")
+
+    try:
+        rel_path, tmp_path = make_axiom_check(abs_path, project_path, theorem_name)
+    except (ValueError, OSError) as e:
+        raise LeanToolError(str(e))
+
+    client: LeanLSPClient | None = lifespan.client
+    opened = False
+    try:
+        if client is None:
+            startup_client(ctx)
+            client = lifespan.client
+        if client is None:
+            raise LeanToolError("Failed to initialize Lean client")
+        assert client is not None
+        client.open_file(rel_path)
+        opened = True
+        raw = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
+        check_lsp_response(raw, "get_diagnostics")
+    finally:
+        if opened:
+            try:
+                client.close_files([rel_path])
+            except Exception as exc:
+                logger.warning("Failed to close verify temp file: %s", exc)
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    if err := check_axiom_errors(raw):
+        raise LeanToolError(f"Axiom check failed: {err}")
+
+    axioms = parse_axioms(raw)
+    w: list[SourceWarning] = []
+    if warnings:
+        if _RG_AVAILABLE:
+            w = [
+                SourceWarning(line=w["line"], pattern=w["pattern"])
+                for w in scan_warnings(abs_path)
+            ]
+        else:
+            w = [
+                SourceWarning(
+                    line=0, pattern="ripgrep (rg) not installed — warnings unavailable"
+                )
+            ]
+
+    return VerifyResult(axioms=axioms, warnings=w)
 
 
 class LocalSearchError(Exception):
@@ -1483,6 +1553,77 @@ async def hammer_premise(
 
 
 @mcp.tool(
+    "lean_code_actions",
+    annotations=ToolAnnotations(
+        title="Code Actions",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def code_actions(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+) -> CodeActionsResult:
+    """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Get diagnostics on line to discover code action ranges
+    diags = client.get_diagnostics(
+        rel_path, start_line=line - 1, end_line=line - 1, inactivity_timeout=15.0
+    )
+
+    # Query code actions for each diagnostic's range, dedup by title
+    seen: set[str] = set()
+    raw_actions: list[dict] = []
+    for diag in diags.diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if not r:
+            continue
+        s, e = r["start"], r["end"]
+        for action in client.get_code_actions(
+            rel_path, s["line"], s["character"], e["line"], e["character"]
+        ):
+            if action.get("title", "") not in seen:
+                seen.add(action.get("title", ""))
+                raw_actions.append(action)
+
+    # Resolve and convert
+    actions: list[CodeAction] = []
+    for raw in raw_actions:
+        resolved = raw if "edit" in raw else client.get_code_action_resolve(raw)
+        if isinstance(resolved, dict) and "error" in resolved:
+            continue
+        actions.append(
+            CodeAction(
+                title=raw.get("title", ""),
+                is_preferred=raw.get("isPreferred", False),
+                edits=[
+                    CodeActionEdit(
+                        new_text=edit["newText"],
+                        start_line=edit["range"]["start"]["line"] + 1,
+                        start_column=edit["range"]["start"]["character"] + 1,
+                        end_line=edit["range"]["end"]["line"] + 1,
+                        end_column=edit["range"]["end"]["character"] + 1,
+                    )
+                    for dc in resolved.get("edit", {}).get("documentChanges", [])
+                    for edit in dc.get("edits", [])
+                ],
+            )
+        )
+
+    return CodeActionsResult(actions=actions)
+
+
+@mcp.tool(
     "lean_get_widgets",
     annotations=ToolAnnotations(
         title="Get Widgets",
@@ -1592,4 +1733,5 @@ async def profile_proof(
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
     mcp.run()

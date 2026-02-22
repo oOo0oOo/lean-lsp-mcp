@@ -382,7 +382,9 @@ def test_lean_search_wait_timeout_only_on_early_termination(
             terminate_calls.append(None)
             return super().terminate()
 
-    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils, "_get_lean_src_search_path", lambda _root=None: None
+    )
     monkeypatch.setattr(
         search_utils,
         "_create_ripgrep_process",
@@ -418,7 +420,9 @@ def test_lean_search_reaps_process_on_parse_error(monkeypatch, reload_search_uti
             calls["kill"] += 1
             return super().kill()
 
-    monkeypatch.setattr(search_utils, "_get_lean_src_search_path", lambda: None)
+    monkeypatch.setattr(
+        search_utils, "_get_lean_src_search_path", lambda _root=None: None
+    )
     monkeypatch.setattr(
         search_utils,
         "_create_ripgrep_process",

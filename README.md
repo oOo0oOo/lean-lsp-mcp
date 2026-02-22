@@ -31,7 +31,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
 3. Configure your IDE/Setup
-4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to reduce hallucinations using local search.
+4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) for local search and source scanning (`lean_verify` warnings).
 
 ### 1. Install uv
 
@@ -148,13 +148,9 @@ For the local search tool `lean_local_search`, install [ripgrep](https://github.
 
 Get a concise outline of a Lean file showing imports and declarations with type signatures (theorems, definitions, classes, structures).
 
-#### lean_file_contents (DEPRECATED)
-
-Get the contents of a Lean file, optionally with line number annotations.
-
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. Only use when plain text is insufficient, e.g. to extract "Try This" code suggestions.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
 
 <details>
 <summary>Example output</summary>
@@ -278,6 +274,34 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ```
 </details>
 
+#### lean_code_actions
+
+Get LSP code actions for a line. Returns resolved edits for "Try This" suggestions (`simp?`, `exact?`, `apply?`) and other quick fixes. The agent applies the edits using its own editing tools.
+
+<details>
+<summary>Example output (line with <code>simp?</code>)</summary>
+
+```json
+{
+  "actions": [
+    {
+      "title": "Try this: simp only [zero_add]",
+      "is_preferred": false,
+      "edits": [
+        {
+          "new_text": "simp only [zero_add]",
+          "start_line": 3,
+          "start_column": 37,
+          "end_line": 3,
+          "end_column": 42
+        }
+      ]
+    }
+  ]
+}
+```
+</details>
+
 #### lean_get_widgets
 
 Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns raw widget data - may be verbose.
@@ -327,6 +351,23 @@ Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated
     "simp": 35.1,
     "typeclass inference": 4.2
   }
+}
+```
+</details>
+
+#### lean_verify
+
+Check theorem soundness: returns axioms used + optional source pattern scan for `unsafe`, `set_option debug.*`, `@[implemented_by]`, etc. Standard axioms are `propext`, `Classical.choice`, `Quot.sound` — anything else (e.g. `sorryAx`) indicates an unsound proof. Source warnings require [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
+
+<details>
+<summary>Example output (theorem using sorry)</summary>
+
+```json
+{
+  "axioms": ["propext", "sorryAx"],
+  "warnings": [
+    {"line": 5, "pattern": "set_option debug.skipKernelTC"}
+  ]
 }
 ```
 </details>

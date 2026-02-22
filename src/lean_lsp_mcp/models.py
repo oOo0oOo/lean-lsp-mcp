@@ -99,6 +99,9 @@ class FileOutline(BaseModel):
     declarations: List[OutlineEntry] = Field(
         default_factory=list, description="Top-level declarations"
     )
+    total_declarations: Optional[int] = Field(
+        None, description="Total count (set when truncated)"
+    )
 
 
 class AttemptResult(BaseModel):
@@ -253,4 +256,46 @@ class ProofProfileResult(BaseModel):
     )
     categories: dict[str, float] = Field(
         default_factory=dict, description="Cumulative time by category in ms"
+    )
+
+
+class CodeActionEdit(BaseModel):
+    new_text: str = Field(description="Replacement text")
+    start_line: int = Field(description="Start line (1-indexed)")
+    start_column: int = Field(description="Start column (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    end_column: int = Field(description="End column (1-indexed)")
+
+
+class CodeAction(BaseModel):
+    title: str = Field(
+        description="Code action title (e.g. 'Try this: simp only [...])"
+    )
+    is_preferred: bool = Field(description="Whether this is the preferred action")
+    edits: List[CodeActionEdit] = Field(
+        default_factory=list, description="Text edits to apply"
+    )
+
+
+class CodeActionsResult(BaseModel):
+    """Wrapper for code actions at a position."""
+
+    actions: List[CodeAction] = Field(
+        default_factory=list, description="List of available code actions"
+    )
+
+
+class SourceWarning(BaseModel):
+    line: int = Field(description="Line number (1-indexed)")
+    pattern: str = Field(description="Matched pattern text")
+
+
+class VerifyResult(BaseModel):
+    axioms: List[str] = Field(
+        default_factory=list,
+        description="Axioms used. Standard 3: propext, Classical.choice, Quot.sound",
+    )
+    warnings: List[SourceWarning] = Field(
+        default_factory=list,
+        description="Suspicious source patterns (if enabled)",
     )

@@ -198,3 +198,69 @@ async def test_shared_loogle_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     # LoogleManager constructed and started only once
     assert fake_manager.ensure_installed.call_count == 1
     assert fake_manager.start.call_count == 1
+class _BaseMultiAttemptClient:
+    def __init__(self) -> None:
+        self.open_calls: list[tuple[str, bool]] = []
+        self.restore_calls: list[tuple[str, str]] = []
+
+    def open_file(
+        self,
+        path: str,
+        dependency_build_mode: str = "never",
+        force_reopen: bool = False,
+    ) -> None:
+        _ = dependency_build_mode
+        self.open_calls.append((path, force_reopen))
+
+    def update_file(self, _path: str, _changes: list[object]) -> None:
+        return
+
+    def get_diagnostics(self, _path: str) -> list[dict]:
+        return []
+
+    def get_goal(self, _path: str, _line: int, _column: int) -> dict:
+        return {}
+
+    def update_file_content(self, path: str, content: str) -> None:
+        self.restore_calls.append((path, content))
+
+
+def test_multi_attempt_force_reopens_after_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient(_BaseMultiAttemptClient):
+        def get_file_content(self, _path: str) -> str:
+            return "buffer-content"
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    monkeypatch.setattr(server, "get_file_contents", lambda _path: "original")
+
+    result = server._multi_attempt_lsp(ctx, "/abs/Foo.lean", line=1, snippets=[])
+
+    assert result.items == []
+    assert fake_client.restore_calls == [("Foo.lean", "buffer-content")]
+    assert fake_client.open_calls == [("Foo.lean", False), ("Foo.lean", True)]
+
+
+def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient(_BaseMultiAttemptClient):
+        def get_file_content(self, _path: str) -> str:
+            raise RuntimeError("buffer unavailable")
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    monkeypatch.setattr(server, "get_file_contents", lambda _path: "disk-content")
+
+    result = server._multi_attempt_lsp(ctx, "/abs/Foo.lean", line=1, snippets=[])
+
+    assert result.items == []
+    assert fake_client.restore_calls == [("Foo.lean", "disk-content")]

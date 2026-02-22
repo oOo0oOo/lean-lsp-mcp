@@ -38,6 +38,13 @@ class LeanToolError(Exception):
     pass
 
 
+_ACTIVE_TRANSPORT_ENV = "LEAN_LSP_MCP_ACTIVE_TRANSPORT"
+
+
+def _active_transport_is_stdio() -> bool:
+    return os.environ.get(_ACTIVE_TRANSPORT_ENV, "").strip().lower() == "stdio"
+
+
 def check_lsp_response(
     response: Any, operation: str, *, allow_none: bool = False
 ) -> Any:
@@ -64,8 +71,8 @@ class OutputCapture:
     """Capture any output to stdout and stderr at the file descriptor level."""
 
     def __init__(self):
-        self.original_stdout_fd = None
-        self.original_stderr_fd = None
+        self.original_stdout_fd: int | None = None
+        self.original_stderr_fd: int | None = None
         self.temp_file = None
         self.captured_output = ""
 
@@ -73,23 +80,32 @@ class OutputCapture:
         self.temp_file = tempfile.NamedTemporaryFile(
             mode="w+", delete=False, encoding="utf-8"
         )
-        self.original_stdout_fd = os.dup(sys.stdout.fileno())
+        temp_fd = self.temp_file.fileno()
+
+        if not _active_transport_is_stdio():
+            self.original_stdout_fd = os.dup(sys.stdout.fileno())
+            os.dup2(temp_fd, sys.stdout.fileno())
+
         self.original_stderr_fd = os.dup(sys.stderr.fileno())
-        os.dup2(self.temp_file.fileno(), sys.stdout.fileno())
-        os.dup2(self.temp_file.fileno(), sys.stderr.fileno())
+        os.dup2(temp_fd, sys.stderr.fileno())
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        os.dup2(self.original_stdout_fd, sys.stdout.fileno())
-        os.dup2(self.original_stderr_fd, sys.stderr.fileno())
-        os.close(self.original_stdout_fd)
-        os.close(self.original_stderr_fd)
+        if self.original_stdout_fd is not None:
+            os.dup2(self.original_stdout_fd, sys.stdout.fileno())
+            os.close(self.original_stdout_fd)
 
-        self.temp_file.flush()
-        self.temp_file.seek(0)
-        self.captured_output = self.temp_file.read()
-        self.temp_file.close()
-        os.unlink(self.temp_file.name)
+        if self.original_stderr_fd is not None:
+            os.dup2(self.original_stderr_fd, sys.stderr.fileno())
+            os.close(self.original_stderr_fd)
+
+        if self.temp_file is not None:
+            self.temp_file.flush()
+            self.temp_file.seek(0)
+            self.captured_output = self.temp_file.read()
+            temp_name = self.temp_file.name
+            self.temp_file.close()
+            os.unlink(temp_name)
 
     def get_output(self):
         return self.captured_output

@@ -224,7 +224,9 @@ def _build_outline_entry(
     )
 
 
-def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
+def generate_outline_data(
+    client: LeanLSPClient, path: str, max_declarations: int | None = None
+) -> FileOutline:
     """Generate structured outline data for a Lean file."""
     client.open_file(path)
     content = client.get_file_content(path)
@@ -275,7 +277,11 @@ def generate_outline_data(client: LeanLSPClient, path: str) -> FileOutline:
             if entry:
                 declarations.append(entry)
 
-    return FileOutline(imports=imports, declarations=declarations)
+    outline = FileOutline(imports=imports, declarations=declarations)
+    if max_declarations and len(declarations) > max_declarations:
+        outline.total_declarations = len(declarations)
+        outline.declarations = declarations[:max_declarations]
+    return outline
 
 
 def generate_outline(client: LeanLSPClient, path: str) -> str:

@@ -1,6 +1,6 @@
 [project]
 name = "lean-lsp-mcp"
-version = "0.21.0"
+version = "0.22.0"
 description = "Lean Theorem Prover MCP"
 authors = [{ name = "Oliver Dressler", email = "hey@oli.show" }]
 readme = "README.md"
@@ -14,7 +14,7 @@ Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
 [project.optional-dependencies]
 yaml = ["PyYAML>=6.0"]
 lint = ["ruff>=0.2.0"]
-dev = ["ruff>=0.2.0", "pytest>=8.3", "anyio>=4.4", "pytest-asyncio>=0.23", "pytest-timeout>=2.3"]
+dev = ["ruff>=0.2.0", "pytest>=8.3", "anyio>=4.12.1", "pytest-asyncio>=0.23", "pytest-timeout>=2.3"]
 
 [tool.ruff]
 exclude = [
