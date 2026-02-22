@@ -681,6 +681,8 @@ uv run pytest tests
 
 - Ax-Prover: A Deep Reasoning Agentic Framework for Theorem Proving in Mathematics and Quantum Physics [arxiv](https://arxiv.org/abs/2510.12787)
 - Numina-Lean-Agent: An Open and General Agentic Reasoning System for Formal Mathematics [arxiv](https://arxiv.org/abs/2601.14027) [github](https://github.com/project-numina/numina-lean-agent)
+- MerLean: An Agentic Framework for Autoformalization in Quantum Computation [arxiv](https://arxiv.org/pdf/2602.16554)
+- M2F: Automated Formalization of Mathematical Literature at Scale [arxiv](https://arxiv.org/pdf/2602.17016)
 - A Group-Theoretic Approach to Shannon Capacity of Graphs and a Limit Theorem from Lattice Packings [github](https://github.com/jzuiddam/GroupTheoreticShannonCapacity/)
 
 ## Talks
