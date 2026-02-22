@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -169,6 +170,34 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_shared_loogle_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two calls to _ensure_shared_loogle return the same manager instance."""
+    # Reset shared state
+    server._shared_loogle_init_done = False
+    server._shared_loogle_manager = None
+    server._shared_loogle_available = False
+
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    fake_manager = MagicMock()
+    fake_manager.ensure_installed.return_value = True
+    fake_manager.start = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
+
+    mgr1, avail1 = await server._ensure_shared_loogle(None)
+    mgr2, avail2 = await server._ensure_shared_loogle(None)
+
+    assert mgr1 is mgr2
+    assert mgr1 is fake_manager
+    assert avail1 is True
+    assert avail2 is True
+    # LoogleManager constructed and started only once
+    assert fake_manager.ensure_installed.call_count == 1
+    assert fake_manager.start.call_count == 1
 
 
 class _BaseMultiAttemptClient:
