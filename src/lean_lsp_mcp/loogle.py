@@ -118,8 +118,8 @@ class LoogleManager:
         if self.repo_dir.exists():
             return True
         logger.info(f"Cloning loogle to {self.repo_dir}...")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
             r = self._run(
                 ["git", "clone", "--depth", "1", self.REPO_URL, str(self.repo_dir)],
                 cwd=self.cache_dir,
@@ -132,6 +132,9 @@ class LoogleManager:
                     logger.error("Clone stderr:\n%s", r.stderr[:2000])
                 return False
             return True
+        except OSError as e:
+            logger.error("Clone setup error: %s", e)
+            return False
         except Exception as e:
             logger.error(f"Clone error: {e}")
             return False
