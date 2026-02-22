@@ -183,19 +183,21 @@ async def _ensure_shared_loogle(
 
         try:
             logger.info("Local loogle enabled, initializing (shared)...")
-            if _shared_loogle_manager is None:
-                _shared_loogle_manager = LoogleManager(project_path=lean_project_path)
-            if _shared_loogle_manager.ensure_installed():
-                if await _shared_loogle_manager.start():
-                    _shared_loogle_available = True
-                    _shared_loogle_init_done = True
-                    logger.info("Shared local loogle started successfully")
-                else:
-                    _shared_loogle_available = False
-                    logger.warning("Local loogle failed to start, will use remote API")
+            manager = _shared_loogle_manager
+            if manager is None:
+                manager = LoogleManager(project_path=lean_project_path)
+                _shared_loogle_manager = manager
+            installed = manager.ensure_installed()
+            if installed and await manager.start():
+                _shared_loogle_available = True
+                _shared_loogle_init_done = True
+                logger.info("Shared local loogle started successfully")
             else:
                 _shared_loogle_available = False
-                logger.warning("Local loogle installation failed, will use remote API")
+                if installed:
+                    logger.warning("Local loogle failed to start, will use remote API")
+                else:
+                    logger.warning("Local loogle installation failed, will use remote API")
         except Exception:
             _shared_loogle_available = False
             logger.exception("Local loogle initialization failed, will retry later")
