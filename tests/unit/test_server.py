@@ -79,11 +79,9 @@ async def test_app_lifespan_preserves_startup_error(
 
     monkeypatch.setattr(server, "_ensure_shared_loogle", boom)
 
-    with pytest.raises(RuntimeError, match="startup boom") as exc_info:
+    with pytest.raises(RuntimeError, match="startup boom"):
         async with server.app_lifespan(object()):
             pass
-
-    assert not isinstance(exc_info.value, UnboundLocalError)
 
 
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
