@@ -9,7 +9,7 @@ from pathlib import Path
 
 from orjson import loads as _json_loads
 
-# Patterns that may affect soundness — all warnings, LLM decides risk
+# Patterns that may affect soundness - all warnings, LLM decides risk
 _WARNING_PATTERNS: list[str] = [
     r"set_option\s+debug\.",
     r"\bunsafe\b",

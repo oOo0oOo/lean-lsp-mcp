@@ -1200,7 +1200,7 @@ def verify_theorem(
         else:
             w = [
                 SourceWarning(
-                    line=0, pattern="ripgrep (rg) not installed — warnings unavailable"
+                    line=0, pattern="ripgrep (rg) not installed - warnings unavailable"
                 )
             ]
 
@@ -1638,7 +1638,7 @@ def get_widgets(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
 ) -> WidgetsResult:
-    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data — may be large."""
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
