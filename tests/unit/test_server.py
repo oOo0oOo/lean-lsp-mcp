@@ -198,6 +198,8 @@ async def test_shared_loogle_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     # LoogleManager constructed and started only once
     assert fake_manager.ensure_installed.call_count == 1
     assert fake_manager.start.call_count == 1
+
+
 class _BaseMultiAttemptClient:
     def __init__(self) -> None:
         self.open_calls: list[tuple[str, bool]] = []
