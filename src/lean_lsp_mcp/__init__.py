@@ -48,6 +48,7 @@ def _is_transport_closed_error(exc: BaseException) -> bool:
 
     return False
 
+
 def _silence_stdout() -> None:
     with suppress(Exception):
         sys.stdout.flush()
