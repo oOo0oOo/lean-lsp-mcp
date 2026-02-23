@@ -12,6 +12,8 @@ from lean_lsp_mcp.utils import OutputCapture
 
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
+AUTO_BUILD_ENV = "LEAN_LSP_AUTO_BUILD"
+_AUTO_BUILD_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def startup_client(ctx: Context):
@@ -38,14 +40,63 @@ def startup_client(ctx: Context):
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
         prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
-        with OutputCapture() as output:
-            client = LeanLSPClient(
-                lean_project_path, initial_build=False, prevent_cache_get=prevent_cache
+
+        startup_capture = OutputCapture()
+        try:
+            with startup_capture:
+                client = LeanLSPClient(
+                    lean_project_path,
+                    initial_build=False,
+                    prevent_cache_get=prevent_cache,
+                )
+        except Exception as first_error:
+            startup_output = startup_capture.get_output().strip()
+            auto_build_raw = os.environ.get(AUTO_BUILD_ENV, "1").strip().lower()
+            auto_build_enabled = auto_build_raw not in _AUTO_BUILD_FALSE_VALUES
+            if not auto_build_enabled:
+                msg = (
+                    "Failed to start Lean language server. "
+                    "Run `lake build` in your project manually and try again."
+                )
+                if startup_output:
+                    msg = f"{msg}\n\nStartup output:\n{startup_output}"
+                raise RuntimeError(msg) from first_error
+
+            logger.warning(
+                "Initial Lean startup failed (%s). Retrying with initial build; set %s=0 to disable.",
+                first_error,
+                AUTO_BUILD_ENV,
             )
-            logger.info(f"Connected to Lean language server at {lean_project_path}")
-        build_output = output.get_output()
-        if build_output:
-            logger.debug(f"Build output: {build_output}")
+            build_capture = OutputCapture()
+            try:
+                with build_capture:
+                    client = LeanLSPClient(
+                        lean_project_path,
+                        initial_build=True,
+                        prevent_cache_get=prevent_cache,
+                    )
+            except Exception as retry_error:
+                retry_output = build_capture.get_output().strip()
+                msg = (
+                    "Failed to start Lean language server after retry with initial build.\n"
+                    f"First attempt error: {first_error}\n"
+                    f"Retry error: {retry_error}\n"
+                    "Try running `lake build` manually in your project."
+                )
+                if startup_output:
+                    msg = f"{msg}\n\nStartup output:\n{startup_output}"
+                if retry_output:
+                    msg = f"{msg}\n\nRetry output:\n{retry_output}"
+                raise RuntimeError(msg) from retry_error
+            build_output = build_capture.get_output().strip()
+            if build_output:
+                logger.info("Initial build output:\n%s", build_output)
+        else:
+            startup_output = startup_capture.get_output().strip()
+            if startup_output:
+                logger.debug("Lean startup output:\n%s", startup_output)
+
+        logger.info(f"Connected to Lean language server at {lean_project_path}")
         ctx.request_context.lifespan_context.client = client
 
 
