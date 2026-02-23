@@ -93,6 +93,7 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert dummy_client.closed_calls == 1
 
+
 @pytest.mark.asyncio
 async def test_app_lifespan_suppresses_client_close_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -142,6 +143,7 @@ async def test_app_lifespan_preserves_startup_error(
     with pytest.raises(RuntimeError, match="startup boom"):
         async with server.app_lifespan(object()):
             pass
+
 
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])

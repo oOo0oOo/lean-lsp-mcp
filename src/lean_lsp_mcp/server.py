@@ -269,7 +269,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             try:
                 context.client.close()
             except Exception:
-                logger.exception("Lean client close failed during app_lifespan teardown")
+                logger.exception(
+                    "Lean client close failed during app_lifespan teardown"
+                )
 
         if repl:
             try:
