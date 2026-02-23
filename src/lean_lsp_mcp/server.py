@@ -264,11 +264,17 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context.client:
-            context.client.close()
+        if context and context.client:
+            try:
+                context.client.close()
+            except Exception:
+                logger.exception("Lean client close failed during app_lifespan teardown")
 
         if repl:
-            await repl.close()
+            try:
+                await repl.close()
+            except Exception:
+                logger.exception("REPL close failed during app_lifespan teardown")
 
 
 mcp_kwargs = dict(
@@ -379,7 +385,10 @@ async def lsp_build(
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
             ctx.request_context.lifespan_context.client = None
-            client.close()
+            try:
+                client.close()
+            except Exception:
+                logger.exception("Lean client close failed during lsp_build restart")
 
         if clean:
             await ctx.report_progress(
