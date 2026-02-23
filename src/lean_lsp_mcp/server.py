@@ -211,6 +211,7 @@ class AppContext:
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
     repl_on = False
+    context: AppContext | None = None
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -264,7 +265,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context and context.client:
+        if context is not None and context.client:
             try:
                 context.client.close()
             except Exception:
