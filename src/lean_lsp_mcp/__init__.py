@@ -4,6 +4,7 @@ import sys
 from contextlib import suppress
 
 import anyio
+from lean_lsp_mcp.client_utils import infer_project_path
 from lean_lsp_mcp.server import mcp
 
 _TRANSPORT_CLOSE_HINTS = (
@@ -79,6 +80,13 @@ def main():
         help="Host port for transport",
     )
     parser.add_argument(
+        "--lean-project-path",
+        type=str,
+        help=(
+            "Path to a Lean project root or to a file/dir inside it."
+        ),
+    )
+    parser.add_argument(
         "--loogle-local",
         action="store_true",
         help="Enable local loogle (auto-installs on first run, ~5-10 min). "
@@ -102,6 +110,10 @@ def main():
     args = parser.parse_args()
 
     # Set env vars from CLI args (CLI takes precedence over env vars)
+    if args.lean_project_path:
+        project_path = infer_project_path(args.lean_project_path)
+        if project_path is not None:
+            os.environ["LEAN_PROJECT_PATH"] = str(project_path)
     if args.loogle_local:
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:
