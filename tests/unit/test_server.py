@@ -17,6 +17,30 @@ class DummyClient:
         self.closed_calls += 1
 
 
+class _FailingCloseClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise PermissionError("operation not permitted")
+
+
+class _FailingRepl:
+    instances: list["_FailingRepl"] = []
+
+    def __init__(self, project_dir: str, repl_path: str) -> None:
+        self.timeout = 60
+        self.close_calls = 0
+        self.project_dir = project_dir
+        self.repl_path = repl_path
+        self.__class__.instances.append(self)
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        raise RuntimeError("close boom")
+
+
 def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
@@ -68,6 +92,43 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
         context.client = dummy_client
 
     assert dummy_client.closed_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_suppresses_client_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
+
+    dummy_client = _FailingCloseClient()
+
+    async with server.app_lifespan(object()) as context:
+        context.client = dummy_client
+
+    assert dummy_client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_suppresses_repl_close_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _FailingRepl.instances.clear()
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
+    monkeypatch.setattr(server, "repl_enabled", lambda: True)
+    monkeypatch.setattr(
+        "lean_lsp_mcp.repl.find_repl_binary",
+        lambda _path: "/tmp/repl",
+    )
+    monkeypatch.setattr(server, "Repl", _FailingRepl)
+
+    async with server.app_lifespan(object()) as context:
+        assert context.repl is not None
+
+    assert len(_FailingRepl.instances) == 1
+    assert _FailingRepl.instances[0].close_calls == 1
 
 
 @pytest.mark.asyncio
