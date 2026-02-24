@@ -43,6 +43,27 @@ class TestParseAxioms:
         diags = [{"severity": 1, "message": "'x' depends on axioms: [sorryAx]"}]
         assert parse_axioms(diags) == []
 
+    def test_multiline_axioms(self):
+        """Long declaration names cause #print axioms to wrap across lines."""
+        diags = [
+            {
+                "severity": 3,
+                "message": (
+                    "'Foo.integralTensorPower_coherentState_eq'"
+                    " depends on axioms: [propext,\n"
+                    " sorryAx,\n"
+                    " Classical.choice,\n"
+                    " Quot.sound]"
+                ),
+            }
+        ]
+        assert parse_axioms(diags) == [
+            "propext",
+            "sorryAx",
+            "Classical.choice",
+            "Quot.sound",
+        ]
+
     def test_empty(self):
         assert parse_axioms([]) == []
 
