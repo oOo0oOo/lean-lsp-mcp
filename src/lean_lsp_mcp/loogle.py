@@ -26,11 +26,20 @@ def get_cache_dir() -> Path:
 
 
 def loogle_remote(query: str, num_results: int) -> list[dict] | str:
-    """Query the remote loogle API."""
+    """Query the remote loogle API.
+
+    Set LOOGLE_URL to use a self-hosted instance (e.g. vvuq-mcp).
+    Set LOOGLE_API_KEY for authenticated endpoints.
+    """
+    base = os.environ.get("LOOGLE_URL", "https://loogle.lean-lang.org")
     try:
+        headers = {"User-Agent": "lean-lsp-mcp/0.1"}
+        api_key = os.environ.get("LOOGLE_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
         req = urllib.request.Request(
-            f"https://loogle.lean-lang.org/json?q={urllib.parse.quote(query)}",
-            headers={"User-Agent": "lean-lsp-mcp/0.1"},
+            f"{base}/json?q={urllib.parse.quote(query)}",
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=20) as response:
             results = orjson.loads(response.read())
