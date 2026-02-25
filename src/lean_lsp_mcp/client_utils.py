@@ -65,27 +65,29 @@ def valid_lean_project_path(path: Path | str) -> bool:
     return (path_obj / "lean-toolchain").is_file()
 
 
-def infer_project_path(ctx: Context, file_path: str) -> Path | None:
+def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | None:
     """Infer and cache the Lean project path for a file WITHOUT starting the client.
 
     Walks up the directory tree to find a lean-toolchain file, caches the result.
     Sets ctx.request_context.lifespan_context.lean_project_path if found.
+    If ctx is None, only returns the resolved project path.
 
-    Side effects when path changes:
+    Side effects when path changes when ctx is not None:
     - Next LSP tool will restart the client for the new project
     - File content hashes will be cleared
 
     Args:
-        ctx (Context): Context object
         file_path (str): Absolute or relative path to a Lean file
+        ctx (Context): Context object, or None to only infer and return.
 
     Returns:
         Path | None: The resolved project path if found, None otherwise
     """
-    lifespan = ctx.request_context.lifespan_context
-    if not hasattr(lifespan, "project_cache"):
-        lifespan.project_cache = {}
-
+    if ctx:
+        lifespan = ctx.request_context.lifespan_context
+        if not hasattr(lifespan, "project_cache"):
+            lifespan.project_cache = {}
+    
     abs_file_path = os.path.abspath(file_path)
     file_dir = os.path.dirname(abs_file_path)
 
@@ -95,17 +97,18 @@ def infer_project_path(ctx: Context, file_path: str) -> Path | None:
             return None
 
         project_path = project_path.resolve()
-        lifespan.lean_project_path = project_path
+        if ctx:
+            lifespan.lean_project_path = project_path
 
-        # Update all relevant directories in cache
-        for directory in set(cache_dirs + [str(project_path)]):
-            if directory:
-                lifespan.project_cache[directory] = project_path
+            # Update all relevant directories in cache
+            for directory in set(cache_dirs + [str(project_path)]):
+                if directory:
+                    lifespan.project_cache[directory] = project_path
 
         return project_path
 
     # Fast path: current project already valid for this file
-    if lifespan.lean_project_path and set_project_path(
+    if ctx and lifespan.lean_project_path and set_project_path(
         lifespan.lean_project_path, [file_dir]
     ):
         return lifespan.lean_project_path
@@ -113,15 +116,16 @@ def infer_project_path(ctx: Context, file_path: str) -> Path | None:
     # Walk up directory tree using cache and lean-toolchain detection
     current_dir = file_dir
     while current_dir and current_dir != os.path.dirname(current_dir):
-        cached_root = lifespan.project_cache.get(current_dir)
+        if ctx:
+            cached_root = lifespan.project_cache.get(current_dir)
 
-        if cached_root:
-            if result := set_project_path(Path(cached_root), [current_dir]):
-                return result
-        elif valid_lean_project_path(current_dir):
+            if cached_root:
+                if result := set_project_path(Path(cached_root), [current_dir]):
+                    return result
+        if valid_lean_project_path(current_dir):
             if result := set_project_path(Path(current_dir), [current_dir]):
                 return result
-        else:
+        elif ctx:
             lifespan.project_cache[current_dir] = ""  # Mark as checked
 
         current_dir = os.path.dirname(current_dir)
@@ -131,7 +135,7 @@ def infer_project_path(ctx: Context, file_path: str) -> Path | None:
 
 def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     """Ensure the LSP client matches the file's Lean project and return its relative path."""
-    project_path = infer_project_path(ctx, file_path)
+    project_path = infer_project_path(file_path, ctx=ctx)
     if project_path is None:
         return None
 

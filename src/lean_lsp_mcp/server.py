@@ -1162,7 +1162,7 @@ def verify_theorem(
     lifespan = ctx.request_context.lifespan_context
     project_path = lifespan.lean_project_path
     if project_path is None:
-        infer_project_path(ctx, file_path)
+        infer_project_path(file_path, ctx=ctx)
         project_path = lifespan.lean_project_path
     if project_path is None:
         raise LeanToolError("No Lean project found")
@@ -1724,7 +1724,7 @@ async def profile_proof(
     project_path = lifespan.lean_project_path
 
     if not project_path:
-        infer_project_path(ctx, file_path)
+        infer_project_path(file_path, ctx=ctx)
         project_path = lifespan.lean_project_path
 
     if not project_path:
