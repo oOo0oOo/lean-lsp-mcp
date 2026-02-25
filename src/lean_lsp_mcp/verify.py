@@ -56,8 +56,8 @@ def parse_axioms(diagnostics: list[dict]) -> list[str]:
     for diag in diagnostics:
         if diag.get("severity") != 3:  # info
             continue
-        msg = diag.get("message", "")
-        if m := re.search(r"depends on axioms:\s*\[(.+)\]", msg):
+        msg = diag.get("message", "").replace("\n", " ")
+        if m := re.search(r"depends on axioms:\s*\[(.+?)\]", msg):
             axioms.extend(a.strip() for a in m.group(1).split(","))
     return axioms
 
