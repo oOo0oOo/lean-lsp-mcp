@@ -1714,9 +1714,9 @@ async def profile_proof(
     top_n: Annotated[
         int, Field(description="Number of slowest lines to return", ge=1)
     ] = 5,
-    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 60.0,
+    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 30.0,
 ) -> ProofProfileResult:
-    """Run `lean --profile` on a theorem. Returns per-line timing and categories."""
+    """Run `lean --profile` on a theorem. Returns per-line timing and categories. SLOW - avoid on theorems that already hit heartbeat limits."""
     from lean_lsp_mcp.profile_utils import profile_theorem
 
     # Get project path
