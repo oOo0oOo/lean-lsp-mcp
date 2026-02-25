@@ -82,9 +82,7 @@ def main():
     parser.add_argument(
         "--lean-project-path",
         type=str,
-        help=(
-            "Path to a Lean project root or to a file/dir inside it."
-        ),
+        help=("Path to a Lean project root or to a file/dir inside it."),
     )
     parser.add_argument(
         "--loogle-local",
@@ -112,8 +110,9 @@ def main():
     # Set env vars from CLI args (CLI takes precedence over env vars)
     if args.lean_project_path:
         project_path = infer_project_path(args.lean_project_path)
-        if project_path is not None:
-            os.environ["LEAN_PROJECT_PATH"] = str(project_path)
+        if project_path is None:
+            parser.error(f"No lean-toolchain found for: {args.lean_project_path}")
+        os.environ["LEAN_PROJECT_PATH"] = str(project_path)
     if args.loogle_local:
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:

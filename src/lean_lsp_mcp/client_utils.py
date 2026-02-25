@@ -87,7 +87,7 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
         lifespan = ctx.request_context.lifespan_context
         if not hasattr(lifespan, "project_cache"):
             lifespan.project_cache = {}
-    
+
     abs_file_path = os.path.abspath(file_path)
     file_dir = os.path.dirname(abs_file_path)
 
@@ -108,8 +108,10 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
         return project_path
 
     # Fast path: current project already valid for this file
-    if ctx and lifespan.lean_project_path and set_project_path(
-        lifespan.lean_project_path, [file_dir]
+    if (
+        ctx
+        and lifespan.lean_project_path
+        and set_project_path(lifespan.lean_project_path, [file_dir])
     ):
         return lifespan.lean_project_path
 
