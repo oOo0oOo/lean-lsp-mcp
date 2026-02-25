@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,6 +19,16 @@ class _MockLeanClient:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _FailingCloseClient(_MockLeanClient):
+    def __init__(self, project_path: Path) -> None:
+        super().__init__(project_path)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise PermissionError("operation not permitted")
 
 
 class _LifespanContext:
@@ -85,6 +93,30 @@ def test_startup_client_reuses_existing(
     assert first.closed
     assert ctx.request_context.lifespan_context.client.project_path == new_project
     assert len(patched_clients) == 2
+
+
+def test_startup_client_switches_project_even_if_close_fails(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    old_project = tmp_path / "proj1"
+    old_project.mkdir()
+    (old_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+
+    new_project = tmp_path / "proj2"
+    new_project.mkdir()
+    (new_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+
+    old_client = _FailingCloseClient(old_project)
+    ctx = _Context(_LifespanContext(new_project, old_client))
+
+    startup_client(ctx)
+
+    new_client = ctx.request_context.lifespan_context.client
+    assert isinstance(new_client, _MockLeanClient)
+    assert new_client is not old_client
+    assert new_client.project_path == new_project
+    assert old_client.close_calls == 1
+    assert len(patched_clients) == 1
 
 
 def test_valid_lean_project_path(tmp_path: Path) -> None:

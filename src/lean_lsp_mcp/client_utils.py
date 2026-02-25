@@ -33,7 +33,10 @@ def startup_client(ctx: Context):
             if client.project_path == lean_project_path:
                 return  # Client already set up correctly - reuse it!
             # Different project path - close old client
-            client.close()
+            try:
+                client.close()
+            except Exception:
+                logger.exception("Lean client close failed")
 
         # Need to create a new client
         # In test environments, prevent repeated cache downloads

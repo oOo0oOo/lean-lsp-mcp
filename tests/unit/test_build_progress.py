@@ -9,6 +9,15 @@ import pytest
 from lean_lsp_mcp.server import lsp_build
 
 
+class _FailingClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise PermissionError("operation not permitted")
+
+
 @pytest.fixture
 def build_mocks():
     """Shared mocks for lsp_build tests."""
@@ -135,3 +144,20 @@ async def test_reports_cache_progress(build_mocks, patch_build):
 
     # Should have reported cache fetch progress
     assert any("cache" in m.lower() for p, t, m in progress_calls)
+
+
+@pytest.mark.asyncio
+async def test_lsp_build_continues_when_client_close_fails(build_mocks, patch_build):
+    """Pre-build client close failure is logged and does not abort the build."""
+    ctx, cache_proc, build_proc = build_mocks
+    failing_client = _FailingClient()
+    ctx.request_context.lifespan_context.client = failing_client
+
+    build_proc.stdout.readline = make_readline(b"[0/1] Built\nDone\n")
+    patch_build.side_effect = [cache_proc, build_proc]
+
+    result = await lsp_build(ctx, lean_project_path="/fake", output_lines=100)
+
+    assert failing_client.close_calls == 1
+    assert result.success
+    assert ctx.request_context.lifespan_context.client is not failing_client
