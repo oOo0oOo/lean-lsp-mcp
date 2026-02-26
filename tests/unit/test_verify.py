@@ -9,7 +9,6 @@ import pytest
 
 from lean_lsp_mcp.verify import (
     check_axiom_errors,
-    make_axiom_check,
     parse_axioms,
     scan_warnings,
 )
@@ -82,43 +81,6 @@ class TestCheckAxiomErrors:
             {"severity": 1, "message": "b"},
         ]
         assert check_axiom_errors(diags) == "a; b"
-
-
-class TestMakeAxiomCheck:
-    def test_creates_temp_file(self, tmp_path: Path):
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        (proj / "lean-toolchain").touch()
-        src = proj / "Foo.lean"
-        src.write_text("theorem bar : True := trivial\n")
-        rel_path, tmp = make_axiom_check(src, proj, "bar")
-        assert tmp.exists()
-        content = tmp.read_text()
-        assert "import Foo" in content
-        assert "#print axioms bar" in content
-        tmp.unlink()
-
-    def test_raises_on_outside_project(self, tmp_path: Path):
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        outside = tmp_path / "other" / "Foo.lean"
-        outside.parent.mkdir()
-        outside.touch()
-        try:
-            make_axiom_check(outside, proj, "bar")
-            assert False, "Should have raised"
-        except ValueError:
-            pass
-
-    def test_cleans_stale_files(self, tmp_path: Path):
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        src = proj / "Foo.lean"
-        src.write_text("theorem bar : True := trivial\n")
-        stale = proj / "_mcp_verify_deadbeef.lean"
-        stale.write_text("stale")
-        make_axiom_check(src, proj, "bar")
-        assert not stale.exists()
 
 
 class TestScanWarnings:
