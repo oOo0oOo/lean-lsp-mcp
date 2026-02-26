@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
 from leanclient import LeanLSPClient
 
-from lean_lsp_mcp.file_utils import get_relative_file_path
+from lean_lsp_mcp.file_utils import get_file_contents, get_relative_file_path
 from lean_lsp_mcp.utils import OutputCapture
 
 
@@ -135,6 +135,43 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
     return None
 
 
+def _import_signature(content: str | None) -> tuple[str, ...]:
+    if not content:
+        return ()
+    return tuple(
+        line.strip()
+        for line in content.splitlines()
+        if line.lstrip().startswith("import ")
+    )
+
+
+def _sync_file_content(client: LeanLSPClient, rel_path: str, file_path: str) -> None:
+    """Keep leanclient file state in sync with disk and force-reopen on import edits."""
+    try:
+        current_content = client.get_file_content(rel_path)
+    except FileNotFoundError:
+        current_content = None
+
+    if current_content is None:
+        client.open_file(rel_path)
+        return
+
+    disk_content = get_file_contents(file_path)
+    if disk_content is None:
+        return
+
+    if current_content == disk_content:
+        return
+
+    # Import edits can wedge waitForDiagnostics on some Lean versions (#115).
+    # Reopen file to refresh leanclient/lake-serve state instead of only sending didChange.
+    if _import_signature(current_content) != _import_signature(disk_content):
+        client.open_file(rel_path, force_reopen=True)
+        return
+
+    client.update_file_content(rel_path, disk_content)
+
+
 def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     """Ensure the LSP client matches the file's Lean project and return its relative path."""
     project_path = infer_project_path(file_path, ctx=ctx)
@@ -142,4 +179,10 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
         return None
 
     startup_client(ctx)
-    return get_relative_file_path(project_path, file_path)
+    rel_path = get_relative_file_path(project_path, file_path)
+    if rel_path is None:
+        return None
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    _sync_file_content(client, rel_path, file_path)
+    return rel_path
