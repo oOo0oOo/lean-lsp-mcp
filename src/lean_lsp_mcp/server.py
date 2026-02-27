@@ -1154,56 +1154,59 @@ def verify_theorem(
     """Check theorem axioms + optional source scan. Only scans the given file, not imports."""
     from lean_lsp_mcp.verify import (
         check_axiom_errors,
-        make_axiom_check,
         parse_axioms,
         scan_warnings,
     )
 
-    lifespan = ctx.request_context.lifespan_context
-    project_path = lifespan.lean_project_path
-    if project_path is None:
-        infer_project_path(file_path, ctx=ctx)
-        project_path = lifespan.lean_project_path
-    if project_path is None:
-        raise LeanToolError("No Lean project found")
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
 
     abs_path = Path(file_path)
-    if not abs_path.exists():
-        raise LeanToolError(f"File not found: {file_path}")
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
 
     try:
-        rel_path, tmp_path = make_axiom_check(abs_path, project_path, theorem_name)
-    except (ValueError, OSError) as e:
-        raise LeanToolError(str(e))
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
 
-    client: LeanLSPClient | None = lifespan.client
-    opened = False
+    snippet = f"\n#print axioms _root_.{theorem_name}\n"
+    snippet_lines = snippet.count("\n")
+    original_lines = original_content.split("\n")
+    appended_line = len(original_lines)  # 0-indexed line where snippet starts
+
     try:
-        if client is None:
-            startup_client(ctx)
-            client = lifespan.client
-        if client is None:
-            raise LeanToolError("Failed to initialize Lean client")
-        assert client is not None
-        client.open_file(rel_path)
-        opened = True
-        raw = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
+        change = DocumentContentChange(
+            snippet,
+            [appended_line, 0],
+            [appended_line, 0],
+        )
+        client.update_file(rel_path, [change])
+        raw = client.get_diagnostics(
+            rel_path, start_line=appended_line, inactivity_timeout=120.0
+        )
         check_lsp_response(raw, "get_diagnostics")
+
+        appended_diags = list(raw)
+
+        if err := check_axiom_errors(appended_diags):
+            raise LeanToolError(f"Axiom check failed: {err}")
+
+        axioms = parse_axioms(appended_diags)
     finally:
-        if opened:
-            try:
-                client.close_files([rel_path])
-            except Exception as exc:
-                logger.warning("Failed to close verify temp file: %s", exc)
         try:
-            tmp_path.unlink()
-        except Exception:
-            pass
+            restore_change = DocumentContentChange(
+                "",
+                [appended_line, 0],
+                [appended_line + snippet_lines, 0],
+            )
+            client.update_file(rel_path, [restore_change])
+        except Exception as exc:
+            logger.warning("Failed to restore `%s` after verify: %s", rel_path, exc)
 
-    if err := check_axiom_errors(raw):
-        raise LeanToolError(f"Axiom check failed: {err}")
-
-    axioms = parse_axioms(raw)
     w: list[SourceWarning] = []
     if scan_source:
         if _RG_AVAILABLE:
