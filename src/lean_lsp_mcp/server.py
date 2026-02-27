@@ -1173,7 +1173,8 @@ def verify_theorem(
     except Exception:
         original_content = get_file_contents(file_path)
 
-    snippet = f"\n#print axioms {theorem_name}\n"
+    snippet = f"\n#print axioms _root_.{theorem_name}\n"
+    snippet_lines = snippet.count("\n")
     original_lines = original_content.split("\n")
     appended_line = len(original_lines)  # 0-indexed line where snippet starts
 
@@ -1196,19 +1197,15 @@ def verify_theorem(
 
         axioms = parse_axioms(appended_diags)
     finally:
-        if original_content is not None:
-            try:
-                client.update_file_content(rel_path, original_content)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to restore `%s` after verify: %s", rel_path, exc
-                )
-            try:
-                client.open_file(rel_path, force_reopen=True)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to force-reopen `%s` after verify: %s", rel_path, exc
-                )
+        try:
+            restore_change = DocumentContentChange(
+                "",
+                [appended_line, 0],
+                [appended_line + snippet_lines, 0],
+            )
+            client.update_file(rel_path, [restore_change])
+        except Exception as exc:
+            logger.warning("Failed to restore `%s` after verify: %s", rel_path, exc)
 
     w: list[SourceWarning] = []
     if scan_source:
