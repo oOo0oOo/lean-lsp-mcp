@@ -709,7 +709,12 @@ def test_lean_search_resolves_project_root_to_absolute(
     absolute_root = Path("/absolute/path/to/project")
     events = [_make_match("Test.lean", "def testFunc : Nat := 0")]
 
-    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(absolute_root))
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(absolute_root.resolve()),
+    )
     results = search_utils.lean_local_search("testFunc", project_root=absolute_root)
 
     assert len(results) == 1
@@ -725,7 +730,12 @@ def test_lean_search_uses_project_root_not_cwd(monkeypatch, reload_search_utils)
     monkeypatch.setattr(Path, "cwd", lambda: current_dir)
     events = [_make_match("MyModule.lean", "def myDef : Nat := 42")]
 
-    _configure_env(monkeypatch, search_utils, events, expected_cwd=str(project_root))
+    _configure_env(
+        monkeypatch,
+        search_utils,
+        events,
+        expected_cwd=str(project_root.resolve()),
+    )
     results = search_utils.lean_local_search("myDef", project_root=project_root)
 
     assert len(results) == 1

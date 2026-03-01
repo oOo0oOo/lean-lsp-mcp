@@ -3,6 +3,7 @@ import functools
 import logging.config
 import os
 import re
+import shutil
 import ssl
 import time
 import urllib
@@ -146,6 +147,14 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+
+if not shutil.which("lake"):
+    logger.warning(
+        "lake not found on PATH. The Lean LSP tools require lake. "
+        "If the MCP server was started with a custom 'env' config, "
+        "ensure it inherits the system PATH (set env to {} instead of "
+        "adding variables that replace it)."
+    )
 
 
 # ---------------------------------------------------------------------------

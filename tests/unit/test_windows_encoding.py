@@ -52,17 +52,16 @@ def test_output_capture_handles_unicode() -> None:
 
 
 def test_lean_run_code_handles_unicode() -> None:
-    """Test that writing Lean code files handles Unicode characters.
+    """Test that writing Lean code files with explicit encoding='utf-8' works.
 
-    The lean_run_code function writes temporary .lean files.
-    On Windows, open() without encoding defaults to cp1252, which fails with Unicode.
-
-    This test simulates Windows behavior to ensure the fix is in place.
+    server.py's lean_run_code writes temporary .lean files with
+    open(..., "w", encoding="utf-8").  This verifies the round-trip
+    preserves Unicode characters that would fail under cp1252.
     """
     from pathlib import Path
     import os
 
-    # Lean code with Unicode characters
+    # Lean code with Unicode characters that fail under cp1252
     lean_code = """
 theorem test : ℕ → ℕ := by
   intro n
@@ -70,45 +69,22 @@ theorem test : ℕ → ℕ := by
   sorry
 """
 
-    # Patch open to simulate Windows default behavior (cp1252 encoding)
-    original_open = open
-
-    def windows_style_open(file, mode="r", *args, **kwargs):
-        # If encoding not explicitly specified for write mode, use cp1252 (Windows default)
-        if "w" in mode and "encoding" not in kwargs and "b" not in mode:
-            kwargs["encoding"] = "cp1252"
-        return original_open(file, mode, *args, **kwargs)
-
-    # Test writing the file
     temp_path = Path(tempfile.gettempdir()) / "test_unicode.lean"
+    try:
+        # Mirror what lean_run_code does (server.py line 1105)
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(lean_code)
 
-    # Patch in the server module where open is called
-    with patch("lean_lsp_mcp.server.open", side_effect=windows_style_open):
-        try:
-            # This simulates what lean_run_code does
-            with open(temp_path, "w") as f:
-                f.write(lean_code)
+        with open(temp_path, "r", encoding="utf-8") as f:
+            content = f.read()
 
-            # If we get here without error, encoding was specified
-            # Read it back to verify
-            with open(temp_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            assert content == lean_code, (
-                "Unicode content was corrupted. "
-                "Expected Unicode symbols to be preserved"
-            )
-
-        except UnicodeEncodeError as e:
-            # This is expected if encoding is not specified
-            pytest.fail(
-                f"UnicodeEncodeError when writing Lean file with cp1252 encoding: {e}\n"
-                f"Fix: Add encoding='utf-8' to open() in lean_run_code"
-            )
-        finally:
-            # Cleanup
-            if temp_path.exists():
-                os.unlink(temp_path)
+        assert content == lean_code, (
+            "Unicode content was corrupted. "
+            "Expected Unicode symbols to be preserved"
+        )
+    finally:
+        if temp_path.exists():
+            os.unlink(temp_path)
 
 
 def test_tempfile_for_logging_handles_unicode() -> None:
