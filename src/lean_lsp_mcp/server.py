@@ -726,7 +726,7 @@ def term_goal(
 
     line_context = lines[line - 1]
     if column is None:
-        column = len(line_context)
+        column = max(len(line_context), 1)
 
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
     check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
