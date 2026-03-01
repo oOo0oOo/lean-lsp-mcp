@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,11 +16,19 @@ class TestGetCacheDir:
         monkeypatch.delenv("LEAN_LOOGLE_CACHE_DIR", raising=False)
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: Path("/home/user"))
-        assert get_cache_dir() == Path("/home/user/.cache/lean-lsp-mcp/loogle")
+        if os.name == "nt":
+            monkeypatch.delenv("LOCALAPPDATA", raising=False)
+            expected = Path("/home/user/AppData/Local/lean-lsp-mcp/loogle")
+        else:
+            expected = Path("/home/user/.cache/lean-lsp-mcp/loogle")
+        assert get_cache_dir() == expected
 
     def test_xdg(self, monkeypatch):
         monkeypatch.delenv("LEAN_LOOGLE_CACHE_DIR", raising=False)
-        monkeypatch.setenv("XDG_CACHE_HOME", "/xdg")
+        if os.name == "nt":
+            monkeypatch.setenv("LOCALAPPDATA", "/xdg")
+        else:
+            monkeypatch.setenv("XDG_CACHE_HOME", "/xdg")
         assert get_cache_dir() == Path("/xdg/lean-lsp-mcp/loogle")
 
     def test_env_override(self, monkeypatch):

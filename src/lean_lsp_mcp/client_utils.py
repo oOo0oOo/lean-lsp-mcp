@@ -1,5 +1,6 @@
+import builtins
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Lock
 
 from mcp.server.fastmcp import Context
@@ -12,6 +13,55 @@ from lean_lsp_mcp.utils import OutputCapture
 
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
+
+
+def _patch_file_encoding() -> None:
+    """Fix leanclient Windows bug: file reads use default encoding (cp1252)
+    instead of UTF-8, causing codec errors on Lean files with math symbols.
+
+    Monkeypatch the `open` builtin within leanclient.file_manager to default
+    to UTF-8 for text-mode reads.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import leanclient.file_manager as _fm
+    except ImportError:
+        return
+    if getattr(_fm, "_open_patched", False):
+        return  # Already patched
+
+    _original_open = builtins.open
+
+    def _utf8_open(file, mode="r", *args, **kwargs):
+        if "b" not in str(mode) and "encoding" not in kwargs:
+            kwargs["encoding"] = "utf-8"
+        return _original_open(file, mode, *args, **kwargs)
+
+    _fm.open = _utf8_open
+    _fm._open_patched = True
+
+
+_patch_file_encoding()
+
+
+def _patch_uri_to_local(client: LeanLSPClient) -> None:
+    """Fix leanclient Windows bug: _uri_to_local returns backslashes but
+    open_files stores keys with forward slashes, causing dict lookup failures.
+
+    Monkeypatch to always return forward-slash paths.
+    """
+    if os.name != "nt":
+        return
+    if not hasattr(client, "_uri_to_local"):
+        return
+    original = client._uri_to_local
+
+    def _posix_uri_to_local(uri: str) -> str:
+        result = original(uri)
+        return result.replace("\\", "/")
+
+    client._uri_to_local = _posix_uri_to_local
 
 
 def startup_client(ctx: Context):
@@ -49,6 +99,7 @@ def startup_client(ctx: Context):
         build_output = output.get_output()
         if build_output:
             logger.debug(f"Build output: {build_output}")
+        _patch_uri_to_local(client)
         ctx.request_context.lifespan_context.client = client
 
 
@@ -115,22 +166,29 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
     ):
         return lifespan.lean_project_path
 
-    # Walk up directory tree using cache and lean-toolchain detection
+    # Walk up directory tree using cache and lean-toolchain detection.
+    # Collect ALL lean-toolchain hits so we can prefer the outermost project
+    # (inner ones are typically vendored dependencies that can't serve files).
     current_dir = file_dir
+    candidates: list[str] = []
     while current_dir and current_dir != os.path.dirname(current_dir):
         if ctx:
             cached_root = lifespan.project_cache.get(current_dir)
-
             if cached_root:
-                if result := set_project_path(Path(cached_root), [current_dir]):
-                    return result
+                candidates.append(cached_root)
+                current_dir = os.path.dirname(current_dir)
+                continue
         if valid_lean_project_path(current_dir):
-            if result := set_project_path(Path(current_dir), [current_dir]):
-                return result
+            candidates.append(current_dir)
         elif ctx:
             lifespan.project_cache[current_dir] = ""  # Mark as checked
-
         current_dir = os.path.dirname(current_dir)
+
+    # Prefer the outermost project (last found), since inner projects are
+    # typically vendored sub-projects whose lake serve may not work.
+    for candidate_dir in reversed(candidates):
+        if result := set_project_path(Path(candidate_dir), [file_dir]):
+            return result
 
     return None
 

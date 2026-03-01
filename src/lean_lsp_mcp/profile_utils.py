@@ -187,7 +187,7 @@ async def profile_theorem(
     top_n: int = 5,
 ) -> ProofProfileResult:
     """Profile a theorem via `lean --profile`. Returns per-line timing data."""
-    lines = file_path.read_text().splitlines()
+    lines = file_path.read_text(encoding="utf-8").splitlines()
     if not (0 < theorem_line <= len(lines)):
         raise ValueError(f"Line {theorem_line} out of range")
 
@@ -198,7 +198,7 @@ async def profile_theorem(
     proof_items = _build_proof_items(source_lines, proof_start)
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".lean", dir=project_path, delete=False
+        mode="w", suffix=".lean", dir=project_path, delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         temp_path = Path(f.name)
