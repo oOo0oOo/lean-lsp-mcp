@@ -31,15 +31,16 @@ class ResolvedName:
 
 
 def _match_name(candidate_name: str, query: str) -> bool:
-    """Check if candidate_name matches query exactly (full or short name)."""
+    """Check if candidate_name matches query (full, short, or qualified name)."""
     if candidate_name == query:
         return True
-    # Match on last dotted component (short name)
-    short = candidate_name.rsplit(".", 1)[-1]
-    if short == query:
+    # Match on last dotted component (short name) in either direction
+    short_candidate = candidate_name.rsplit(".", 1)[-1]
+    short_query = query.rsplit(".", 1)[-1]
+    if short_candidate == query or short_query == candidate_name:
         return True
-    # Also match if query is a suffix of the FQN (e.g. "Ns.foo" matches "A.Ns.foo")
-    if candidate_name.endswith("." + query):
+    # Suffix match: "Ns.foo" matches "A.Ns.foo" or vice versa
+    if candidate_name.endswith("." + query) or query.endswith("." + candidate_name):
         return True
     return False
 
