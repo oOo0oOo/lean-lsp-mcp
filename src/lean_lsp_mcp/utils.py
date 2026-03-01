@@ -333,6 +333,10 @@ def filter_diagnostics_by_position(
 def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
     """Recursively search through symbols and their children.
 
+    Matches exact name, or suffix after a dot.  For example, target
+    ``"IsNash"`` matches symbol ``"NFGame.IsNash"`` (declaration without
+    a namespace block).
+
     Args:
         symbols: List of LSP document symbols
         target_name: Name of the symbol to find (case-sensitive)
@@ -341,7 +345,8 @@ def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
         The matching symbol dict, or None if not found
     """
     for symbol in symbols:
-        if symbol.get("name") == target_name:
+        sym_name = symbol.get("name", "")
+        if sym_name == target_name or sym_name.endswith("." + target_name):
             return symbol
         # Search nested declarations (children)
         children = symbol.get("children", [])

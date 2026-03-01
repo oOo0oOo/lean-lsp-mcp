@@ -135,9 +135,11 @@ async def resolve_name(ctx: Context, name: str) -> ResolvedName:
     client: LeanLSPClient = lifespan.client
 
     # Step 6: Get declaration range using LSP document symbols
-    # Document symbols use the short name (part after last dot)
+    # Try short name first (namespace blocks), then full name (dotted declarations)
     short_name = full_name.rsplit(".", 1)[-1]
     decl_range = get_declaration_range(client, rel_path, short_name)
+    if decl_range is None and short_name != full_name:
+        decl_range = get_declaration_range(client, rel_path, full_name)
     if decl_range is None:
         raise LeanToolError(
             f"Declaration '{full_name}' found by search in '{rel_file}' "
