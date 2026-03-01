@@ -91,21 +91,37 @@ class OutputCapture:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.original_stdout_fd is not None:
-            os.dup2(self.original_stdout_fd, sys.stdout.fileno())
-            os.close(self.original_stdout_fd)
-
-        if self.original_stderr_fd is not None:
-            os.dup2(self.original_stderr_fd, sys.stderr.fileno())
-            os.close(self.original_stderr_fd)
+        # Restore file descriptors first — must succeed or server is broken.
+        # Each step is independent so wrap individually.
+        try:
+            if self.original_stdout_fd is not None:
+                os.dup2(self.original_stdout_fd, sys.stdout.fileno())
+                os.close(self.original_stdout_fd)
+        except OSError:
+            pass
+        try:
+            if self.original_stderr_fd is not None:
+                os.dup2(self.original_stderr_fd, sys.stderr.fileno())
+                os.close(self.original_stderr_fd)
+        except OSError:
+            pass
 
         if self.temp_file is not None:
-            self.temp_file.flush()
-            self.temp_file.seek(0)
-            self.captured_output = self.temp_file.read()
+            try:
+                self.temp_file.flush()
+                self.temp_file.seek(0)
+                self.captured_output = self.temp_file.read()
+            except Exception:
+                pass
             temp_name = self.temp_file.name
-            self.temp_file.close()
-            os.unlink(temp_name)
+            try:
+                self.temp_file.close()
+            except Exception:
+                pass
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
 
     def get_output(self):
         return self.captured_output
