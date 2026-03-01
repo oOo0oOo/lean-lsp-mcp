@@ -16,6 +16,14 @@ INSTRUCTIONS = """## General Rules
 - **lean_build**: Rebuild + restart LSP. Only if needed (new imports). SLOW!
 - **lean_profile_proof**: Profile a theorem for performance. Shows tactic hotspots. SLOW!
 
+## Name-Based Tools (no file path needed)
+- **lean_type**: Type signature by declaration name. e.g. `lean_type("IsNash")`
+- **lean_definition**: Source code by declaration name. Includes line range.
+- **lean_check_definition**: Diagnostics for a declaration by name.
+- **lean_goal_at**: Goal state by theorem name + tactic index. `tactic_index=0` first, `-1` last.
+
+These resolve names via lean_local_search + LSP. Use lean_local_search first if unsure of the exact name.
+
 ## Search Tools (rate limited)
 - **lean_leansearch** (3/30s): Natural language -> mathlib
 - **lean_loogle** (3/30s): Type pattern -> mathlib
