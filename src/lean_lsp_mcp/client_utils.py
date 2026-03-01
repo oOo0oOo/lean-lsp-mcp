@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 
@@ -32,23 +33,30 @@ def startup_client(ctx: Context):
             # Both are Path objects now, direct comparison works
             if client.project_path == lean_project_path:
                 return  # Client already set up correctly - reuse it!
-            # Different project path - close old client
+            # Different project path - close old client (with timeout to avoid hang)
             try:
-                client.close()
+                with ThreadPoolExecutor(1) as pool:
+                    pool.submit(client.close).result(timeout=10)
             except Exception:
-                logger.exception("Lean client close failed")
+                logger.warning("Lean client close timed out or failed, proceeding")
 
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
         prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
-        with OutputCapture() as output:
-            client = LeanLSPClient(
-                lean_project_path, initial_build=False, prevent_cache_get=prevent_cache
-            )
-            logger.info(f"Connected to Lean language server at {lean_project_path}")
-        build_output = output.get_output()
-        if build_output:
-            logger.debug(f"Build output: {build_output}")
+        try:
+            with OutputCapture() as output:
+                client = LeanLSPClient(
+                    lean_project_path, initial_build=False, prevent_cache_get=prevent_cache
+                )
+                logger.info(f"Connected to Lean language server at {lean_project_path}")
+            build_output = output.get_output()
+            if build_output:
+                logger.debug(f"Build output: {build_output}")
+        except Exception as e:
+            logger.exception("Failed to start Lean LSP client")
+            raise ValueError(
+                f"Failed to start Lean language server at '{lean_project_path}': {e}"
+            ) from e
         ctx.request_context.lifespan_context.client = client
 
 

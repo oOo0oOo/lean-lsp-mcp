@@ -493,7 +493,7 @@ def file_outline(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -599,7 +599,7 @@ def diagnostic_messages(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -658,7 +658,7 @@ def goal(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -713,7 +713,7 @@ def term_goal(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -726,7 +726,7 @@ def term_goal(
 
     line_context = lines[line - 1]
     if column is None:
-        column = len(line_context)
+        column = max(len(line_context), 1)
 
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
     check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
@@ -758,7 +758,7 @@ def hover(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -807,7 +807,7 @@ def completions(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -882,7 +882,7 @@ def declaration_file(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -980,7 +980,7 @@ def _multi_attempt_lsp(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -1474,7 +1474,7 @@ async def state_search(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -1528,7 +1528,7 @@ async def hammer_premise(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -1584,7 +1584,7 @@ def code_actions(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -1656,7 +1656,7 @@ def get_widgets(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -1685,7 +1685,7 @@ def get_widget_source(
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project (no lean-toolchain ancestor or file does not exist)"
         )
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
