@@ -132,6 +132,27 @@ class DeclarationInfo(BaseModel):
     content: str = Field(description="File content")
 
 
+class TypeInfo(BaseModel):
+    """Type signature of a declaration resolved by name."""
+
+    name: str = Field(description="Fully qualified name")
+    type: str = Field(description="Type signature")
+    kind: str = Field(description="Declaration kind (theorem, def, class, etc.)")
+    file: str = Field(description="Relative file path")
+    line: int = Field(description="Start line (1-indexed)")
+
+
+class DefinitionSource(BaseModel):
+    """Source code of a declaration resolved by name."""
+
+    name: str = Field(description="Fully qualified name")
+    kind: str = Field(description="Declaration kind (theorem, def, class, etc.)")
+    file: str = Field(description="Relative file path")
+    start_line: int = Field(description="Start line (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    source: str = Field(description="Full source code of the declaration")
+
+
 # Wrapper models for list-returning tools
 # FastMCP flattens bare lists into separate TextContent blocks, causing serialization issues.
 # Wrapping in a model ensures proper JSON serialization.

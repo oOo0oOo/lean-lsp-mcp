@@ -40,6 +40,7 @@ from lean_lsp_mcp.models import (
     CompletionItem,
     CompletionsResult,
     DeclarationInfo,
+    DefinitionSource,
     DiagnosticMessage,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
@@ -60,6 +61,7 @@ from lean_lsp_mcp.models import (
     PremiseResults,
     ProofProfileResult,
     RunResult,
+    TypeInfo,
     WidgetSourceResult,
     WidgetsResult,
     SourceWarning,
@@ -72,6 +74,7 @@ from lean_lsp_mcp.models import (
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.resolve import resolve_name
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -1744,6 +1747,228 @@ async def profile_proof(
         )
     except (ValueError, TimeoutError) as e:
         raise LeanToolError(str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Semantic naming tools — resolve by declaration name instead of file+line
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    "lean_type",
+    annotations=ToolAnnotations(
+        title="Type by Name",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def type_by_name(
+    ctx: Context,
+    name: Annotated[
+        str,
+        Field(description="Declaration name (fully qualified or short, e.g. 'IsNash' or 'NFGame.IsNash')"),
+    ],
+) -> TypeInfo:
+    """Get the type signature of a declaration by name. Resolves name → file+position → hover."""
+    resolved = await resolve_name(ctx, name)
+    client = resolved.client
+    content = client.get_file_content(resolved.rel_path)
+    lines = content.splitlines()
+
+    # Find the short name token on the start line to get the hover column
+    short_name = resolved.full_name.rsplit(".", 1)[-1]
+    start_line_text = lines[resolved.start_line - 1] if resolved.start_line <= len(lines) else ""
+    col = start_line_text.find(short_name)
+    if col < 0:
+        col = 0  # Fallback to start of line
+
+    hover_info = client.get_hover(resolved.rel_path, resolved.start_line - 1, col)
+    check_lsp_response(hover_info, "get_hover", allow_none=True)
+    if hover_info is None:
+        raise LeanToolError(
+            f"No hover information for '{resolved.full_name}' at line {resolved.start_line}."
+        )
+
+    type_str = hover_info["contents"].get("value", "")
+    type_str = type_str.replace("```lean\n", "").replace("\n```", "").strip()
+
+    return TypeInfo(
+        name=resolved.full_name,
+        type=type_str,
+        kind=resolved.kind,
+        file=resolved.rel_path,
+        line=resolved.start_line,
+    )
+
+
+@mcp.tool(
+    "lean_definition",
+    annotations=ToolAnnotations(
+        title="Definition Source",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def definition_source(
+    ctx: Context,
+    name: Annotated[
+        str,
+        Field(description="Declaration name (fully qualified or short)"),
+    ],
+) -> DefinitionSource:
+    """Get the full source code of a declaration by name."""
+    resolved = await resolve_name(ctx, name)
+    client = resolved.client
+    content = client.get_file_content(resolved.rel_path)
+    lines = content.splitlines()
+
+    # Extract source lines (1-indexed to 0-indexed)
+    start_idx = resolved.start_line - 1
+    end_idx = resolved.end_line  # end_line is inclusive, splitlines is exclusive
+    source = "\n".join(lines[start_idx:end_idx])
+
+    return DefinitionSource(
+        name=resolved.full_name,
+        kind=resolved.kind,
+        file=resolved.rel_path,
+        start_line=resolved.start_line,
+        end_line=resolved.end_line,
+        source=source,
+    )
+
+
+@mcp.tool(
+    "lean_check_definition",
+    annotations=ToolAnnotations(
+        title="Check Definition",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def check_definition(
+    ctx: Context,
+    name: Annotated[
+        str,
+        Field(description="Declaration name (fully qualified or short)"),
+    ],
+) -> DiagnosticsResult:
+    """Check a single declaration for errors by name. Like lean_diagnostic_messages but you don't need the file path."""
+    resolved = await resolve_name(ctx, name)
+    client = resolved.client
+
+    # Convert 1-indexed to 0-indexed for leanclient
+    result = client.get_diagnostics(
+        resolved.rel_path,
+        start_line=resolved.start_line - 1,
+        end_line=resolved.end_line - 1,
+        inactivity_timeout=15.0,
+    )
+
+    return _process_diagnostics(result.diagnostics, result.success)
+
+
+@mcp.tool(
+    "lean_goal_at",
+    annotations=ToolAnnotations(
+        title="Goal by Name",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def goal_at(
+    ctx: Context,
+    name: Annotated[
+        str,
+        Field(description="Theorem/lemma name (fully qualified or short)"),
+    ],
+    tactic_index: Annotated[
+        Optional[int],
+        Field(description="Which tactic line (0=first, -1=last). Default 0."),
+    ] = 0,
+) -> GoalState:
+    """Get proof goal state at a tactic position within a theorem, resolved by name.
+
+    tactic_index selects which tactic line: 0=first, 1=second, -1=last.
+    A tactic line is any non-blank, non-comment line in the proof body after `by`.
+    """
+    resolved = await resolve_name(ctx, name)
+    client = resolved.client
+    content = client.get_file_content(resolved.rel_path)
+    lines = content.splitlines()
+
+    # Find tactic lines within the declaration range
+    start_idx = resolved.start_line - 1
+    end_idx = resolved.end_line  # exclusive
+
+    decl_lines = lines[start_idx:end_idx]
+
+    # Find the `by` keyword to locate proof body
+    by_offset = None
+    for i, line in enumerate(decl_lines):
+        stripped = line.strip()
+        # `by` can appear at end of line (`:= by`) or alone on a line
+        if stripped == "by" or stripped.endswith(":= by") or stripped.endswith(" by"):
+            by_offset = i
+            break
+        # Also handle `by` followed by content on same line won't typically be multi-tactic
+        if " by" in line and not line.strip().startswith("--"):
+            # Check it's actually the proof `by`, not part of an identifier
+            if re.search(r'\bby\s*$', line):
+                by_offset = i
+                break
+
+    if by_offset is None:
+        raise LeanToolError(
+            f"No 'by' keyword found in '{resolved.full_name}'. "
+            f"This tool is for tactic proofs."
+        )
+
+    # Enumerate tactic lines: non-blank, non-comment lines after `by`
+    tactic_lines = []  # (absolute_line_0indexed, line_text)
+    for i in range(by_offset + 1, len(decl_lines)):
+        abs_line = start_idx + i
+        text = decl_lines[i]
+        stripped = text.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        tactic_lines.append((abs_line, text))
+
+    if not tactic_lines:
+        raise LeanToolError(
+            f"No tactic lines found in '{resolved.full_name}' after 'by'."
+        )
+
+    # Select tactic by index
+    if tactic_index is None:
+        tactic_index = 0
+    if tactic_index < -len(tactic_lines) or tactic_index >= len(tactic_lines):
+        raise LeanToolError(
+            f"tactic_index {tactic_index} out of range "
+            f"(theorem has {len(tactic_lines)} tactic lines)."
+        )
+    abs_line_0, tactic_text = tactic_lines[tactic_index]
+    line_1indexed = abs_line_0 + 1
+
+    # Get goal at the start of the tactic (first non-space column)
+    col_start = next(
+        (i for i, c in enumerate(tactic_text) if not c.isspace()), 0
+    )
+    col_end = len(tactic_text)
+
+    goal_before = client.get_goal(resolved.rel_path, abs_line_0, col_start)
+    check_lsp_response(goal_before, "get_goal", allow_none=True)
+    goal_after = client.get_goal(resolved.rel_path, abs_line_0, col_end)
+    check_lsp_response(goal_after, "get_goal", allow_none=True)
+
+    return GoalState(
+        line_context=tactic_text,
+        goals_before=extract_goals_list(goal_before),
+        goals_after=extract_goals_list(goal_after),
+    )
 
 
 if __name__ == "__main__":
