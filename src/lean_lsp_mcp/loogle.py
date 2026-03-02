@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 def get_cache_dir() -> Path:
     if d := os.environ.get("LEAN_LOOGLE_CACHE_DIR"):
         return Path(d)
-    xdg = os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+    if os.name == "nt":
+        xdg = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        xdg = os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
     return Path(xdg) / "lean-lsp-mcp" / "loogle"
 
 

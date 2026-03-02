@@ -202,9 +202,9 @@ def lean_local_search(
             )
 
             try:
-                display_path = str(abs_path.relative_to(root))
+                display_path = abs_path.relative_to(root).as_posix()
             except ValueError:
-                display_path = str(file_path)
+                display_path = file_path.as_posix()
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
 
