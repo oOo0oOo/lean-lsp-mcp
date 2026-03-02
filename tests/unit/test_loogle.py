@@ -216,6 +216,19 @@ class TestLoogleManager:
         monkeypatch.setattr("shutil.which", lambda _: None)
         assert not mgr.ensure_installed()
 
+    def test_ensure_installed_handles_cache_permission_error(self, tmp_path, monkeypatch):
+        mgr = LoogleManager(cache_dir=tmp_path / "loogle")
+        monkeypatch.setattr(mgr, "_check_prerequisites", lambda: (True, ""))
+        orig_mkdir = Path.mkdir
+
+        def fail_cache_dir(path, *args, **kwargs):
+            if path == mgr.cache_dir:
+                raise PermissionError("denied")
+            return orig_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fail_cache_dir)
+        assert not mgr.ensure_installed()
+
     @pytest.mark.asyncio
     async def test_start_not_installed(self, tmp_path):
         assert not await LoogleManager(cache_dir=tmp_path).start()

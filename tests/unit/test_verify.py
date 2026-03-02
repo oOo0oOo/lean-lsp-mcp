@@ -83,6 +83,43 @@ class TestCheckAxiomErrors:
         assert check_axiom_errors(diags) == "a; b"
 
 
+class TestMakeAxiomCheck:
+    def test_creates_temp_file(self, tmp_path: Path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "lean-toolchain").touch()
+        src = proj / "Foo.lean"
+        src.write_text("theorem bar : True := trivial\n")
+        rel_path, tmp = make_axiom_check(src, proj, "bar")
+        assert tmp.exists()
+        content = tmp.read_text()
+        assert "import Foo" in content
+        assert "#print axioms bar" in content
+        tmp.unlink()
+
+    def test_raises_on_outside_project(self, tmp_path: Path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        outside = tmp_path / "other" / "Foo.lean"
+        outside.parent.mkdir()
+        outside.touch()
+        try:
+            make_axiom_check(outside, proj, "bar")
+            assert False, "Should have raised"
+        except ValueError:
+            pass
+
+    def test_does_not_remove_other_verify_temp_files(self, tmp_path: Path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        src = proj / "Foo.lean"
+        src.write_text("theorem bar : True := trivial\n")
+        _, first_tmp = make_axiom_check(src, proj, "bar")
+        _, second_tmp = make_axiom_check(src, proj, "bar")
+        assert first_tmp.exists()
+        assert second_tmp.exists()
+
+
 class TestScanWarnings:
     @pytest.mark.skipif(not _has_rg, reason="ripgrep not installed")
     def test_finds_patterns(self, tmp_path: Path):

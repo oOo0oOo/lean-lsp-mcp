@@ -172,25 +172,33 @@ async def _ensure_shared_loogle(
     async with _shared_loogle_lock:
         if _shared_loogle_init_done:
             return _shared_loogle_manager, _shared_loogle_available
-        _shared_loogle_init_done = True
 
         if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() not in (
             "1",
             "true",
             "yes",
         ):
+            _shared_loogle_init_done = True
             return None, False
 
-        logger.info("Local loogle enabled, initializing (shared)...")
-        _shared_loogle_manager = LoogleManager(project_path=lean_project_path)
-        if _shared_loogle_manager.ensure_installed():
-            if await _shared_loogle_manager.start():
-                _shared_loogle_available = True
+        try:
+            logger.info("Local loogle enabled, initializing (shared)...")
+            manager = _shared_loogle_manager
+            if manager is None:
+                manager = LoogleManager(project_path=lean_project_path)
+                _shared_loogle_manager = manager
+
+            _shared_loogle_available = (
+                manager.ensure_installed() and await manager.start()
+            )
+            if _shared_loogle_available:
+                _shared_loogle_init_done = True
                 logger.info("Shared local loogle started successfully")
             else:
-                logger.warning("Local loogle failed to start, will use remote API")
-        else:
-            logger.warning("Local loogle installation failed, will use remote API")
+                logger.warning("Local loogle unavailable, will use remote API")
+        except Exception:
+            _shared_loogle_available = False
+            logger.exception("Local loogle initialization failed, will retry later")
         return _shared_loogle_manager, _shared_loogle_available
 
 
@@ -265,13 +273,11 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context is not None and context.client:
+        if context and context.client:
             try:
                 context.client.close()
             except Exception:
-                logger.exception(
-                    "Lean client close failed during app_lifespan teardown"
-                )
+                logger.exception("Lean client close failed during app_lifespan teardown")
 
         if repl:
             try:
