@@ -28,18 +28,6 @@ _WARNING_PATTERNS: list[str] = [
 _COMBINED_PATTERN = "|".join(f"(?:{p})" for p in _WARNING_PATTERNS)
 
 
-def make_axiom_check(
-    file_path: Path, project_path: Path, theorem_name: str
-) -> tuple[str, Path]:
-    """Create temp file for axiom checking. Returns (rel_path, abs_path)."""
-    rel = file_path.resolve().relative_to(project_path.resolve())
-    module = str(rel.with_suffix("")).replace("/", ".").replace("\\", ".")
-    rel_path = f"_mcp_verify_{uuid.uuid4().hex}.lean"
-    tmp = project_path / rel_path
-    tmp.write_text(f"import {module}\n#print axioms {theorem_name}\n", encoding="utf-8")
-    return rel_path, tmp
-
-
 def parse_axioms(diagnostics: list[dict]) -> list[str]:
     """Extract axiom names from #print axioms info diagnostics."""
     axioms: list[str] = []
