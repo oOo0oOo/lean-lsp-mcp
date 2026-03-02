@@ -216,7 +216,9 @@ class TestLoogleManager:
         monkeypatch.setattr("shutil.which", lambda _: None)
         assert not mgr.ensure_installed()
 
-    def test_ensure_installed_handles_cache_permission_error(self, tmp_path, monkeypatch):
+    def test_ensure_installed_handles_cache_permission_error(
+        self, tmp_path, monkeypatch
+    ):
         mgr = LoogleManager(cache_dir=tmp_path / "loogle")
         monkeypatch.setattr(mgr, "_check_prerequisites", lambda: (True, ""))
         orig_mkdir = Path.mkdir
