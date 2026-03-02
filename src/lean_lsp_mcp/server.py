@@ -1767,7 +1767,9 @@ async def type_by_name(
     ctx: Context,
     name: Annotated[
         str,
-        Field(description="Declaration name (fully qualified or short, e.g. 'IsNash' or 'NFGame.IsNash')"),
+        Field(
+            description="Declaration name (fully qualified or short, e.g. 'IsNash' or 'NFGame.IsNash')"
+        ),
     ],
 ) -> TypeInfo:
     """Get the type signature of a declaration by name. Resolves name → file+position → hover."""
@@ -1778,7 +1780,9 @@ async def type_by_name(
 
     # Find the short name token on the start line to get the hover column
     short_name = resolved.full_name.rsplit(".", 1)[-1]
-    start_line_text = lines[resolved.start_line - 1] if resolved.start_line <= len(lines) else ""
+    start_line_text = (
+        lines[resolved.start_line - 1] if resolved.start_line <= len(lines) else ""
+    )
     col = start_line_text.find(short_name)
     if col < 0:
         col = 0  # Fallback to start of line
@@ -1917,7 +1921,7 @@ async def goal_at(
         # Also handle `by` followed by content on same line won't typically be multi-tactic
         if " by" in line and not line.strip().startswith("--"):
             # Check it's actually the proof `by`, not part of an identifier
-            if re.search(r'\bby\s*$', line):
+            if re.search(r"\bby\s*$", line):
                 by_offset = i
                 break
 
@@ -1951,12 +1955,10 @@ async def goal_at(
             f"(theorem has {len(tactic_lines)} tactic lines)."
         )
     abs_line_0, tactic_text = tactic_lines[tactic_index]
-    line_1indexed = abs_line_0 + 1
+    abs_line_0 + 1
 
     # Get goal at the start of the tactic (first non-space column)
-    col_start = next(
-        (i for i, c in enumerate(tactic_text) if not c.isspace()), 0
-    )
+    col_start = next((i for i, c in enumerate(tactic_text) if not c.isspace()), 0)
     col_end = len(tactic_text)
 
     goal_before = client.get_goal(resolved.rel_path, abs_line_0, col_start)

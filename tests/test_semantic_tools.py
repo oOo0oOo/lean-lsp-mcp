@@ -6,10 +6,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import AsyncContextManager
 
-import orjson
 import pytest
 
-from tests.helpers.mcp_client import MCPClient, result_json, result_text
+from tests.helpers.mcp_client import MCPClient, result_text
 
 
 @pytest.fixture()
@@ -94,7 +93,9 @@ async def test_lean_check_definition(
         )
         text = result_text(result)
         # sampleDef should have no errors
-        assert "success" in text.lower() or "true" in text.lower() or '"items": []' in text
+        assert (
+            "success" in text.lower() or "true" in text.lower() or '"items": []' in text
+        )
 
 
 @pytest.mark.asyncio

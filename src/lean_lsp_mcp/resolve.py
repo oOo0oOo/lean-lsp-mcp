@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import Context
@@ -129,9 +128,7 @@ async def resolve_name(ctx: Context, name: str) -> ResolvedName:
     abs_path = str((project_root / rel_file).resolve())
     rel_path = setup_client_for_file(ctx, abs_path)
     if not rel_path:
-        raise LeanToolError(
-            f"Unable to start LSP server for file '{rel_file}'."
-        )
+        raise LeanToolError(f"Unable to start LSP server for file '{rel_file}'.")
 
     client: LeanLSPClient = lifespan.client
 
