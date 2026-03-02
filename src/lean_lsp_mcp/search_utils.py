@@ -34,13 +34,19 @@ def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen
     Separated for test monkeypatching and to allow early termination once we
     have enough matches.
     """
-    return subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-    )
+    try:
+        return subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+        )
+    except FileNotFoundError:
+        _ok, msg = check_ripgrep_status()
+        if not _ok:
+            raise FileNotFoundError(msg) from None
+        raise
 
 
 def check_ripgrep_status() -> tuple[bool, str]:
@@ -202,9 +208,9 @@ def lean_local_search(
             )
 
             try:
-                display_path = str(abs_path.relative_to(root))
+                display_path = abs_path.relative_to(root).as_posix()
             except ValueError:
-                display_path = str(file_path)
+                display_path = file_path.as_posix()
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
 
