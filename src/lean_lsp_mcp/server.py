@@ -92,6 +92,14 @@ from lean_lsp_mcp.utils import (
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
 
+def _raise_invalid_path(file_path: str) -> None:
+    """Raise a descriptive error when a file can't be resolved to a Lean project."""
+    raise LeanToolError(
+        f"Invalid Lean file path: '{file_path}' not found in any Lean project "
+        "(no lean-toolchain ancestor or file does not exist)"
+    )
+
+
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
     """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -500,9 +508,7 @@ def file_outline(
     """Get imports and declarations with type signatures. Token-efficient."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     return generate_outline_data(client, rel_path, max_declarations)
@@ -606,9 +612,7 @@ def diagnostic_messages(
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -665,9 +669,7 @@ def goal(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -720,9 +722,7 @@ def term_goal(
     """Get the expected type at a position."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -734,7 +734,7 @@ def term_goal(
 
     line_context = lines[line - 1]
     if column is None:
-        column = len(line_context)
+        column = max(len(line_context), 1)
 
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
     check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
@@ -765,9 +765,7 @@ def hover(
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -814,9 +812,7 @@ def completions(
     """Get IDE autocompletions. Use on INCOMPLETE code (after `.` or partial name)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -889,9 +885,7 @@ def declaration_file(
     """Get file where a symbol is declared. Symbol must be present in file first."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -987,9 +981,7 @@ def _multi_attempt_lsp(
     """Try tactics using LSP file modifications (fallback)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1168,9 +1160,7 @@ def verify_theorem(
 
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     abs_path = Path(file_path)
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -1484,9 +1474,7 @@ async def state_search(
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1538,9 +1526,7 @@ async def hammer_premise(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1594,9 +1580,7 @@ def code_actions(
     """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1666,9 +1650,7 @@ def get_widgets(
     """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1695,9 +1677,7 @@ def get_widget_source(
     """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
