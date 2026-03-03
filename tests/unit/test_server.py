@@ -41,6 +41,29 @@ class _FailingRepl:
         raise RuntimeError("close boom")
 
 
+class _MockCoordinationClient:
+    instances: list["_MockCoordinationClient"] = []
+
+    def __init__(self, **_kwargs) -> None:
+        self.ensure_calls = 0
+        self.register_calls: list[dict[str, object]] = []
+        self.unregister_calls: list[str] = []
+        self.release_calls: list[tuple[str, str]] = []
+        self.__class__.instances.append(self)
+
+    def ensure_available(self) -> None:
+        self.ensure_calls += 1
+
+    def register_instance(self, **kwargs) -> None:
+        self.register_calls.append(kwargs)
+
+    def unregister_instance(self, *, instance_id: str) -> None:
+        self.unregister_calls.append(instance_id)
+
+    def release_lease(self, *, instance_id: str, lease_id: str) -> None:
+        self.release_calls.append((instance_id, lease_id))
+
+
 def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
     context = server.AppContext(
         lean_project_path=None,
@@ -110,6 +133,59 @@ async def test_app_lifespan_suppresses_client_close_error(
 
 
 @pytest.mark.asyncio
+async def test_app_lifespan_keeps_lease_if_client_close_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _MockCoordinationClient.instances.clear()
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION", "broker")
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("LEAN_LSP_MCP_INSTANCE_ID", "inst-123")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_ROOT", "lineage-1")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_DEPTH", "1")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_LINEAGE_DEPTH", "3")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_WORKERS", "2")
+    monkeypatch.setattr(server, "CoordinationClient", _MockCoordinationClient)
+
+    failing_client = _FailingCloseClient()
+    async with server.app_lifespan(object()) as context:
+        context.client = failing_client
+        context.client_lease_id = "lease-1"
+        context.client_worker_key = "worker-1"
+
+    assert failing_client.close_calls == 1
+    assert len(_MockCoordinationClient.instances) == 1
+    broker = _MockCoordinationClient.instances[0]
+    assert broker.release_calls == []
+    assert broker.unregister_calls == []
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_unregisters_if_client_close_fails_without_lease(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _MockCoordinationClient.instances.clear()
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION", "broker")
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("LEAN_LSP_MCP_INSTANCE_ID", "inst-123")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_ROOT", "lineage-1")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_DEPTH", "1")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_LINEAGE_DEPTH", "3")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_WORKERS", "2")
+    monkeypatch.setattr(server, "CoordinationClient", _MockCoordinationClient)
+
+    failing_client = _FailingCloseClient()
+    async with server.app_lifespan(object()) as context:
+        context.client = failing_client
+
+    assert failing_client.close_calls == 1
+    assert len(_MockCoordinationClient.instances) == 1
+    broker = _MockCoordinationClient.instances[0]
+    registered_id = str(broker.register_calls[0]["instance_id"])
+    assert broker.release_calls == []
+    assert broker.unregister_calls == [registered_id]
+
+
+@pytest.mark.asyncio
 async def test_app_lifespan_suppresses_repl_close_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -141,6 +217,114 @@ async def test_app_lifespan_preserves_startup_error(
     monkeypatch.setattr(server, "_ensure_shared_loogle", boom)
 
     with pytest.raises(RuntimeError, match="startup boom"):
+        async with server.app_lifespan(object()):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_unregisters_broker_on_startup_failure_after_register(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def boom(_project_path):
+        raise RuntimeError("startup boom")
+
+    _MockCoordinationClient.instances.clear()
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION", "broker")
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("LEAN_LSP_MCP_INSTANCE_ID", "inst-123")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_ROOT", "lineage-1")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_DEPTH", "1")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_LINEAGE_DEPTH", "3")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_WORKERS", "2")
+    monkeypatch.setattr(server, "CoordinationClient", _MockCoordinationClient)
+    monkeypatch.setattr(server, "_ensure_shared_loogle", boom)
+
+    with pytest.raises(RuntimeError, match="startup boom"):
+        async with server.app_lifespan(object()):
+            pass
+
+    assert len(_MockCoordinationClient.instances) == 1
+    broker = _MockCoordinationClient.instances[0]
+    assert len(broker.register_calls) == 1
+    registered_id = str(broker.register_calls[0]["instance_id"])
+    assert broker.unregister_calls == [registered_id]
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_broker_registers_and_unregisters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _MockCoordinationClient.instances.clear()
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION", "broker")
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("LEAN_LSP_MCP_INSTANCE_ID", "inst-123")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_ROOT", "lineage-1")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_DEPTH", "1")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_LINEAGE_DEPTH", "3")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_WORKERS", "2")
+    monkeypatch.setattr(server, "CoordinationClient", _MockCoordinationClient)
+
+    async with server.app_lifespan(object()) as context:
+        assert context.coordination_client is not None
+        assert context.instance_id.startswith("inst-123:")
+        assert context.lineage_root == "lineage-1"
+        assert context.lineage_depth == 1
+
+    assert len(_MockCoordinationClient.instances) == 1
+    client = _MockCoordinationClient.instances[0]
+    assert client.ensure_calls == 1
+    registered_id = str(client.register_calls[0]["instance_id"])
+    assert registered_id.startswith("inst-123:")
+    assert client.unregister_calls == [registered_id]
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_broker_uses_unique_instance_id_per_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _MockCoordinationClient.instances.clear()
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION", "broker")
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("LEAN_LSP_MCP_INSTANCE_ID", "inst-123")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_ROOT", "lineage-1")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_DEPTH", "1")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_LINEAGE_DEPTH", "3")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_WORKERS", "2")
+    monkeypatch.setattr(server, "CoordinationClient", _MockCoordinationClient)
+
+    async with server.app_lifespan(object()) as context_a:
+        id_a = context_a.instance_id
+    async with server.app_lifespan(object()) as context_b:
+        id_b = context_b.instance_id
+
+    assert id_a != id_b
+    assert id_a.startswith("inst-123:")
+    assert id_b.startswith("inst-123:")
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_broker_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _FailingBroker:
+        def __init__(self, **_kwargs) -> None:
+            return
+
+        def ensure_available(self) -> None:
+            raise server.CoordinationError("broker down")
+
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION", "broker")
+    monkeypatch.setenv("LEAN_LSP_MCP_COORDINATION_DIR", str(tmp_path / "coord"))
+    monkeypatch.setenv("LEAN_LSP_MCP_INSTANCE_ID", "inst-123")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_ROOT", "lineage-1")
+    monkeypatch.setenv("LEAN_LSP_MCP_LINEAGE_DEPTH", "1")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_LINEAGE_DEPTH", "3")
+    monkeypatch.setenv("LEAN_LSP_MCP_MAX_WORKERS", "2")
+    monkeypatch.setattr(server, "CoordinationClient", _FailingBroker)
+
+    with pytest.raises(
+        RuntimeError, match="Broker coordination startup failed \\(fail-closed\\)"
+    ):
         async with server.app_lifespan(object()):
             pass
 
