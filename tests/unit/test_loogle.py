@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,14 +14,25 @@ from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir
 class TestGetCacheDir:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("LEAN_LOOGLE_CACHE_DIR", raising=False)
-        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(Path, "home", lambda: Path("/home/user"))
-        assert get_cache_dir() == Path("/home/user/.cache/lean-lsp-mcp/loogle")
+        if os.name == "nt":
+            monkeypatch.delenv("LOCALAPPDATA", raising=False)
+            monkeypatch.setattr(Path, "home", lambda: Path("C:/Users/user"))
+            assert get_cache_dir() == Path(
+                "C:/Users/user/AppData/Local/lean-lsp-mcp/loogle"
+            )
+        else:
+            monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+            monkeypatch.setattr(Path, "home", lambda: Path("/home/user"))
+            assert get_cache_dir() == Path("/home/user/.cache/lean-lsp-mcp/loogle")
 
     def test_xdg(self, monkeypatch):
         monkeypatch.delenv("LEAN_LOOGLE_CACHE_DIR", raising=False)
-        monkeypatch.setenv("XDG_CACHE_HOME", "/xdg")
-        assert get_cache_dir() == Path("/xdg/lean-lsp-mcp/loogle")
+        if os.name == "nt":
+            monkeypatch.setenv("LOCALAPPDATA", "C:/LocalApp")
+            assert get_cache_dir() == Path("C:/LocalApp/lean-lsp-mcp/loogle")
+        else:
+            monkeypatch.setenv("XDG_CACHE_HOME", "/xdg")
+            assert get_cache_dir() == Path("/xdg/lean-lsp-mcp/loogle")
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("LEAN_LOOGLE_CACHE_DIR", "/custom")
