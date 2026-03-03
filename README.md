@@ -546,6 +546,13 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
+- `LEAN_LSP_MCP_COORDINATION`: Coordination mode: `direct` (default) or `broker`.
+- `LEAN_LSP_MCP_COORDINATION_DIR`: Directory for broker socket/state (default: `$TMPDIR/lean-lsp-mcp-coordination`).
+- `LEAN_LSP_MCP_MAX_LINEAGE_DEPTH`: Maximum nested server lineage depth (default: `3`).
+- `LEAN_LSP_MCP_MAX_WORKERS`: Maximum concurrent coordinated Lean workers in broker mode (default: `2`).
+- `LEAN_LSP_MCP_INSTANCE_ID`: Optional explicit instance identifier (auto-generated when unset).
+- `LEAN_LSP_MCP_LINEAGE_ROOT`: Optional lineage root for nested agent/server chains (auto-generated for root process).
+- `LEAN_LSP_MCP_LINEAGE_DEPTH`: Optional lineage depth for nested chains (auto-derived on startup).
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
@@ -585,6 +592,18 @@ uvx lean-lsp-mcp --transport stdio # Default transport
 uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
 uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at http://localhost:12345/sse
 ```
+
+You can also control nested multi-agent coordination:
+
+```bash
+# Legacy behavior: each process manages its own Lean worker
+uvx lean-lsp-mcp --coordination direct
+
+# Broker-coordinated workers (Unix only): safer for nested agent/server chains
+uvx lean-lsp-mcp --coordination broker --coordination-dir /tmp/lean-lsp-mcp-coord --max-workers 2 --max-lineage-depth 3
+```
+
+In broker mode, startup is fail-closed: if broker setup/connection fails, the server exits instead of spawning unmanaged Lean workers.
 
 ### Bearer Token Authentication
 

@@ -23,9 +23,28 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    close_client,
     infer_project_path,
     setup_client_for_file,
     startup_client,
+)
+from lean_lsp_mcp.coordination import (
+    COORDINATION_MODE_BROKER,
+    COORDINATION_MODE_DIRECT,
+    DEFAULT_LINEAGE_WORKER_LIMIT,
+    DEFAULT_MAX_LINEAGE_DEPTH,
+    DEFAULT_MAX_WORKERS,
+    ENV_COORDINATION_DIR,
+    ENV_COORDINATION_MODE,
+    ENV_INSTANCE_ID,
+    ENV_LINEAGE_DEPTH,
+    ENV_LINEAGE_ROOT,
+    ENV_MAX_LINEAGE_DEPTH,
+    ENV_MAX_WORKERS,
+    CoordinationClient,
+    CoordinationError,
+    default_coordination_dir,
+    parse_non_negative_int_env,
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
@@ -77,7 +96,6 @@ from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     LeanToolError,
     OptionalTokenVerifier,
-    OutputCapture,
     check_lsp_response,
     extract_failed_dependency_paths,
     extract_goals_list,
@@ -213,6 +231,17 @@ class AppContext:
     # REPL for efficient multi-attempt execution
     repl: Repl | None = None
     repl_enabled: bool = False
+    coordination_mode: str = COORDINATION_MODE_DIRECT
+    coordination_dir: Path | None = None
+    coordination_client: CoordinationClient | None = None
+    instance_id: str = ""
+    lineage_root: str = ""
+    lineage_depth: int = 0
+    max_lineage_depth: int = DEFAULT_MAX_LINEAGE_DEPTH
+    max_workers: int = DEFAULT_MAX_WORKERS
+    lineage_worker_limit: int = DEFAULT_LINEAGE_WORKER_LIMIT
+    client_lease_id: str | None = None
+    client_worker_key: str | None = None
 
 
 @asynccontextmanager
@@ -220,6 +249,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
     repl_on = False
     context: AppContext | None = None
+    coordination_client: CoordinationClient | None = None
+    instance_id = ""
+    instance_registered = False
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -227,6 +259,67 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_project_path = None
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
+
+        coordination_mode = os.environ.get(
+            ENV_COORDINATION_MODE, COORDINATION_MODE_DIRECT
+        ).strip()
+        if not coordination_mode:
+            coordination_mode = COORDINATION_MODE_DIRECT
+
+        coordination_dir = Path(
+            os.environ.get(ENV_COORDINATION_DIR, str(default_coordination_dir()))
+        ).expanduser()
+
+        parent_instance_id = os.environ.get(ENV_INSTANCE_ID, "").strip()
+        session_instance_id = uuid.uuid4().hex
+        if parent_instance_id:
+            instance_id = f"{parent_instance_id}:{session_instance_id}"
+        else:
+            instance_id = session_instance_id
+        lineage_root = os.environ.get(ENV_LINEAGE_ROOT, "").strip() or instance_id
+        lineage_depth_raw = os.environ.get(ENV_LINEAGE_DEPTH, "0").strip() or "0"
+        try:
+            lineage_depth = int(lineage_depth_raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{ENV_LINEAGE_DEPTH} must be an integer, got: {lineage_depth_raw!r}"
+            ) from exc
+
+        max_lineage_depth = parse_non_negative_int_env(
+            ENV_MAX_LINEAGE_DEPTH, DEFAULT_MAX_LINEAGE_DEPTH
+        )
+        max_workers = parse_non_negative_int_env(ENV_MAX_WORKERS, DEFAULT_MAX_WORKERS)
+        if max_workers <= 0:
+            raise RuntimeError(f"{ENV_MAX_WORKERS} must be > 0, got: {max_workers}")
+        if lineage_depth > max_lineage_depth:
+            raise RuntimeError(
+                f"Lineage depth {lineage_depth} exceeds max {max_lineage_depth}."
+            )
+
+        if coordination_mode == COORDINATION_MODE_BROKER:
+            if os.name == "nt":
+                raise RuntimeError(
+                    "Broker coordination mode is currently supported on Unix only."
+                )
+            try:
+                coordination_client = CoordinationClient(
+                    coordination_dir=coordination_dir,
+                    max_workers=max_workers,
+                    lineage_worker_limit=DEFAULT_LINEAGE_WORKER_LIMIT,
+                )
+                coordination_client.ensure_available()
+                coordination_client.register_instance(
+                    instance_id=instance_id,
+                    lineage_root=lineage_root,
+                    lineage_depth=lineage_depth,
+                    max_lineage_depth=max_lineage_depth,
+                    pid=os.getpid(),
+                )
+                instance_registered = True
+            except CoordinationError as exc:
+                raise RuntimeError(
+                    f"Broker coordination startup failed (fail-closed): {exc}"
+                ) from exc
 
         # Use the shared loogle singleton (initialised at most once)
         loogle_manager, loogle_local_available = await _ensure_shared_loogle(
@@ -268,24 +361,84 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_local_available=loogle_local_available,
             repl=repl,
             repl_enabled=repl_on,
+            coordination_mode=coordination_mode,
+            coordination_dir=coordination_dir,
+            coordination_client=coordination_client,
+            instance_id=instance_id,
+            lineage_root=lineage_root,
+            lineage_depth=lineage_depth,
+            max_lineage_depth=max_lineage_depth,
+            max_workers=max_workers,
+            lineage_worker_limit=DEFAULT_LINEAGE_WORKER_LIMIT,
         )
         yield context
     finally:
         logger.info("Closing Lean LSP client")
+        client_close_failed = False
 
-        if context and context.client:
+        if context is not None and context.client:
             try:
                 context.client.close()
             except Exception:
+                client_close_failed = True
                 logger.exception(
                     "Lean client close failed during app_lifespan teardown"
                 )
+            finally:
+                context.client = None
+
+        if context is not None and context.coordination_client and context.client_lease_id:
+            if client_close_failed:
+                logger.error(
+                    "Skipping coordination lease release during teardown because "
+                    "client shutdown failed; keeping lease fail-closed."
+                )
+            else:
+                try:
+                    context.coordination_client.release_lease(
+                        instance_id=context.instance_id,
+                        lease_id=context.client_lease_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to release coordination lease during teardown"
+                    )
+                else:
+                    context.client_lease_id = None
+                    context.client_worker_key = None
 
         if repl:
             try:
                 await repl.close()
             except Exception:
                 logger.exception("REPL close failed during app_lifespan teardown")
+
+        keep_fail_closed_lease = (
+            context is not None
+            and client_close_failed
+            and context.coordination_client is not None
+            and bool(context.client_lease_id)
+        )
+        if keep_fail_closed_lease:
+            logger.error(
+                "Skipping coordination instance unregister during teardown because "
+                "client shutdown failed while a lease is still held."
+            )
+
+        unregister_client = (
+            context.coordination_client if context is not None else coordination_client
+        )
+        unregister_instance_id = context.instance_id if context is not None else instance_id
+        if (
+            not keep_fail_closed_lease
+            and unregister_client is not None
+            and instance_registered
+            and unregister_instance_id
+        ):
+            try:
+                unregister_client.unregister_instance(instance_id=unregister_instance_id)
+            except Exception:
+                logger.exception("Failed to unregister coordination instance")
 
 
 mcp_kwargs = dict(
@@ -391,30 +544,60 @@ async def lsp_build(
 
     log_lines: List[str] = []
     errors: List[str] = []
+    reserved_lease_for_restart = False
+
+    def _release_reserved_lease_after_failure() -> None:
+        nonlocal reserved_lease_for_restart
+        if not reserved_lease_for_restart:
+            return
+
+        lifespan = ctx.request_context.lifespan_context
+        if lifespan.client is not None:
+            return
+
+        if not close_client(ctx):
+            logger.error(
+                "Failed to release reserved coordination lease after lean_build "
+                "restart failure."
+            )
+        reserved_lease_for_restart = False
 
     try:
-        client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        if client:
-            ctx.request_context.lifespan_context.client = None
-            try:
-                client.close()
-            except Exception:
-                logger.exception("Lean client close failed during lsp_build restart")
+        if not close_client(ctx, release_lease=False):
+            raise LeanToolError(
+                "Failed to close existing Lean client; build aborted because "
+                "restart safety could not be verified."
+            )
+        reserved_lease_for_restart = bool(
+            getattr(ctx.request_context.lifespan_context, "client_lease_id", None)
+        )
 
         if clean:
-            await ctx.report_progress(
+            await _safe_report_progress(
+                ctx,
                 progress=1, total=16, message="Running `lake clean`"
             )
             clean_proc = await asyncio.create_subprocess_exec(
-                "lake", "clean", cwd=lean_project_path_obj
+                "lake",
+                "clean",
+                cwd=lean_project_path_obj,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             await clean_proc.wait()
 
-        await ctx.report_progress(
+        await _safe_report_progress(
+            ctx,
             progress=2, total=16, message="Running `lake exe cache get`"
         )
         cache_proc = await asyncio.create_subprocess_exec(
-            "lake", "exe", "cache", "get", cwd=lean_project_path_obj
+            "lake",
+            "exe",
+            "cache",
+            "get",
+            cwd=lean_project_path_obj,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         await cache_proc.wait()
 
@@ -442,7 +625,8 @@ async def lsp_build(
             if m := re.search(
                 r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
             ):
-                await ctx.report_progress(
+                await _safe_report_progress(
+                    ctx,
                     progress=int(m.group(1)),
                     total=int(m.group(2)),
                     message=m.group(3) or "Building",
@@ -451,6 +635,7 @@ async def lsp_build(
         await process.wait()
 
         if process.returncode != 0:
+            _release_reserved_lease_after_failure()
             return BuildResult(
                 success=False,
                 output="\n".join(log_lines[-output_lines:]) if output_lines else "",
@@ -459,13 +644,10 @@ async def lsp_build(
             )
 
         # Start LSP client (without initial build since we just did it)
-        with OutputCapture():
-            client = LeanLSPClient(
-                lean_project_path_obj, initial_build=False, prevent_cache_get=True
-            )
+        startup_client(ctx, prevent_cache_get_override=True)
 
         logger.info("Built project and re-started LSP client")
-        ctx.request_context.lifespan_context.client = client
+        reserved_lease_for_restart = False
 
         return BuildResult(
             success=True,
@@ -474,6 +656,7 @@ async def lsp_build(
         )
 
     except Exception as e:
+        _release_reserved_lease_after_failure()
         return BuildResult(
             success=False,
             output="\n".join(log_lines[-output_lines:]) if output_lines else "",
