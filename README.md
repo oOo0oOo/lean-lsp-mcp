@@ -150,7 +150,7 @@ Get a concise outline of a Lean file showing imports and declarations with type 
 
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. Use `severity` (`"error"`, `"warning"`, `"info"`, `"hint"`) to filter to a single level. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
 
 <details>
 <summary>Example output</summary>
