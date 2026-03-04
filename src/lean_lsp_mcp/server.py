@@ -1463,7 +1463,7 @@ async def leanfinder(
         openWorldHint=True,
     ),
 )
-@rate_limited("lean_state_search", max_requests=3, per_seconds=30)
+@rate_limited("lean_state_search", max_requests=6, per_seconds=30)
 async def state_search(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
@@ -1512,7 +1512,7 @@ async def state_search(
         openWorldHint=True,
     ),
 )
-@rate_limited("hammer_premise", max_requests=3, per_seconds=30)
+@rate_limited("hammer_premise", max_requests=6, per_seconds=30)
 async def hammer_premise(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
