@@ -423,6 +423,7 @@ Search for Lean definitions and theorems using [loogle.lean-lang.org](https://lo
 - Supports queries by constant, lemma name, subexpression, type, or conclusion.
 - Example: `Real.sin`, `"differ"`, `_ * (_ ^ _)`, `(?a -> ?b) -> List ?a -> List ?b`, `|- tsum _ = _ * tsum _`
 - **Local mode available**: Use `--loogle-local` to run loogle locally (avoids rate limits, see [Local Loogle](#local-loogle) section)
+- **Self-hosted**: Set `LOOGLE_URL` to point at a self-hosted instance. Set `LOOGLE_HEADERS` to a JSON object for extra headers (e.g. `'{"X-API-Key": "..."}'`).
 
 <details>
 <summary>Example output (`Real.sin`)</summary>
@@ -546,6 +547,8 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
+- `LOOGLE_URL`: URL for a self-hosted Loogle instance (default: `https://loogle.lean-lang.org`).
+- `LOOGLE_HEADERS`: JSON object of extra HTTP headers for Loogle requests (e.g. `'{"X-API-Key": "..."}'`).
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
