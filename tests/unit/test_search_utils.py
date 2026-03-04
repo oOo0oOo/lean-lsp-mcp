@@ -604,9 +604,7 @@ class TestLocalSearchNamespaceQualification:
         project_root = tmp_path / "proj"
         project_root.mkdir()
         src = project_root / "Test.lean"
-        src.write_text(
-            "namespace MyNS\ntheorem myThm : True := trivial\nend MyNS\n"
-        )
+        src.write_text("namespace MyNS\ntheorem myThm : True := trivial\nend MyNS\n")
 
         events = [
             _make_match(str(src), "theorem myThm : True := trivial", line_number=2),
@@ -618,9 +616,7 @@ class TestLocalSearchNamespaceQualification:
             expected_cwd=str(project_root.resolve()),
         )
 
-        results = search_utils.lean_local_search(
-            "myThm", project_root=project_root
-        )
+        results = search_utils.lean_local_search("myThm", project_root=project_root)
 
         assert results[0]["name"] == "MyNS.myThm"
 
@@ -643,9 +639,7 @@ class TestLocalSearchNamespaceQualification:
             expected_cwd=str(project_root.resolve()),
         )
 
-        results = search_utils.lean_local_search(
-            "topDef", project_root=project_root
-        )
+        results = search_utils.lean_local_search("topDef", project_root=project_root)
 
         assert results[0]["name"] == "topDef"
 
