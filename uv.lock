@@ -325,7 +325,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.22.4"
+version = "0.23.0"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
