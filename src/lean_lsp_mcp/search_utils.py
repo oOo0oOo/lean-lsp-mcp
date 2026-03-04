@@ -119,6 +119,34 @@ def _local_search_sort_key(
     return (relevance_rank, package_penalty, len(basename), basename, name)
 
 
+def _resolve_namespaces(file_path: Path, line_numbers: set[int]) -> dict[int, str]:
+    """Return the enclosing namespace prefix for each 1-indexed *line_number*."""
+    if not line_numbers:
+        return {}
+    try:
+        lines = file_path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+    scope_stack: list[str | None] = []  # None = section/mutual (not part of FQN)
+    result: dict[int, str] = {}
+
+    for i, raw in enumerate(lines[: max(line_numbers)], 1):
+        stripped = raw.strip()
+        if m := re.match(r"^namespace\s+([\w.']+)", stripped):
+            scope_stack.append(m.group(1))
+        elif re.match(r"^(?:section|mutual)\b", stripped):
+            scope_stack.append(None)
+        elif re.match(r"^end\b", stripped):
+            if scope_stack:
+                scope_stack.pop()
+
+        if i in line_numbers:
+            result[i] = ".".join(s for s in scope_stack if s is not None)
+
+    return result
+
+
 def lean_local_search(
     query: str,
     limit: int = 32,
@@ -157,6 +185,7 @@ def lean_local_search(
     process = _create_ripgrep_process(command, cwd=str(root))
 
     matches: list[dict[str, str]] = []
+    match_locations: list[tuple[Path, int]] = []
     max_candidates = min(max(limit * 8, limit), 2048)
     stderr_text = ""
     terminated_early = False
@@ -202,6 +231,7 @@ def lean_local_search(
                 continue
 
             decl_kind, decl_name = parts[0], parts[1].rstrip(":")
+            line_number = data.get("line_number", 0)
             file_path = Path(data["path"]["text"])
             abs_path = (
                 file_path if file_path.is_absolute() else (root / file_path).resolve()
@@ -213,6 +243,7 @@ def lean_local_search(
                 display_path = file_path.as_posix()
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
+            match_locations.append((abs_path, line_number))
 
             if len(matches) >= max_candidates:
                 terminated_early = True
@@ -266,6 +297,18 @@ def lean_local_search(
         if stderr_text:
             error_msg += f"\n{stderr_text}"
         raise RuntimeError(error_msg)
+
+    # Resolve enclosing namespaces and qualify declaration names.
+    file_lines: dict[Path, set[int]] = {}
+    for abs_path, line_num in match_locations:
+        file_lines.setdefault(abs_path, set()).add(line_num)
+    ns_cache: dict[Path, dict[int, str]] = {
+        fp: _resolve_namespaces(fp, lns) for fp, lns in file_lines.items()
+    }
+    for match, (abs_path, line_num) in zip(matches, match_locations):
+        prefix = ns_cache.get(abs_path, {}).get(line_num, "")
+        if prefix:
+            match["name"] = f"{prefix}.{match['name']}"
 
     normalized_query = query.casefold()
     matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))

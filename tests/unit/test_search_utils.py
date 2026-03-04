@@ -74,13 +74,14 @@ def test_check_ripgrep_status_when_rg_missing_platform_specific(
         assert snippet in message
 
 
-def _make_match(path: str, line: str) -> str:
+def _make_match(path: str, line: str, line_number: int = 1) -> str:
     return orjson.dumps(
         {
             "type": "match",
             "data": {
                 "path": {"text": path},
                 "lines": {"text": line},
+                "line_number": line_number,
             },
         }
     ).decode("utf-8")
@@ -526,6 +527,129 @@ def test_lean_search_returns_empty_for_no_matches(monkeypatch, reload_search_uti
     assert search_utils.lean_local_search("nothing", project_root=project_root) == []
 
 
+class TestResolveNamespaces:
+    """Tests for _resolve_namespaces used to qualify declaration names."""
+
+    @pytest.mark.parametrize(
+        "content, line_numbers, expected",
+        [
+            # simple namespace
+            ("namespace Foo\ntheorem bar : True := trivial\nend Foo", {2}, {2: "Foo"}),
+            # nested namespace
+            (
+                "namespace Foo\nnamespace Bar\ndef baz : Nat := 0\nend Bar\nend Foo",
+                {3},
+                {3: "Foo.Bar"},
+            ),
+            # dotted namespace
+            ("namespace Foo.Bar\ndef baz : Nat := 0\nend Foo.Bar", {2}, {2: "Foo.Bar"}),
+            # no namespace
+            ("def top : Nat := 0", {1}, {1: ""}),
+            # section does not contribute to FQN
+            (
+                "namespace Foo\nsection Helper\ndef bar : Nat := 0\nend Helper\nend Foo",
+                {3},
+                {3: "Foo"},
+            ),
+            # after namespace closed
+            (
+                "namespace Foo\ndef bar : Nat := 0\nend Foo\ndef top : Nat := 1",
+                {2, 4},
+                {2: "Foo", 4: ""},
+            ),
+            # mutual block does not contribute to FQN
+            (
+                "namespace Foo\nmutual\ndef bar : Nat := 0\nend\nend Foo",
+                {3},
+                {3: "Foo"},
+            ),
+            # namespace reopened after close
+            (
+                "namespace A\nend A\nnamespace A\ndef x : Nat := 0\nend A",
+                {4},
+                {4: "A"},
+            ),
+            # commented-out namespace ignored
+            (
+                "-- namespace Fake\ndef top : Nat := 0",
+                {2},
+                {2: ""},
+            ),
+        ],
+    )
+    def test_resolve_namespaces(
+        self, tmp_path, reload_search_utils, content, line_numbers, expected
+    ):
+        f = tmp_path / "Test.lean"
+        f.write_text(content)
+        assert reload_search_utils._resolve_namespaces(f, line_numbers) == expected
+
+    def test_nonexistent_file(self, tmp_path, reload_search_utils):
+        f = tmp_path / "Missing.lean"
+        assert reload_search_utils._resolve_namespaces(f, {1}) == {}
+
+    def test_empty_line_numbers(self, tmp_path, reload_search_utils):
+        f = tmp_path / "Test.lean"
+        f.write_text("namespace Foo\ndef bar : Nat := 0\nend Foo")
+        assert reload_search_utils._resolve_namespaces(f, set()) == {}
+
+
+class TestLocalSearchNamespaceQualification:
+    """Test that lean_local_search returns fully-qualified names."""
+
+    def test_qualifies_names_from_namespace(
+        self, tmp_path, monkeypatch, reload_search_utils
+    ):
+        search_utils = reload_search_utils
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        src = project_root / "Test.lean"
+        src.write_text(
+            "namespace MyNS\ntheorem myThm : True := trivial\nend MyNS\n"
+        )
+
+        events = [
+            _make_match(str(src), "theorem myThm : True := trivial", line_number=2),
+        ]
+        _configure_env(
+            monkeypatch,
+            search_utils,
+            events,
+            expected_cwd=str(project_root.resolve()),
+        )
+
+        results = search_utils.lean_local_search(
+            "myThm", project_root=project_root
+        )
+
+        assert results[0]["name"] == "MyNS.myThm"
+
+    def test_top_level_stays_unqualified(
+        self, tmp_path, monkeypatch, reload_search_utils
+    ):
+        search_utils = reload_search_utils
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        src = project_root / "Test.lean"
+        src.write_text("def topDef : Nat := 0\n")
+
+        events = [
+            _make_match(str(src), "def topDef : Nat := 0", line_number=1),
+        ]
+        _configure_env(
+            monkeypatch,
+            search_utils,
+            events,
+            expected_cwd=str(project_root.resolve()),
+        )
+
+        results = search_utils.lean_local_search(
+            "topDef", project_root=project_root
+        )
+
+        assert results[0]["name"] == "topDef"
+
+
 TEST_PROJECT_ROOT = Path(__file__).resolve().parents[1] / "test_project"
 MATHLIB_DIR = TEST_PROJECT_ROOT / ".lake" / "packages" / "mathlib"
 
@@ -564,12 +688,9 @@ def test_lean_search_integration_mathlib(reload_search_utils):
 
     assert results
     assert any(
-        item
-        == {
-            "name": "map_mul_right",
-            "kind": "theorem",
-            "file": ".lake/packages/mathlib/Mathlib/GroupTheory/MonoidLocalization/Maps.lean",
-        }
+        item["file"]
+        == ".lake/packages/mathlib/Mathlib/GroupTheory/MonoidLocalization/Maps.lean"
+        and item["name"].endswith("map_mul_right")
         for item in results
     )
 
@@ -589,12 +710,8 @@ def test_lean_search_integration_mathlib_prefix_results(reload_search_utils):
 
     assert len(results) >= 2
     assert any(
-        item
-        == {
-            "name": "add_comm_zero",
-            "kind": "theorem",
-            "file": ".lake/packages/mathlib/MathlibTest/Find.lean",
-        }
+        item["file"] == ".lake/packages/mathlib/MathlibTest/Find.lean"
+        and item["name"].endswith("add_comm_zero")
         for item in results
     )
 
