@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
 from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
+    OutputCapture,
+    extract_failed_dependency_paths,
+    extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
     format_diagnostics,
-    format_goal,
     format_line,
+    is_build_stderr,
 )
 
 
@@ -30,10 +35,20 @@ def test_format_diagnostics_compact_range() -> None:
     assert rendered == ["l4c2-l4c6, severity: 2\nExample message"]
 
 
-def test_format_goal_strips_code_blocks() -> None:
-    goal = {"rendered": "```lean\ntest\n```"}
-    assert format_goal(goal, "fallback") == "test"
-    assert format_goal(None, "fallback") == "fallback"
+def test_extract_goals_list() -> None:
+    # With goals list
+    response = {"goals": ["goal1", "goal2"], "rendered": "..."}
+    assert extract_goals_list(response) == ["goal1", "goal2"]
+
+    # Empty goals list (proof complete)
+    response = {"goals": [], "rendered": "no goals"}
+    assert extract_goals_list(response) == []
+
+    # None response (no goals at position)
+    assert extract_goals_list(None) == []
+
+    # Missing goals key
+    assert extract_goals_list({"rendered": "..."}) == []
 
 
 def test_extract_range_multiline() -> None:
@@ -122,6 +137,55 @@ def test_optional_token_verifier() -> None:
     assert rejected is None
 
 
+def test_output_capture_does_not_touch_stdout_in_stdio_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
+
+    real_dup = os.dup
+    real_dup2 = os.dup2
+    stdout_fd = sys.stdout.fileno()
+    dup2_targets: list[int] = []
+
+    def guarded_dup(fd: int) -> int:
+        if fd == stdout_fd:
+            raise AssertionError("stdout fd must not be duplicated in stdio mode")
+        return real_dup(fd)
+
+    def tracking_dup2(src: int, dst: int) -> None:
+        dup2_targets.append(dst)
+        real_dup2(src, dst)
+
+    monkeypatch.setattr(os, "dup", guarded_dup)
+    monkeypatch.setattr(os, "dup2", tracking_dup2)
+
+    with OutputCapture() as capture:
+        sys.stderr.write("stderr-only\n")
+        sys.stderr.flush()
+
+    assert stdout_fd not in dup2_targets
+    assert "stderr-only" in capture.get_output()
+
+
+def test_output_capture_captures_stdout_when_not_stdio(monkeypatch) -> None:
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "streamable-http")
+
+    with OutputCapture() as capture:
+        print("stdout-kept")
+        sys.stdout.flush()
+
+    assert "stdout-kept" in capture.get_output()
+
+
+def test_output_capture_stdio_subset_cleanup_does_not_crash(monkeypatch) -> None:
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
+
+    with OutputCapture() as capture:
+        pass
+
+    assert capture.get_output() == ""
+
+
 def test_format_diagnostics_line_filter() -> None:
     diagnostics = [
         {
@@ -145,3 +209,59 @@ def test_format_diagnostics_line_filter() -> None:
     assert keep_all == ["l3c1-l3c4, severity: 1\nOnly on line three"]
     assert only_line_two == ["l3c1-l3c4, severity: 1\nOnly on line three"]
     assert other_line == []
+
+
+# Tests for build stderr parsing
+
+
+def test_extract_failed_dependency_paths_single_error() -> None:
+    message = "error: Urm/Composition.lean:982:24: Unknown constant `Option.map_some'`"
+    result = extract_failed_dependency_paths(message)
+    assert result == ["Urm/Composition.lean"]
+
+
+def test_extract_failed_dependency_paths_multiple_files() -> None:
+    message = """warning: Urm/Composition.lean:632:8: declaration uses 'sorry'
+error: Urm/Composition.lean:982:24: Unknown constant `Option.map_some'`
+error: Urm/Other.lean:100:5: type mismatch"""
+    result = extract_failed_dependency_paths(message)
+    assert result == ["Urm/Composition.lean", "Urm/Other.lean"]
+
+
+def test_extract_failed_dependency_paths_empty_message() -> None:
+    assert extract_failed_dependency_paths("") == []
+
+
+def test_extract_failed_dependency_paths_no_match() -> None:
+    message = "Some random text that doesn't match the pattern"
+    assert extract_failed_dependency_paths(message) == []
+
+
+def test_extract_failed_dependency_paths_with_lake_output() -> None:
+    """Test with realistic lake setup-file output."""
+    message = """`lake setup-file /path/to/file.lean` failed:
+
+stderr:
+✖ Building Urm.Composition
+error: Urm/Composition.lean:982:24: Unknown constant `Option.map_some'`
+warning: Urm/Composition.lean:632:8: declaration uses 'sorry'
+Failed to build module dependencies."""
+    result = extract_failed_dependency_paths(message)
+    assert result == ["Urm/Composition.lean"]
+
+
+def test_is_build_stderr_with_lake_setup() -> None:
+    assert is_build_stderr("`lake setup-file /path/to/file.lean` failed:")
+    assert is_build_stderr("lake setup-file somewhere in the message")
+
+
+def test_is_build_stderr_with_error_pattern() -> None:
+    assert is_build_stderr("error: Foo.lean:1:1: some error")
+    assert is_build_stderr("warning: Bar/Baz.lean:99:5: some warning")
+
+
+def test_is_build_stderr_negative() -> None:
+    assert not is_build_stderr("")
+    assert not is_build_stderr("Just a normal message")
+    assert not is_build_stderr("error: not a lean file")
+    assert not is_build_stderr("Something.lean but no line:col pattern")

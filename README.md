@@ -31,7 +31,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
 3. Configure your IDE/Setup
-4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to reduce hallucinations using local search.
+4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) for local search and source scanning (`lean_verify` warnings).
 
 ### 1. Install uv
 
@@ -148,13 +148,9 @@ For the local search tool `lean_local_search`, install [ripgrep](https://github.
 
 Get a concise outline of a Lean file showing imports and declarations with type signatures (theorems, definitions, classes, structures).
 
-#### lean_file_contents (DEPRECATED)
-
-Get the contents of a Lean file, optionally with line number annotations.
-
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
 
 <details>
 <summary>Example output</summary>
@@ -243,8 +239,10 @@ l1c1-l1c6, severity: 3
 
 #### lean_multi_attempt
 
-Attempt multiple lean code snippets on a line and return goal state and diagnostics for each snippet.
-This tool is useful to screen different proof attempts before using the most promising one.
+Attempt multiple tactics on a line and return goal state and diagnostics for each.
+Useful to screen different proof attempts before committing to one.
+
+When `LEAN_REPL=true`, uses the REPL tactic mode for up to 5x faster execution (see [Environment Variables](#environment-variables)).
 
 <details>
 <summary>Example output (attempting `rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]` and `by_contra h_neq`)</summary>
@@ -273,6 +271,104 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ⊢ False
 
 ...
+```
+</details>
+
+#### lean_code_actions
+
+Get LSP code actions for a line. Returns resolved edits for "Try This" suggestions (`simp?`, `exact?`, `apply?`) and other quick fixes. The agent applies the edits using its own editing tools.
+
+<details>
+<summary>Example output (line with <code>simp?</code>)</summary>
+
+```json
+{
+  "actions": [
+    {
+      "title": "Try this: simp only [zero_add]",
+      "is_preferred": false,
+      "edits": [
+        {
+          "new_text": "simp only [zero_add]",
+          "start_line": 3,
+          "start_column": 37,
+          "end_line": 3,
+          "end_column": 42
+        }
+      ]
+    }
+  ]
+}
+```
+</details>
+
+#### lean_get_widgets
+
+Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns raw widget data - may be verbose.
+
+<details>
+<summary>Example output (<code>#html</code> widget)</summary>
+
+```json
+{
+  "widgets": [
+    {
+      "id": "ProofWidgets.HtmlDisplayPanel",
+      "javascriptHash": "15661785739548337049",
+      "props": {
+        "html": {
+          "element": ["b", [], [{"text": "Hello widget"}]]
+        }
+      },
+      "range": {
+        "start": {"line": 4, "character": 0},
+        "end": {"line": 4, "character": 50}
+      }
+    }
+  ]
+}
+```
+</details>
+
+#### lean_get_widget_source
+
+Get the JavaScript source code of a widget by its `javascriptHash` (from `lean_get_widgets` or `lean_diagnostic_messages` with `interactive=True`). Useful for understanding custom widget rendering logic. Returns full JS module - may be verbose.
+
+#### lean_profile_proof
+
+Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated copy of the theorem and returns per-line timing data.
+
+<details>
+<summary>Example output (profiling a theorem using simp)</summary>
+
+```json
+{
+  "ms": 42.5,
+  "lines": [
+    {"line": 7, "ms": 38.2, "text": "simp [add_comm, add_assoc]"}
+  ],
+  "categories": {
+    "simp": 35.1,
+    "typeclass inference": 4.2
+  }
+}
+```
+</details>
+
+#### lean_verify
+
+Check theorem soundness: returns axioms used + optional source pattern scan for `unsafe`, `set_option debug.*`, `@[implemented_by]`, etc. Standard axioms are `propext`, `Classical.choice`, `Quot.sound` - anything else (e.g. `sorryAx`) indicates an unsound proof. Source warnings require [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
+
+<details>
+<summary>Example output (theorem using sorry)</summary>
+
+```json
+{
+  "axioms": ["propext", "sorryAx"],
+  "warnings": [
+    {"line": 5, "pattern": "set_option debug.skipKernelTC"}
+  ]
+}
 ```
 </details>
 
@@ -439,7 +535,12 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 ### Environment Variables
 
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
+- `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
 - `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
+- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` (~5x faster, see [REPL Setup](#repl-setup)).
+- `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
+- `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
+- `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
@@ -500,6 +601,36 @@ uvx lean-lsp-mcp --transport streamable-http
 
 Clients should then include the token in the `Authorization` header.
 
+### REPL Setup
+
+Enable fast REPL-based `lean_multi_attempt` (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode.
+
+**1. Add REPL to your Lean project's `lakefile.toml`:**
+
+```toml
+[[require]]
+name = "repl"
+git = "https://github.com/leanprover-community/repl"
+rev = "v4.25.0"  # Match your Lean version
+```
+
+**2. Build it:**
+
+```bash
+lake build repl
+```
+
+**3. Enable via CLI or environment variable:**
+
+```bash
+uvx lean-lsp-mcp --repl
+
+# Or via environment variable
+export LEAN_REPL=true
+```
+
+The REPL binary is auto-detected from `.lake/packages/repl/`. Falls back to LSP if not found.
+
 ### Local Loogle
 
 Run loogle locally to avoid the remote API's rate limit (3 req/30s). First run takes ~5-10 minutes to build; subsequent runs start in seconds.
@@ -546,9 +677,17 @@ uv sync --all-extras
 uv run pytest tests
 ```
 
-## Publications using lean-lsp-mcp
+## Publications and Formalization Projects using lean-lsp-mcp
 
 - Ax-Prover: A Deep Reasoning Agentic Framework for Theorem Proving in Mathematics and Quantum Physics [arxiv](https://arxiv.org/abs/2510.12787)
+- Numina-Lean-Agent: An Open and General Agentic Reasoning System for Formal Mathematics [arxiv](https://arxiv.org/abs/2601.14027) [github](https://github.com/project-numina/numina-lean-agent)
+- MerLean: An Agentic Framework for Autoformalization in Quantum Computation [arxiv](https://arxiv.org/pdf/2602.16554)
+- M2F: Automated Formalization of Mathematical Literature at Scale [arxiv](https://arxiv.org/pdf/2602.17016)
+- A Group-Theoretic Approach to Shannon Capacity of Graphs and a Limit Theorem from Lattice Packings [github](https://github.com/jzuiddam/GroupTheoreticShannonCapacity/)
+
+## Talks
+
+lean-lsp-mcp: Tools for agentic interaction with Lean (Lean Together 2026) [youtube](https://www.youtube.com/watch?v=uttbYaTaF-E)
 
 ## Related Projects
 

@@ -1,56 +1,215 @@
 import asyncio
+import functools
+import logging.config
 import os
 import re
+import ssl
 import time
-from typing import List, Optional, Dict
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
 import urllib
-import orjson
-import functools
-import subprocess
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated, Dict, List, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.logging import get_logger, configure_logging
+import certifi
+import orjson
+from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.auth.settings import AuthSettings
-from leanclient import LeanLSPClient, DocumentContentChange
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    infer_project_path,
     setup_client_for_file,
     startup_client,
-    infer_project_path,
 )
 from lean_lsp_mcp.file_utils import get_file_contents
 from lean_lsp_mcp.instructions import INSTRUCTIONS
-from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
-from lean_lsp_mcp.outline_utils import generate_outline
+from lean_lsp_mcp.repl import Repl, repl_enabled
+from lean_lsp_mcp.models import (
+    AttemptResult,
+    BuildResult,
+    CodeAction,
+    CodeActionEdit,
+    CodeActionsResult,
+    CompletionItem,
+    CompletionsResult,
+    DeclarationInfo,
+    DiagnosticMessage,
+    # Wrapper models for list-returning tools
+    DiagnosticsResult,
+    InteractiveDiagnosticsResult,
+    FileOutline,
+    GoalState,
+    HoverInfo,
+    LeanFinderResult,
+    LeanFinderResults,
+    LeanSearchResult,
+    LeanSearchResults,
+    LocalSearchResult,
+    LocalSearchResults,
+    LoogleResult,
+    LoogleResults,
+    MultiAttemptResult,
+    PremiseResult,
+    PremiseResults,
+    ProofProfileResult,
+    RunResult,
+    WidgetSourceResult,
+    WidgetsResult,
+    SourceWarning,
+    StateSearchResult,
+    StateSearchResults,
+    TermGoalState,
+    VerifyResult,
+)
+
+# REPL models not imported - low-level REPL tools not exposed to keep API simple.
+# The model uses lean_multi_attempt which handles REPL internally.
+from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
+    COMPLETION_KIND,
+    LeanToolError,
+    OptionalTokenVerifier,
     OutputCapture,
-    deprecated,
+    check_lsp_response,
+    extract_failed_dependency_paths,
+    extract_goals_list,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
-    format_diagnostics,
-    format_goal,
-    format_line,
     get_declaration_range,
-    OptionalTokenVerifier,
+    is_build_stderr,
 )
 
+# LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
+DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
+
+def _raise_invalid_path(file_path: str) -> None:
+    """Raise a descriptive error when a file can't be resolved to a Lean project."""
+    raise LeanToolError(
+        f"Invalid Lean file path: '{file_path}' not found in any Lean project "
+        "(no lean-toolchain ancestor or file does not exist)"
+    )
+
+
+async def _urlopen_json(req: urllib.request.Request, timeout: float):
+    """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+    def _do_request():
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as response:
+            return orjson.loads(response.read())
+
+    return await asyncio.to_thread(_do_request)
+
+
+async def _safe_report_progress(
+    ctx: Context, *, progress: int, total: int, message: str
+) -> None:
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:
+        return
+
+
+_LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
-configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+if _LOG_FILE_CONFIG:
+    try:
+        if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
+            import yaml
+
+            with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            logging.config.dictConfig(cfg)
+        elif _LOG_FILE_CONFIG.endswith(".json"):
+            with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
+                cfg = orjson.loads(f.read())
+            logging.config.dictConfig(cfg)
+        else:
+            # .ini / fileConfig
+            logging.config.fileConfig(_LOG_FILE_CONFIG, disable_existing_loggers=False)
+    except Exception as e:
+        # fallback to LEAN_LOG_LEVEL so server still runs
+        # use the existing configure_logging helper to set level
+        configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+        logger = get_logger(__name__)  # temporary to emit the warning
+        logger.warning(
+            "Failed to load logging config %s: %s. Falling back to LEAN_LOG_LEVEL.",
+            _LOG_FILE_CONFIG,
+            e,
+        )
+else:
+    configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+
 logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 
 
-# Server and context
+# ---------------------------------------------------------------------------
+# Shared singletons for resources that should NOT be duplicated per-session.
+#
+# With the ``streamable-http`` transport every MCP session gets its own
+# ``app_lifespan`` invocation.  Heavy resources like the local loogle
+# subprocess (~6 GB RSS for the Mathlib index) must be initialised exactly
+# once and shared across sessions; otherwise N concurrent clients would
+# spawn N loogle processes and exhaust memory.
+# ---------------------------------------------------------------------------
+_shared_loogle_manager: LoogleManager | None = None
+_shared_loogle_available: bool = False
+_shared_loogle_init_done: bool = False
+_shared_loogle_lock = asyncio.Lock()
+
+
+async def _ensure_shared_loogle(
+    lean_project_path: Path | None,
+) -> tuple[LoogleManager | None, bool]:
+    """Lazily initialise the shared loogle singleton (once, thread-safe)."""
+    global _shared_loogle_manager, _shared_loogle_available, _shared_loogle_init_done
+
+    async with _shared_loogle_lock:
+        if _shared_loogle_init_done:
+            return _shared_loogle_manager, _shared_loogle_available
+
+        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            _shared_loogle_init_done = True
+            return None, False
+
+        try:
+            logger.info("Local loogle enabled, initializing (shared)...")
+            manager = _shared_loogle_manager
+            if manager is None:
+                manager = LoogleManager(project_path=lean_project_path)
+                _shared_loogle_manager = manager
+
+            _shared_loogle_available = (
+                manager.ensure_installed() and await manager.start()
+            )
+            if _shared_loogle_available:
+                _shared_loogle_init_done = True
+                logger.info("Shared local loogle started successfully")
+            else:
+                logger.warning("Local loogle unavailable, will use remote API")
+        except Exception:
+            _shared_loogle_available = False
+            logger.exception("Local loogle initialization failed, will retry later")
+        return _shared_loogle_manager, _shared_loogle_available
+
+
 @dataclass
 class AppContext:
     lean_project_path: Path | None
@@ -59,12 +218,16 @@ class AppContext:
     lean_search_available: bool
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
+    # REPL for efficient multi-attempt execution
+    repl: Repl | None = None
+    repl_enabled: bool = False
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    loogle_manager: LoogleManager | None = None
-    loogle_local_available = False
+    repl: Repl | None = None
+    repl_on = False
+    context: AppContext | None = None
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -73,18 +236,30 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
 
-        # Initialize local loogle if enabled via env var or CLI
-        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
-            logger.info("Local loogle enabled, initializing...")
-            loogle_manager = LoogleManager()
-            if loogle_manager.ensure_installed():
-                if await loogle_manager.start():
-                    loogle_local_available = True
-                    logger.info("Local loogle started successfully")
+        # Use the shared loogle singleton (initialised at most once)
+        loogle_manager, loogle_local_available = await _ensure_shared_loogle(
+            lean_project_path
+        )
+
+        # Initialize REPL if enabled
+        if repl_enabled():
+            if lean_project_path:
+                from lean_lsp_mcp.repl import find_repl_binary
+
+                repl_bin = find_repl_binary(str(lean_project_path))
+                if repl_bin:
+                    logger.info("REPL enabled, using: %s", repl_bin)
+                    repl = Repl(project_dir=str(lean_project_path), repl_path=repl_bin)
+                    repl_on = True
+                    logger.info("REPL initialized: timeout=%ds", repl.timeout)
                 else:
-                    logger.warning("Local loogle failed to start, will use remote API")
+                    logger.warning(
+                        "REPL enabled but binary not found. "
+                        'Add `require repl from git "https://github.com/leanprover-community/repl"` '
+                        "to lakefile and run `lake build repl`. Falling back to LSP."
+                    )
             else:
-                logger.warning("Local loogle installation failed, will use remote API")
+                logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
 
         context = AppContext(
             lean_project_path=lean_project_path,
@@ -99,16 +274,26 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             lean_search_available=_RG_AVAILABLE,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
+            repl=repl,
+            repl_enabled=repl_on,
         )
         yield context
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context.client:
-            context.client.close()
+        if context and context.client:
+            try:
+                context.client.close()
+            except Exception:
+                logger.exception(
+                    "Lean client close failed during app_lifespan teardown"
+                )
 
-        if loogle_manager:
-            await loogle_manager.stop()
+        if repl:
+            try:
+                await repl.close()
+            except Exception:
+                logger.exception("REPL close failed during app_lifespan teardown")
 
 
 mcp_kwargs = dict(
@@ -130,11 +315,9 @@ if auth_token:
 mcp = FastMCP(**mcp_kwargs)
 
 
-# Rate limiting: n requests per m seconds
 def rate_limited(category: str, max_requests: int, per_seconds: int):
     def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def _apply_rate_limit(args, kwargs):
             ctx = kwargs.get("ctx")
             if ctx is None:
                 if not args:
@@ -150,32 +333,59 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
                 if timestamp > current_time - per_seconds
             ]
             if len(rate_limit[category]) >= max_requests:
-                return f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later."
+                return (
+                    False,
+                    f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later.",
+                )
             rate_limit[category].append(current_time)
-            return func(*args, **kwargs)
+            return True, None
 
-        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. " + wrapper.__doc__
+        if asyncio.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                allowed, msg = _apply_rate_limit(args, kwargs)
+                if not allowed:
+                    return msg
+                return await func(*args, **kwargs)
+
+        else:
+
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                allowed, msg = _apply_rate_limit(args, kwargs)
+                if not allowed:
+                    return msg
+                return func(*args, **kwargs)
+
+        doc = wrapper.__doc__ or ""
+        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. {doc}"
         return wrapper
 
     return decorator
 
 
-# Project level tools
-@mcp.tool("lean_build")
+@mcp.tool(
+    "lean_build",
+    annotations=ToolAnnotations(
+        title="Build Project",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
 async def lsp_build(
-    ctx: Context, lean_project_path: str = None, clean: bool = False
-) -> str:
-    """Build the Lean project and restart the LSP Server.
-
-    Use only if needed (e.g. new imports).
-
-    Args:
-        lean_project_path (str, optional): Path to the Lean project. If not provided, it will be inferred from previous tool calls.
-        clean (bool, optional): Run `lake clean` before building. Attention: Only use if it is really necessary! It can take a long time! Defaults to False.
-
-    Returns:
-        str: Build output or error msg
-    """
+    ctx: Context,
+    lean_project_path: Annotated[
+        Optional[str], Field(description="Path to Lean project")
+    ] = None,
+    clean: Annotated[bool, Field(description="Run lake clean first (slow)")] = False,
+    output_lines: Annotated[
+        int, Field(description="Return last N lines of build log (0=none)")
+    ] = 20,
+) -> BuildResult:
+    """Build the Lean project and restart LSP. Use only if needed (e.g. new imports)."""
     if not lean_project_path:
         lean_project_path_obj = ctx.request_context.lifespan_context.lean_project_path
     else:
@@ -183,23 +393,38 @@ async def lsp_build(
         ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
 
     if lean_project_path_obj is None:
-        return "Lean project path not known yet. Provide `lean_project_path` explicitly or call a tool that infers it (e.g. `lean_file_contents`) before running `lean_build`."
+        raise LeanToolError(
+            "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
+        )
 
-    build_output = ""
+    log_lines: List[str] = []
+    errors: List[str] = []
+
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
             ctx.request_context.lifespan_context.client = None
-            client.close()
+            try:
+                client.close()
+            except Exception:
+                logger.exception("Lean client close failed during lsp_build restart")
 
         if clean:
-            subprocess.run(["lake", "clean"], cwd=lean_project_path_obj, check=False)
-            logger.info("Ran `lake clean`")
+            await ctx.report_progress(
+                progress=1, total=16, message="Running `lake clean`"
+            )
+            clean_proc = await asyncio.create_subprocess_exec(
+                "lake", "clean", cwd=lean_project_path_obj
+            )
+            await clean_proc.wait()
 
-        # Fetch cache
-        subprocess.run(
-            ["lake", "exe", "cache", "get"], cwd=lean_project_path_obj, check=False
+        await ctx.report_progress(
+            progress=2, total=16, message="Running `lake exe cache get`"
         )
+        cache_proc = await asyncio.create_subprocess_exec(
+            "lake", "exe", "cache", "get", cwd=lean_project_path_obj
+        )
+        await cache_proc.wait()
 
         # Run build with progress reporting
         process = await asyncio.create_subprocess_exec(
@@ -211,39 +436,35 @@ async def lsp_build(
             stderr=asyncio.subprocess.STDOUT,
         )
 
-        output_lines = []
-
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-
+        while line := await process.stdout.readline():
             line_str = line.decode("utf-8", errors="replace").rstrip()
-            output_lines.append(line_str)
 
-            # Parse progress: look for pattern like "[2/8]" or "[10/100]"
-            match = re.search(r"\[(\d+)/(\d+)\]", line_str)
-            if match:
-                current_job = int(match.group(1))
-                total_jobs = int(match.group(2))
+            if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
+                continue
 
-                # Extract what's being built
-                # Line format: "ℹ [2/8] Built TestLeanBuild.Basic (1.6s)"
-                desc_match = re.search(
-                    r"\[\d+/\d+\]\s+(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
-                )
-                description = desc_match.group(1) if desc_match else "Building"
+            log_lines.append(line_str)
+            if "error" in line_str.lower():
+                errors.append(line_str)
 
-                # Report progress using dynamic totals from Lake
+            # Parse progress: "[2/8] Building Foo (1.2s)" -> (2, 8, "Building Foo")
+            if m := re.search(
+                r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
+            ):
                 await ctx.report_progress(
-                    progress=current_job, total=total_jobs, message=description
+                    progress=int(m.group(1)),
+                    total=int(m.group(2)),
+                    message=m.group(3) or "Building",
                 )
 
         await process.wait()
 
         if process.returncode != 0:
-            build_output = "\n".join(output_lines)
-            raise Exception(f"Build failed with return code {process.returncode}")
+            return BuildResult(
+                success=False,
+                output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+                errors=errors
+                or [f"Build failed with return code {process.returncode}"],
+            )
 
         # Start LSP client (without initial build since we just did it)
         with OutputCapture():
@@ -252,98 +473,146 @@ async def lsp_build(
             )
 
         logger.info("Built project and re-started LSP client")
-
         ctx.request_context.lifespan_context.client = client
-        build_output = "\n".join(output_lines)
-        return build_output
-    except Exception as e:
-        return f"Error during build:\n{str(e)}\n{build_output}"
 
-
-# File level tools
-@mcp.tool("lean_file_contents")
-@deprecated
-def file_contents(ctx: Context, file_path: str, annotate_lines: bool = True) -> str:
-    """Get the text contents of a Lean file, optionally with line numbers.
-
-    Use sparingly (bloats context). Mainly when unsure about line numbers.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        annotate_lines (bool, optional): Annotate lines with line numbers. Defaults to True.
-
-    Returns:
-        str: File content or error msg
-    """
-    # Infer project path but do not start a client
-    if file_path.endswith(".lean"):
-        infer_project_path(ctx, file_path)  # Silently fails for non-project files
-
-    try:
-        data = get_file_contents(file_path)
-    except FileNotFoundError:
-        return (
-            f"File `{file_path}` does not exist. Please check the path and try again."
+        return BuildResult(
+            success=True,
+            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+            errors=[],
         )
 
-    if annotate_lines:
-        data = data.split("\n")
-        max_digits = len(str(len(data)))
-        annotated = ""
-        for i, line in enumerate(data):
-            annotated += f"{i + 1}{' ' * (max_digits - len(str(i + 1)))}: {line}\n"
-        return annotated
-    else:
-        return data
+    except Exception as e:
+        return BuildResult(
+            success=False,
+            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
+            errors=[str(e)],
+        )
 
 
-@mcp.tool("lean_file_outline")
-def file_outline(ctx: Context, file_path: str) -> str:
-    """Get a concise outline showing imports and declarations with type signatures (theorems, defs, classes, structures).
-
-    Highly useful and token-efficient. Slow-ish.
-
-    Args:
-        file_path (str): Abs path to Lean file
-
-    Returns:
-        str: Markdown formatted outline or error msg
-    """
+@mcp.tool(
+    "lean_file_outline",
+    annotations=ToolAnnotations(
+        title="File Outline",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def file_outline(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    max_declarations: Annotated[
+        Optional[int], Field(description="Max declarations to return", ge=1)
+    ] = None,
+) -> FileOutline:
+    """Get imports and declarations with type signatures. Token-efficient."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline(client, rel_path)
+    return generate_outline_data(client, rel_path, max_declarations)
 
 
-@mcp.tool("lean_diagnostic_messages")
-def diagnostic_messages(
-    ctx: Context,
-    file_path: str,
-    start_line: Optional[int] = None,
-    end_line: Optional[int] = None,
-    declaration_name: Optional[str] = None,
-) -> List[str] | str:
-    """Get all diagnostic msgs (errors, warnings, infos) for a Lean file.
+def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
+    """Convert LSP diagnostics to DiagnosticMessage models."""
+    result = []
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if r is None:
+            continue
+        severity_int = diag.get("severity", 1)
+        result.append(
+            DiagnosticMessage(
+                severity=DIAGNOSTIC_SEVERITY.get(
+                    severity_int, f"unknown({severity_int})"
+                ),
+                message=diag.get("message", ""),
+                line=r["start"]["line"] + 1,
+                column=r["start"]["character"] + 1,
+            )
+        )
+    return result
 
-    "no goals to be solved" means code may need removal.
+
+def _process_diagnostics(
+    diagnostics: List[Dict], build_success: bool
+) -> DiagnosticsResult:
+    """Process diagnostics, extracting dependency paths from build stderr.
 
     Args:
-        file_path (str): Abs path to Lean file
-        start_line (int, optional): Start line (1-indexed). Filters from this line.
-        end_line (int, optional): End line (1-indexed). Filters to this line.
-        declaration_name (str, optional): Name of a specific theorem/lemma/definition.
-            If provided, only returns diagnostics within that declaration.
-            Takes precedence over start_line/end_line.
-            Slow, requires waiting for full file analysis.
-
-    Returns:
-        List[str] | str: Diagnostic msgs or error msg
+        diagnostics: List of diagnostic dicts from leanclient
+        build_success: Whether the build succeeded (from leanclient.DiagnosticsResult.success)
     """
+    items = []
+    failed_deps: List[str] = []
+
+    for diag in diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if r is None:
+            continue
+
+        severity_int = diag.get("severity", 1)
+        message = diag.get("message", "")
+        line = r["start"]["line"] + 1
+        column = r["start"]["character"] + 1
+
+        # Check if this is a build failure at (1,1) - extract dependency paths, skip the item
+        if line == 1 and column == 1 and is_build_stderr(message):
+            failed_deps = extract_failed_dependency_paths(message)
+            continue  # Don't include the build stderr blob as a diagnostic item
+
+        # Normal diagnostic from the queried file
+        items.append(
+            DiagnosticMessage(
+                severity=DIAGNOSTIC_SEVERITY.get(
+                    severity_int, f"unknown({severity_int})"
+                ),
+                message=message,
+                line=line,
+                column=column,
+            )
+        )
+
+    return DiagnosticsResult(
+        success=build_success,
+        items=items,
+        failed_dependencies=failed_deps,
+    )
+
+
+@mcp.tool(
+    "lean_diagnostic_messages",
+    annotations=ToolAnnotations(
+        title="Diagnostics",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def diagnostic_messages(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    start_line: Annotated[
+        Optional[int], Field(description="Filter from line", ge=1)
+    ] = None,
+    end_line: Annotated[
+        Optional[int], Field(description="Filter to line", ge=1)
+    ] = None,
+    declaration_name: Annotated[
+        Optional[str], Field(description="Filter to declaration (slow)")
+    ] = None,
+    interactive: Annotated[
+        bool,
+        Field(
+            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient. For 'Try This' suggestions, prefer lean_code_actions."
+        ),
+    ] = False,
+) -> DiagnosticsResult | InteractiveDiagnosticsResult:
+    """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -352,183 +621,222 @@ def diagnostic_messages(
     if declaration_name:
         decl_range = get_declaration_range(client, rel_path, declaration_name)
         if decl_range is None:
-            return f"Declaration '{declaration_name}' not found in file. Check the name (case-sensitive) and try again."
+            raise LeanToolError(f"Declaration '{declaration_name}' not found in file.")
         start_line, end_line = decl_range
 
     # Convert 1-indexed to 0-indexed for leanclient
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
-    diagnostics = client.get_diagnostics(
+    if interactive:
+        diagnostics = client.get_interactive_diagnostics(
+            rel_path, start_line=start_line_0, end_line=end_line_0
+        )
+        return InteractiveDiagnosticsResult(diagnostics=diagnostics)
+
+    result = client.get_diagnostics(
         rel_path,
         start_line=start_line_0,
         end_line=end_line_0,
         inactivity_timeout=15.0,
     )
 
-    return format_diagnostics(diagnostics)
+    return _process_diagnostics(result.diagnostics, result.success)
 
 
-@mcp.tool("lean_goal")
-def goal(ctx: Context, file_path: str, line: int, column: Optional[int] = None) -> str:
-    """Get the proof goals (proof state) at a specific location in a Lean file.
+@mcp.tool(
+    "lean_goal",
+    annotations=ToolAnnotations(
+        title="Proof Goals",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def goal(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[
+        Optional[int],
+        Field(description="Column (1-indexed). Omit for before/after", ge=1),
+    ] = None,
+) -> GoalState:
+    """Get proof goals at a position. MOST IMPORTANT tool - use often!
 
-    VERY USEFUL! Main tool to understand the proof state and its evolution!
-    Returns "no goals" if solved.
-    To see the goal at sorry, use the cursor before the "s".
-    Avoid giving a column if unsure-default behavior works well.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int, optional): Column number (1-indexed). Defaults to None => Both before and after the line.
-
-    Returns:
-        str: Goal(s) or error msg
+    Omit column to see goals_before (line start) and goals_after (line end),
+    showing how the tactic transforms the state. "no goals" = proof complete.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
+    lines = content.splitlines()
+
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+
+    line_context = lines[line - 1]
 
     if column is None:
-        lines = content.splitlines()
-        if line < 1 or line > len(lines):
-            return "Line number out of range. Try elsewhere?"
-        column_end = len(lines[line - 1])
+        column_end = len(line_context)
         column_start = next(
-            (i for i, c in enumerate(lines[line - 1]) if not c.isspace()), 0
+            (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
         goal_start = client.get_goal(rel_path, line - 1, column_start)
+        check_lsp_response(goal_start, "get_goal", allow_none=True)
         goal_end = client.get_goal(rel_path, line - 1, column_end)
-
-        if goal_start is None and goal_end is None:
-            return f"No goals on line:\n{lines[line - 1]}\nTry another line?"
-
-        start_text = format_goal(goal_start, "No goals at line start.")
-        end_text = format_goal(goal_end, "No goals at line end.")
-        return f"Goals on line:\n{lines[line - 1]}\nBefore:\n{start_text}\nAfter:\n{end_text}"
-
+        return GoalState(
+            line_context=line_context,
+            goals_before=extract_goals_list(goal_start),
+            goals_after=extract_goals_list(goal_end),
+        )
     else:
-        goal = client.get_goal(rel_path, line - 1, column - 1)
-        f_goal = format_goal(goal, "Not a valid goal position. Try elsewhere?")
-        f_line = format_line(content, line, column)
-        return f"Goals at:\n{f_line}\n{f_goal}"
+        goal_result = client.get_goal(rel_path, line - 1, column - 1)
+        check_lsp_response(goal_result, "get_goal", allow_none=True)
+        return GoalState(
+            line_context=line_context, goals=extract_goals_list(goal_result)
+        )
 
 
-@mcp.tool("lean_term_goal")
+@mcp.tool(
+    "lean_term_goal",
+    annotations=ToolAnnotations(
+        title="Term Goal",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
 def term_goal(
-    ctx: Context, file_path: str, line: int, column: Optional[int] = None
-) -> str:
-    """Get the expected type (term goal) at a specific location in a Lean file.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int, optional): Column number (1-indexed). Defaults to None => end of line.
-
-    Returns:
-        str: Expected type or error msg
-    """
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[
+        Optional[int], Field(description="Column (defaults to end of line)", ge=1)
+    ] = None,
+) -> TermGoalState:
+    """Get the expected type at a position."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
+    lines = content.splitlines()
+
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+
+    line_context = lines[line - 1]
     if column is None:
-        lines = content.splitlines()
-        if line < 1 or line > len(lines):
-            return "Line number out of range. Try elsewhere?"
-        column = len(content.splitlines()[line - 1])
+        column = max(len(line_context), 1)
 
-    term_goal = client.get_term_goal(rel_path, line - 1, column - 1)
-    f_line = format_line(content, line, column)
-    if term_goal is None:
-        return f"Not a valid term goal position:\n{f_line}\nTry elsewhere?"
-    rendered = term_goal.get("goal", None)
-    if rendered is not None:
-        rendered = rendered.replace("```lean\n", "").replace("\n```", "")
-    return f"Term goal at:\n{f_line}\n{rendered or 'No term goal found.'}"
+    term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
+    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
+    expected_type = None
+    if term_goal_result is not None:
+        rendered = term_goal_result.get("goal")
+        if rendered:
+            expected_type = rendered.replace("```lean\n", "").replace("\n```", "")
+
+    return TermGoalState(line_context=line_context, expected_type=expected_type)
 
 
-@mcp.tool("lean_hover_info")
-def hover(ctx: Context, file_path: str, line: int, column: int) -> str:
-    """Get hover info (docs for syntax, variables, functions, etc.) at a specific location in a Lean file.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed). Make sure to use the start or within the term, not the end.
-
-    Returns:
-        str: Hover info or error msg
-    """
+@mcp.tool(
+    "lean_hover_info",
+    annotations=ToolAnnotations(
+        title="Hover Info",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def hover(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
+) -> HoverInfo:
+    """Get type signature and docs for a symbol. Essential for understanding APIs."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     file_content = client.get_file_content(rel_path)
     hover_info = client.get_hover(rel_path, line - 1, column - 1)
+    check_lsp_response(hover_info, "get_hover", allow_none=True)
     if hover_info is None:
-        f_line = format_line(file_content, line, column)
-        return f"No hover information at position:\n{f_line}\nTry elsewhere?"
+        raise LeanToolError(f"No hover information at line {line}, column {column}")
 
     # Get the symbol and the hover information
     h_range = hover_info.get("range")
-    symbol = extract_range(file_content, h_range)
+    symbol = extract_range(file_content, h_range) or ""
     info = hover_info["contents"].get("value", "No hover information available.")
     info = info.replace("```lean\n", "").replace("\n```", "").strip()
 
     # Add diagnostics if available
     diagnostics = client.get_diagnostics(rel_path)
+    check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
 
-    msg = f"Hover info `{symbol}`:\n{info}"
-    if filtered:
-        msg += "\n\nDiagnostics\n" + "\n".join(format_diagnostics(filtered))
-    return msg
+    return HoverInfo(
+        symbol=symbol,
+        info=info,
+        diagnostics=_to_diagnostic_messages(filtered),
+    )
 
 
-@mcp.tool("lean_completions")
+@mcp.tool(
+    "lean_completions",
+    annotations=ToolAnnotations(
+        title="Completions",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
 def completions(
-    ctx: Context, file_path: str, line: int, column: int, max_completions: int = 32
-) -> str:
-    """Get code completions at a location in a Lean file.
-
-    Only use this on INCOMPLETE lines/statements to check available identifiers and imports:
-    - Dot Completion: Displays relevant identifiers after a dot (e.g., `Nat.`, `x.`, or `Nat.ad`).
-    - Identifier Completion: Suggests matching identifiers after part of a name.
-    - Import Completion: Lists importable files after `import` at the beginning of a file.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
-        max_completions (int, optional): Maximum number of completions to return. Defaults to 32
-
-    Returns:
-        str: List of possible completions or error msg
-    """
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    max_completions: Annotated[int, Field(description="Max completions", ge=1)] = 32,
+) -> CompletionsResult:
+    """Get IDE autocompletions. Use on INCOMPLETE code (after `.` or partial name)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
-    completions = client.get_completions(rel_path, line - 1, column - 1)
-    formatted = [c["label"] for c in completions if "label" in c]
-    f_line = format_line(content, line, column)
+    raw_completions = client.get_completions(rel_path, line - 1, column - 1)
+    check_lsp_response(raw_completions, "get_completions")
 
-    if not formatted:
-        return f"No completions at position:\n{f_line}\nTry elsewhere?"
+    # Convert to CompletionItem models
+    items: List[CompletionItem] = []
+    for c in raw_completions:
+        if "label" not in c:
+            continue
+        kind_int = c.get("kind")
+        kind_str = COMPLETION_KIND.get(kind_int) if kind_int else None
+        items.append(
+            CompletionItem(
+                label=c["label"],
+                kind=kind_str,
+                detail=c.get("detail"),
+            )
+        )
+
+    if not items:
+        return CompletionsResult(items=[])
 
     # Find the sort term: The last word/identifier before the cursor
     lines = content.splitlines()
@@ -541,158 +849,241 @@ def completions(
     # Sort completions: prefix matches first, then contains, then alphabetical
     if prefix:
 
-        def sort_key(item):
-            item_lower = item.lower()
-            if item_lower.startswith(prefix):
-                return (0, item_lower)
-            elif prefix in item_lower:
-                return (1, item_lower)
+        def sort_key(item: CompletionItem):
+            label_lower = item.label.lower()
+            if label_lower.startswith(prefix):
+                return (0, label_lower)
+            elif prefix in label_lower:
+                return (1, label_lower)
             else:
-                return (2, item_lower)
+                return (2, label_lower)
 
-        formatted.sort(key=sort_key)
+        items.sort(key=sort_key)
     else:
-        formatted.sort(key=str.lower)
+        items.sort(key=lambda x: x.label.lower())
 
     # Truncate if too many results
-    if len(formatted) > max_completions:
-        remaining = len(formatted) - max_completions
-        formatted = formatted[:max_completions] + [
-            f"{remaining} more, keep typing to filter further"
-        ]
-    completions_text = "\n".join(formatted)
-    return f"Completions at:\n{f_line}\n{completions_text}"
+    return CompletionsResult(items=items[:max_completions])
 
 
-@mcp.tool("lean_declaration_file")
-def declaration_file(ctx: Context, file_path: str, symbol: str) -> str:
-    """Get the file contents where a symbol/lemma/class/structure is declared.
-
-    Note:
-        Symbol must be present in the file! Add if necessary!
-        Lean files can be large, use `lean_hover_info` before this tool.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        symbol (str): Symbol to look up the declaration for. Case sensitive!
-
-    Returns:
-        str: File contents or error msg
-    """
+@mcp.tool(
+    "lean_declaration_file",
+    annotations=ToolAnnotations(
+        title="Declaration Source",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def declaration_file(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    symbol: Annotated[
+        str, Field(description="Symbol (case sensitive, must be in file)")
+    ],
+) -> DeclarationInfo:
+    """Get file where a symbol is declared. Symbol must be present in file first."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     orig_file_content = client.get_file_content(rel_path)
 
-    # Find the first occurence of the symbol (line and column) in the file,
+    # Find the first occurence of the symbol (line and column) in the file
     position = find_start_position(orig_file_content, symbol)
     if not position:
-        return f"Symbol `{symbol}` (case sensitive) not found in file `{rel_path}`. Add it first, then try again."
+        raise LeanToolError(
+            f"Symbol `{symbol}` (case sensitive) not found in file. Add it first."
+        )
 
     declaration = client.get_declarations(
         rel_path, position["line"], position["column"]
     )
 
     if len(declaration) == 0:
-        return f"No declaration available for `{symbol}`."
+        raise LeanToolError(f"No declaration available for `{symbol}`.")
 
     # Load the declaration file
-    declaration = declaration[0]
-    uri = declaration.get("targetUri")
-    if not uri:
-        uri = declaration.get("uri")
+    decl = declaration[0]
+    uri = decl.get("targetUri") or decl.get("uri")
 
     abs_path = client._uri_to_abs(uri)
     if not os.path.exists(abs_path):
-        return f"Could not open declaration file `{abs_path}` for `{symbol}`."
+        raise LeanToolError(
+            f"Could not open declaration file `{abs_path}` for `{symbol}`."
+        )
 
     file_content = get_file_contents(abs_path)
 
-    return f"Declaration of `{symbol}`:\n{file_content}"
+    return DeclarationInfo(file_path=str(abs_path), content=file_content)
 
 
-@mcp.tool("lean_multi_attempt")
-def multi_attempt(
-    ctx: Context, file_path: str, line: int, snippets: List[str]
-) -> List[str] | str:
-    """Try multiple Lean code snippets at a line and get the goal state and diagnostics for each.
+async def _multi_attempt_repl(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    snippets: List[str],
+) -> MultiAttemptResult | None:
+    """Try tactics using REPL (fast path)."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.repl_enabled or not app_ctx.repl:
+        return None
 
-    Use to compare tactics or approaches.
-    Use rarely-prefer direct file edits to keep users involved.
-    For a single snippet, edit the file and run `lean_diagnostic_messages` instead.
+    try:
+        content = get_file_contents(file_path)
+        if content is None:
+            return None
+        lines = content.splitlines()
+        if line > len(lines):
+            return None
 
-    Note:
-        Only single-line, fully-indented snippets are supported.
-        Avoid comments for best results.
+        base_code = "\n".join(lines[: line - 1])
+        repl_results = await app_ctx.repl.run_snippets(base_code, snippets)
 
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        snippets (List[str]): List of snippets (3+ are recommended)
+        results = []
+        for snippet, pr in zip(snippets, repl_results):
+            diagnostics = [
+                DiagnosticMessage(
+                    severity=m.get("severity", "info"),
+                    message=m.get("data", ""),
+                    line=m.get("pos", {}).get("line", 0),
+                    column=m.get("pos", {}).get("column", 0),
+                )
+                for m in (pr.messages or [])
+            ]
+            if pr.error:
+                diagnostics.append(
+                    DiagnosticMessage(
+                        severity="error", message=pr.error, line=0, column=0
+                    )
+                )
+            results.append(
+                AttemptResult(
+                    snippet=snippet.rstrip("\n"),
+                    goals=pr.goals or [],
+                    diagnostics=diagnostics,
+                )
+            )
+        return MultiAttemptResult(items=results)
+    except Exception as e:
+        logger.debug(f"REPL multi_attempt failed: {e}")
+        return None
 
-    Returns:
-        List[str] | str: Diagnostics and goal states or error msg
-    """
+
+def _multi_attempt_lsp(
+    ctx: Context,
+    file_path: str,
+    line: int,
+    snippets: List[str],
+) -> MultiAttemptResult:
+    """Try tactics using LSP file modifications (fallback)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
 
     try:
-        client.open_file(rel_path)
-
-        results = []
-        # Avoid mutating caller-provided snippets; normalize locally per attempt
+        results: List[AttemptResult] = []
         for snippet in snippets:
             snippet_str = snippet.rstrip("\n")
             payload = f"{snippet_str}\n"
-            # Create a DocumentContentChange for the snippet
             change = DocumentContentChange(
                 payload,
                 [line - 1, 0],
                 [line, 0],
             )
-            # Apply the change to the file, capture diagnostics and goal state
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
-            formatted_diag = "\n".join(format_diagnostics(diag, select_line=line - 1))
-            # Use the snippet text length without any trailing newline for the column
-            goal = client.get_goal(rel_path, line - 1, len(snippet_str))
-            formatted_goal = format_goal(goal, "Missing goal")
-            results.append(f"{snippet_str}:\n {formatted_goal}\n\n{formatted_diag}")
-
-        return results
-    finally:
-        try:
-            client.close_files([rel_path])
-        except Exception as exc:  # pragma: no cover - close failures only logged
-            logger.warning(
-                "Failed to close `%s` after multi_attempt: %s", rel_path, exc
+            check_lsp_response(diag, "get_diagnostics")
+            filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
+            goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
+            check_lsp_response(goal_result, "get_goal", allow_none=True)
+            goals = extract_goals_list(goal_result)
+            results.append(
+                AttemptResult(
+                    snippet=snippet_str,
+                    goals=goals,
+                    diagnostics=_to_diagnostic_messages(filtered_diag),
+                )
             )
 
+        return MultiAttemptResult(items=results)
+    finally:
+        if original_content is not None:
+            try:
+                client.update_file_content(rel_path, original_content)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                )
+            try:
+                # Force a disk resync so transient snippet edits do not leak
+                # into subsequent tool calls for already-open documents.
+                client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to force-reopen `%s` after multi_attempt: %s",
+                    rel_path,
+                    exc,
+                )
 
-@mcp.tool("lean_run_code")
-def run_code(ctx: Context, code: str) -> List[str] | str:
-    """Run a complete, self-contained code snippet and return diagnostics.
 
-    Has to include all imports and definitions!
-    Only use for testing outside open files! Keep the user in the loop by editing files instead.
+@mcp.tool(
+    "lean_multi_attempt",
+    annotations=ToolAnnotations(
+        title="Multi-Attempt",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def multi_attempt(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    snippets: Annotated[
+        List[str],
+        Field(description="Tactics to try (3+ recommended)"),
+    ],
+) -> MultiAttemptResult:
+    """Try multiple tactics without modifying file. Returns goal state for each."""
+    # Priority 1: REPL
+    result = await _multi_attempt_repl(ctx, file_path, line, snippets)
+    if result is not None:
+        return result
 
-    Args:
-        code (str): Code snippet
+    # Priority 2: LSP approach (fallback)
+    return _multi_attempt_lsp(ctx, file_path, line, snippets)
 
-    Returns:
-        List[str] | str: Diagnostics msgs or error msg
-    """
+
+@mcp.tool(
+    "lean_run_code",
+    annotations=ToolAnnotations(
+        title="Run Code",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def run_code(
+    ctx: Context,
+    code: Annotated[str, Field(description="Self-contained Lean code with imports")],
+) -> RunResult:
+    """Run a code snippet and return diagnostics. Must include all imports."""
     lifespan_context = ctx.request_context.lifespan_context
     lean_project_path = lifespan_context.lean_project_path
     if lean_project_path is None:
-        return "No valid Lean project path found. Run another tool (e.g. `lean_file_contents`) first to set it up."
+        raise LeanToolError(
+            "No valid Lean project path found. Run another tool first to set it up."
+        )
 
     # Use a unique snippet filename to avoid collisions under concurrency
     rel_path = f"_mcp_snippet_{uuid.uuid4().hex}.lean"
@@ -702,12 +1093,10 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
         with open(abs_path, "w", encoding="utf-8") as f:
             f.write(code)
     except Exception as e:
-        return f"Error writing code snippet to file `{abs_path}`:\n{str(e)}"
+        raise LeanToolError(f"Error writing code snippet: {e}")
 
     client: LeanLSPClient | None = lifespan_context.client
-    diagnostics: List[str] | str = []
-    close_error: str | None = None
-    remove_error: str | None = None
+    raw_diagnostics: List[Dict] = []
     opened_file = False
 
     try:
@@ -715,62 +1104,148 @@ def run_code(ctx: Context, code: str) -> List[str] | str:
             startup_client(ctx)
             client = lifespan_context.client
             if client is None:
-                return "Failed to initialize Lean client for run_code."
+                raise LeanToolError("Failed to initialize Lean client for run_code.")
 
-        assert client is not None  # startup_client guarantees an initialized client
+        assert client is not None
         client.open_file(rel_path)
         opened_file = True
-        diagnostics = format_diagnostics(
-            client.get_diagnostics(rel_path, inactivity_timeout=15.0)
-        )
+        raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
+        check_lsp_response(raw_diagnostics, "get_diagnostics")
     finally:
         if opened_file:
             try:
                 client.close_files([rel_path])
-            except Exception as exc:  # pragma: no cover - close failures only logged
-                close_error = str(exc)
+            except Exception as exc:
                 logger.warning("Failed to close `%s` after run_code: %s", rel_path, exc)
         try:
             os.remove(abs_path)
         except FileNotFoundError:
             pass
         except Exception as e:
-            remove_error = str(e)
             logger.warning(
                 "Failed to remove temporary Lean snippet `%s`: %s", abs_path, e
             )
 
-    if remove_error:
-        return f"Error removing temporary file `{abs_path}`:\n{remove_error}"
-    if close_error:
-        return f"Error closing temporary Lean document `{rel_path}`:\n{close_error}"
+    diagnostics = _to_diagnostic_messages(raw_diagnostics)
+    has_errors = any(d.severity == "error" for d in diagnostics)
 
-    return (
-        diagnostics
-        if diagnostics
-        else "No diagnostics found for the code snippet (compiled successfully)."
+    return RunResult(success=not has_errors, diagnostics=diagnostics)
+
+
+@mcp.tool(
+    "lean_verify",
+    annotations=ToolAnnotations(
+        title="Verify Theorem",
+        readOnlyHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def verify_theorem(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    theorem_name: Annotated[
+        str, Field(description="Fully qualified name (e.g. `Namespace.theorem`)")
+    ],
+    scan_source: Annotated[
+        bool, Field(description="Scan source file for suspicious patterns")
+    ] = True,
+) -> VerifyResult:
+    """Check theorem axioms + optional source scan. Only scans the given file, not imports."""
+    from lean_lsp_mcp.verify import (
+        check_axiom_errors,
+        parse_axioms,
+        scan_warnings,
     )
 
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
 
-@mcp.tool("lean_local_search")
-def local_search(
-    ctx: Context, query: str, limit: int = 10, project_root: str | None = None
-) -> List[Dict[str, str]] | str:
-    """Confirm declarations exist in the current workspace to prevent hallucinating APIs.
+    abs_path = Path(file_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
 
-    VERY USEFUL AND FAST!
-    Pass a short prefix (e.g. ``map_mul``); the metadata shows the declaration kind and file.
-    The index spans theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls.
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
 
-    Args:
-        query (str): Declaration name or prefix.
-        limit (int): Max matches to return (default 10).
+    snippet = f"\n#print axioms _root_.{theorem_name}\n"
+    snippet_lines = snippet.count("\n")
+    original_lines = original_content.split("\n")
+    appended_line = len(original_lines)  # 0-indexed line where snippet starts
 
-    Returns:
-        List[Dict[str, str]] | str: Matches as ``{"name", "kind", "file"}`` or error message.
-    """
+    try:
+        change = DocumentContentChange(
+            snippet,
+            [appended_line, 0],
+            [appended_line, 0],
+        )
+        client.update_file(rel_path, [change])
+        raw = client.get_diagnostics(
+            rel_path, start_line=appended_line, inactivity_timeout=120.0
+        )
+        check_lsp_response(raw, "get_diagnostics")
+
+        appended_diags = list(raw)
+
+        if err := check_axiom_errors(appended_diags):
+            raise LeanToolError(f"Axiom check failed: {err}")
+
+        axioms = parse_axioms(appended_diags)
+    finally:
+        try:
+            restore_change = DocumentContentChange(
+                "",
+                [appended_line, 0],
+                [appended_line + snippet_lines, 0],
+            )
+            client.update_file(rel_path, [restore_change])
+        except Exception as exc:
+            logger.warning("Failed to restore `%s` after verify: %s", rel_path, exc)
+
+    w: list[SourceWarning] = []
+    if scan_source:
+        if _RG_AVAILABLE:
+            w = [
+                SourceWarning(line=w["line"], pattern=w["pattern"])
+                for w in scan_warnings(abs_path)
+            ]
+        else:
+            w = [
+                SourceWarning(
+                    line=0, pattern="ripgrep (rg) not installed - warnings unavailable"
+                )
+            ]
+
+    return VerifyResult(axioms=axioms, warnings=w)
+
+
+class LocalSearchError(Exception):
+    pass
+
+
+@mcp.tool(
+    "lean_local_search",
+    annotations=ToolAnnotations(
+        title="Local Search",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def local_search(
+    ctx: Context,
+    query: Annotated[str, Field(description="Declaration name or prefix")],
+    limit: Annotated[int, Field(description="Max matches", ge=1)] = 10,
+    project_root: Annotated[
+        Optional[str], Field(description="Project root (inferred if omitted)")
+    ] = None,
+) -> LocalSearchResults:
+    """Fast local search to verify declarations exist. Use BEFORE trying a lemma name."""
     if not _RG_AVAILABLE:
-        return _RG_MESSAGE
+        raise LocalSearchError(_RG_MESSAGE)
 
     lifespan = ctx.request_context.lifespan_context
     stored_root = lifespan.lean_project_path
@@ -778,102 +1253,129 @@ def local_search(
     if project_root:
         try:
             resolved_root = Path(project_root).expanduser().resolve()
-        except OSError as exc:  # pragma: no cover - defensive path handling
-            return f"Invalid project root '{project_root}': {exc}"
+        except OSError as exc:
+            raise LocalSearchError(f"Invalid project root '{project_root}': {exc}")
         if not resolved_root.exists():
-            return f"Project root '{project_root}' does not exist."
+            raise LocalSearchError(f"Project root '{project_root}' does not exist.")
         lifespan.lean_project_path = resolved_root
     else:
         resolved_root = stored_root
 
     if resolved_root is None:
-        return "Lean project path not set. Call a file-based tool (like lean_file_contents) first to set the project path."
+        raise LocalSearchError(
+            "Lean project path not set. Call a file-based tool first."
+        )
 
     try:
-        return lean_local_search(
-            query=query.strip(), limit=limit, project_root=resolved_root
+        raw_results = await asyncio.to_thread(
+            lean_local_search,
+            query=query.strip(),
+            limit=limit,
+            project_root=resolved_root,
         )
+        results = [
+            LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
+            for r in raw_results
+        ]
+        return LocalSearchResults(items=results)
     except RuntimeError as exc:
-        return f"lean_local_search error:\n{exc}"
+        raise LocalSearchError(f"Search failed: {exc}")
 
 
-@mcp.tool("lean_leansearch")
+@mcp.tool(
+    "lean_leansearch",
+    annotations=ToolAnnotations(
+        title="LeanSearch",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @rate_limited("leansearch", max_requests=3, per_seconds=30)
-def leansearch(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
-    """Search for Lean theorems, definitions, and tactics using leansearch.net.
+async def leansearch(
+    ctx: Context,
+    query: Annotated[str, Field(description="Natural language or Lean term query")],
+    num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
+) -> LeanSearchResults:
+    """Search Mathlib via leansearch.net using natural language.
 
-    Query patterns:
-      - Natural language: "If there exist injective maps of sets from A to B and from B to A, then there exists a bijective map between A and B."
-      - Mixed natural/Lean: "natural numbers. from: n < m, to: n + 1 < m + 1", "n + 1 <= m if n < m"
-      - Concept names: "Cauchy Schwarz"
-      - Lean identifiers: "List.sum", "Finset induction"
-      - Lean term: "{f : A → B} {g : B → A} (hf : Injective f) (hg : Injective g) : ∃ h, Bijective h"
-
-    Args:
-        query (str): Search query
-        num_results (int, optional): Max results. Defaults to 5.
-
-    Returns:
-        List[Dict] | str: Search results or error msg
+    Examples: "sum of two even numbers is even", "Cauchy-Schwarz inequality",
+    "{f : A → B} (hf : Injective f) : ∃ g, LeftInverse g f"
     """
-    try:
-        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
+    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+    payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
 
-        req = urllib.request.Request(
-            "https://leansearch.net/search",
-            data=payload,
-            headers=headers,
-            method="POST",
+    req = urllib.request.Request(
+        "https://leansearch.net/search",
+        data=payload,
+        headers=headers,
+        method="POST",
+    )
+
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message="Awaiting response from leansearch.net"
+    )
+    results = await _urlopen_json(req, timeout=10)
+
+    if not results or not results[0]:
+        return LeanSearchResults(items=[])
+
+    raw_results = [r["result"] for r in results[0][:num_results]]
+    items = [
+        LeanSearchResult(
+            name=".".join(r["name"]),
+            module_name=".".join(r["module_name"]),
+            kind=r.get("kind"),
+            type=r.get("type"),
         )
-
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
-
-        if not results or not results[0]:
-            return "No results found."
-        results = results[0][:num_results]
-        results = [r["result"] for r in results]
-
-        for result in results:
-            result.pop("docstring")
-            result["module_name"] = ".".join(result["module_name"])
-            result["name"] = ".".join(result["name"])
-
-        return results
-    except Exception as e:
-        return f"leansearch error:\n{str(e)}"
+        for r in raw_results
+    ]
+    return LeanSearchResults(items=items)
 
 
-@mcp.tool("lean_loogle")
-async def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] | str:
-    """Search for definitions and theorems using loogle.
+@mcp.tool(
+    "lean_loogle",
+    annotations=ToolAnnotations(
+        title="Loogle",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+async def loogle(
+    ctx: Context,
+    query: Annotated[
+        str, Field(description="Type pattern, constant, or name substring")
+    ],
+    num_results: Annotated[int, Field(description="Max results", ge=1)] = 8,
+) -> LoogleResults:
+    """Search Mathlib by type signature via loogle.lean-lang.org.
 
-    Query patterns:
-      - By constant: Real.sin  # finds lemmas mentioning Real.sin
-      - By lemma name: "differ"  # finds lemmas with "differ" in the name
-      - By subexpression: _ * (_ ^ _)  # finds lemmas with a product and power
-      - Non-linear: Real.sqrt ?a * Real.sqrt ?a
-      - By type shape: (?a -> ?b) -> List ?a -> List ?b
-      - By conclusion: |- tsum _ = _ * tsum _
-      - By conclusion w/hyps: |- _ < _ → tsum _ < tsum _
-
-    Args:
-        query (str): Search query
-        num_results (int, optional): Max results. Defaults to 8.
-
-    Returns:
-        List[dict] | str: Search results or error msg
+    Examples: `Real.sin`, `"comm"`, `(?a → ?b) → List ?a → List ?b`,
+    `_ * (_ ^ _)`, `|- _ < _ → _ + 1 < _ + 1`
     """
     app_ctx: AppContext = ctx.request_context.lifespan_context
 
     # Try local loogle first if available (no rate limiting)
     if app_ctx.loogle_local_available and app_ctx.loogle_manager:
+        # Update project path if it changed (adds new library paths)
+        if app_ctx.lean_project_path != app_ctx.loogle_manager.project_path:
+            if app_ctx.loogle_manager.set_project_path(app_ctx.lean_project_path):
+                # Restart to pick up new paths
+                await app_ctx.loogle_manager.stop()
         try:
             results = await app_ctx.loogle_manager.query(query, num_results)
-            for result in results:
-                result.pop("doc", None)
-            return results if results else "No results found."
+            if not results:
+                return LoogleResults(items=[])
+            items = [
+                LoogleResult(
+                    name=r.get("name", ""),
+                    type=r.get("type", ""),
+                    module=r.get("module", ""),
+                )
+                for r in results
+            ]
+            return LoogleResults(items=items)
         except Exception as e:
             logger.warning(f"Local loogle failed: {e}, falling back to remote")
 
@@ -882,145 +1384,158 @@ async def loogle(ctx: Context, query: str, num_results: int = 8) -> List[dict] |
     now = int(time.time())
     rate_limit[:] = [t for t in rate_limit if now - t < 30]
     if len(rate_limit) >= 3:
-        return "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+        raise LeanToolError(
+            "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+        )
     rate_limit.append(now)
 
-    return loogle_remote(query, num_results)
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=10,
+        message="Awaiting response from loogle.lean-lang.org",
+    )
+    result = await asyncio.to_thread(loogle_remote, query, num_results)
+    if isinstance(result, str):
+        raise LeanToolError(result)  # Error message from remote
+    return LoogleResults(items=result)
 
 
-@mcp.tool("lean_leanfinder")
+@mcp.tool(
+    "lean_leanfinder",
+    annotations=ToolAnnotations(
+        title="Lean Finder",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @rate_limited("leanfinder", max_requests=10, per_seconds=30)
-def leanfinder(ctx: Context, query: str, num_results: int = 5) -> List[Dict] | str:
-    """Search Mathlib theorems/definitions semantically by mathematical concept or proof state using Lean Finder.
+async def leanfinder(
+    ctx: Context,
+    query: Annotated[str, Field(description="Mathematical concept or proof state")],
+    num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
+) -> LeanFinderResults:
+    """Semantic search by mathematical meaning via Lean Finder.
 
-    Effective query types:
-    - Natural language mathematical statement: "For any natural numbers n and m, the sum n+m is equal to m+n."
-    - Natural language questions: "I'm working with algebraic elements over a field extension … Does this imply that the minimal polynomials of x and y are equal?"
-    - Proof state. For better results, enter a proof state followed by how you want to transform the proof state.
-    - Statement definition: Fragment or the whole statement definition.
-
-    Tips: Multiple targeted queries beat one complex query.
-
-    Args:
-        query (str): Mathematical concept or proof state
-        num_results (int, optional): Max results. Defaults to 5.
-
-    Returns:
-        List[Dict] | str: List of Lean statement objects (full name, formal statement, informal statement) or error msg
+    Examples: "commutativity of addition on natural numbers",
+    "I have h : n < m and need n + 1 < m + 1", proof state text.
     """
-    try:
-        headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-        request_url = (
-            "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
-        )
-        payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
-        req = urllib.request.Request(
-            request_url, data=payload, headers=headers, method="POST"
-        )
+    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+    request_url = "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
+    payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
+    req = urllib.request.Request(
+        request_url, data=payload, headers=headers, method="POST"
+    )
 
-        results = []
-        with urllib.request.urlopen(req, timeout=30) as response:
-            data = orjson.loads(response.read())
-            for result in data["results"]:
-                if (
-                    "https://leanprover-community.github.io/mathlib4_docs"
-                    not in result["url"]
-                ):  # Do not include results from other sources other than mathlib4, since users might not have imported them
-                    continue
-                full_name = re.search(r"pattern=(.*?)#doc", result["url"]).group(1)
-                obj = {
-                    "full_name": full_name,
-                    "formal_statement": result["formal_statement"],
-                    "informal_statement": result["informal_statement"],
-                }
-                results.append(obj)
+    results: List[LeanFinderResult] = []
+    await _safe_report_progress(
+        ctx,
+        progress=1,
+        total=10,
+        message="Awaiting response from Lean Finder (Hugging Face)",
+    )
+    data = await _urlopen_json(req, timeout=10)
+    for result in data["results"]:
+        if (
+            "https://leanprover-community.github.io/mathlib4_docs" not in result["url"]
+        ):  # Only include mathlib4 results
+            continue
+        match = re.search(r"pattern=(.*?)#doc", result["url"])
+        if match:
+            results.append(
+                LeanFinderResult(
+                    full_name=match.group(1),
+                    formal_statement=result["formal_statement"],
+                    informal_statement=result["informal_statement"],
+                )
+            )
 
-        return results if results else "Lean Finder: No results parsed"
-    except Exception as e:
-        return f"Lean Finder Error:\n{str(e)}"
+    return LeanFinderResults(items=results)
 
 
-@mcp.tool("lean_state_search")
-@rate_limited("lean_state_search", max_requests=3, per_seconds=30)
-def state_search(
-    ctx: Context, file_path: str, line: int, column: int, num_results: int = 5
-) -> List | str:
-    """Search for theorems based on proof state using premise-search.com.
-
-    Only uses first goal if multiple.
-
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
-        num_results (int, optional): Max results. Defaults to 5.
-
-    Returns:
-        List | str: Search results or error msg
-    """
+@mcp.tool(
+    "lean_state_search",
+    annotations=ToolAnnotations(
+        title="State Search",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("lean_state_search", max_requests=6, per_seconds=30)
+async def state_search(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
+) -> StateSearchResults:
+    """Find lemmas to close the goal at a position. Searches premise-search.com."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    file_contents = client.get_file_content(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
-    f_line = format_line(file_contents, line, column)
     if not goal or not goal.get("goals"):
-        return f"No goals found:\n{f_line}\nTry elsewhere?"
-
-    goal = urllib.parse.quote(goal["goals"][0])
-
-    try:
-        url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
-        req = urllib.request.Request(
-            f"{url}/api/search?query={goal}&results={num_results}&rev=v4.22.0",
-            headers={"User-Agent": "lean-lsp-mcp/0.1"},
-            method="GET",
+        raise LeanToolError(
+            f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete."
         )
 
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
+    goal_str = urllib.parse.quote(goal["goals"][0])
 
-        for result in results:
-            result.pop("rev")
-        # Very dirty type mix
-        results.insert(0, f"Results for line:\n{f_line}")
-        return results
-    except Exception as e:
-        return f"lean state search error:\n{str(e)}"
+    url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
+    req = urllib.request.Request(
+        f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
+        headers={"User-Agent": "lean-lsp-mcp/0.1"},
+        method="GET",
+    )
+
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
+    results = await _urlopen_json(req, timeout=10)
+
+    items = [StateSearchResult(name=r["name"]) for r in results]
+    return StateSearchResults(items=items)
 
 
-@mcp.tool("lean_hammer_premise")
-@rate_limited("hammer_premise", max_requests=3, per_seconds=30)
-def hammer_premise(
-    ctx: Context, file_path: str, line: int, column: int, num_results: int = 32
-) -> List[str] | str:
-    """Search for premises based on proof state using the lean hammer premise search.
+@mcp.tool(
+    "lean_hammer_premise",
+    annotations=ToolAnnotations(
+        title="Hammer Premises",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@rate_limited("hammer_premise", max_requests=6, per_seconds=30)
+async def hammer_premise(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    num_results: Annotated[int, Field(description="Max results", ge=1)] = 32,
+) -> PremiseResults:
+    """Get premise suggestions for automation tactics at a goal position.
 
-    Args:
-        file_path (str): Abs path to Lean file
-        line (int): Line number (1-indexed)
-        column (int): Column number (1-indexed)
-        num_results (int, optional): Max results. Defaults to 32.
-
-    Returns:
-        List[str] | str: List of relevant premises or error message
+    Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        return "Invalid Lean file path: Unable to start LSP server or load file"
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    file_contents = client.get_file_content(rel_path)
     goal = client.get_goal(rel_path, line - 1, column - 1)
 
-    f_line = format_line(file_contents, line, column)
     if not goal or not goal.get("goals"):
-        return f"No goals found:\n{f_line}\nTry elsewhere?"
+        raise LeanToolError(
+            f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete."
+        )
 
     data = {
         "state": goal["goals"][0],
@@ -1028,27 +1543,200 @@ def hammer_premise(
         "k": num_results,
     }
 
-    try:
-        url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
-        req = urllib.request.Request(
-            url + "/retrieve",
-            headers={
-                "User-Agent": "lean-lsp-mcp/0.1",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-            data=orjson.dumps(data),
+    url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
+    req = urllib.request.Request(
+        url + "/retrieve",
+        headers={
+            "User-Agent": "lean-lsp-mcp/0.1",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+        data=orjson.dumps(data),
+    )
+
+    await _safe_report_progress(
+        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
+    )
+    results = await _urlopen_json(req, timeout=10)
+
+    items = [PremiseResult(name=r["name"]) for r in results]
+    return PremiseResults(items=items)
+
+
+@mcp.tool(
+    "lean_code_actions",
+    annotations=ToolAnnotations(
+        title="Code Actions",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def code_actions(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+) -> CodeActionsResult:
+    """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Get diagnostics on line to discover code action ranges
+    diags = client.get_diagnostics(
+        rel_path, start_line=line - 1, end_line=line - 1, inactivity_timeout=15.0
+    )
+
+    # Query code actions for each diagnostic's range, dedup by title
+    seen: set[str] = set()
+    raw_actions: list[dict] = []
+    for diag in diags.diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if not r:
+            continue
+        s, e = r["start"], r["end"]
+        for action in client.get_code_actions(
+            rel_path, s["line"], s["character"], e["line"], e["character"]
+        ):
+            if action.get("title", "") not in seen:
+                seen.add(action.get("title", ""))
+                raw_actions.append(action)
+
+    # Resolve and convert
+    actions: list[CodeAction] = []
+    for raw in raw_actions:
+        resolved = raw if "edit" in raw else client.get_code_action_resolve(raw)
+        if isinstance(resolved, dict) and "error" in resolved:
+            continue
+        actions.append(
+            CodeAction(
+                title=raw.get("title", ""),
+                is_preferred=raw.get("isPreferred", False),
+                edits=[
+                    CodeActionEdit(
+                        new_text=edit["newText"],
+                        start_line=edit["range"]["start"]["line"] + 1,
+                        start_column=edit["range"]["start"]["character"] + 1,
+                        end_line=edit["range"]["end"]["line"] + 1,
+                        end_column=edit["range"]["end"]["character"] + 1,
+                    )
+                    for dc in resolved.get("edit", {}).get("documentChanges", [])
+                    for edit in dc.get("edits", [])
+                ],
+            )
         )
 
-        with urllib.request.urlopen(req, timeout=20) as response:
-            results = orjson.loads(response.read())
+    return CodeActionsResult(actions=actions)
 
-        results = [result["name"] for result in results]
-        results.insert(0, f"Results for line:\n{f_line}")
-        return results
-    except Exception as e:
-        return f"lean hammer premise error:\n{str(e)}"
+
+@mcp.tool(
+    "lean_get_widgets",
+    annotations=ToolAnnotations(
+        title="Get Widgets",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widgets(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> WidgetsResult:
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    widgets = client.get_widgets(rel_path, line - 1, column - 1)
+    return WidgetsResult(widgets=widgets)
+
+
+@mcp.tool(
+    "lean_get_widget_source",
+    annotations=ToolAnnotations(
+        title="Widget Source",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widget_source(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    javascript_hash: Annotated[
+        str, Field(description="javascriptHash from a widget instance")
+    ],
+) -> WidgetSourceResult:
+    """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    source = client.get_widget_source(
+        rel_path, 0, 0, {"javascriptHash": javascript_hash}
+    )
+    return WidgetSourceResult(source=source)
+
+
+@mcp.tool(
+    "lean_profile_proof",
+    annotations=ToolAnnotations(
+        title="Profile Proof",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def profile_proof(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[
+        int, Field(description="Line where theorem starts (1-indexed)", ge=1)
+    ],
+    top_n: Annotated[
+        int, Field(description="Number of slowest lines to return", ge=1)
+    ] = 5,
+    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 30.0,
+) -> ProofProfileResult:
+    """Run `lean --profile` on a theorem. Returns per-line timing and categories. SLOW - avoid on theorems that already hit heartbeat limits."""
+    from lean_lsp_mcp.profile_utils import profile_theorem
+
+    # Get project path
+    lifespan = ctx.request_context.lifespan_context
+    project_path = lifespan.lean_project_path
+
+    if not project_path:
+        infer_project_path(file_path, ctx=ctx)
+        project_path = lifespan.lean_project_path
+
+    if not project_path:
+        raise LeanToolError("Lean project not found")
+
+    file_path_obj = Path(file_path)
+    if not file_path_obj.exists():
+        raise LeanToolError(f"File not found: {file_path}")
+
+    try:
+        return await profile_theorem(
+            file_path=file_path_obj,
+            theorem_line=line,
+            project_path=project_path,
+            timeout=timeout,
+            top_n=top_n,
+        )
+    except (ValueError, TimeoutError) as e:
+        raise LeanToolError(str(e)) from e
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
     mcp.run()

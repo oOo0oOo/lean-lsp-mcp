@@ -1,18 +1,78 @@
 import os
+import re
 import secrets
 import sys
 import tempfile
-from typing import List, Dict, Optional, Callable
+from typing import Any, List, Dict, Optional, Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+
+
+# Pattern to extract file paths from build stderr: "error: path/file.lean:line:col: message"
+BUILD_ERROR_FILE_PATTERN = re.compile(
+    r"^(?:error|warning):\s*([^\s:]+\.lean):\d+:\d+:",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def extract_failed_dependency_paths(message: str) -> List[str]:
+    """Extract unique file paths from lake build stderr output.
+
+    Returns sorted list of .lean file paths that had errors/warnings.
+    """
+    paths = set(BUILD_ERROR_FILE_PATTERN.findall(message))
+    return sorted(paths)
+
+
+def is_build_stderr(message: str) -> bool:
+    """Check if message looks like lake build stderr output."""
+    return (
+        "lake setup-file" in message
+        or BUILD_ERROR_FILE_PATTERN.search(message) is not None
+    )
+
+
+class LeanToolError(Exception):
+    """Exception raised when a Lean MCP tool operation fails."""
+
+    pass
+
+
+_ACTIVE_TRANSPORT_ENV = "LEAN_LSP_MCP_ACTIVE_TRANSPORT"
+
+
+def _active_transport_is_stdio() -> bool:
+    return os.environ.get(_ACTIVE_TRANSPORT_ENV, "").strip().lower() == "stdio"
+
+
+def check_lsp_response(
+    response: Any, operation: str, *, allow_none: bool = False
+) -> Any:
+    """Check an LSP response for error patterns and raise if found.
+
+    Args:
+        response: The response from a leanclient LSP operation
+        operation: Human-readable description of the operation
+        allow_none: If False (default), None raises LeanToolError (timeout).
+                    If True, None is allowed (for operations where None is valid).
+
+    Raises:
+        LeanToolError: If response indicates failure
+    """
+    if response is None and not allow_none:
+        raise LeanToolError(f"LSP timeout during {operation}")
+    if isinstance(response, dict) and "error" in response:
+        msg = response["error"].get("message", "unknown error")
+        raise LeanToolError(f"LSP error during {operation}: {msg}")
+    return response
 
 
 class OutputCapture:
     """Capture any output to stdout and stderr at the file descriptor level."""
 
     def __init__(self):
-        self.original_stdout_fd = None
-        self.original_stderr_fd = None
+        self.original_stdout_fd: int | None = None
+        self.original_stderr_fd: int | None = None
         self.temp_file = None
         self.captured_output = ""
 
@@ -20,23 +80,46 @@ class OutputCapture:
         self.temp_file = tempfile.NamedTemporaryFile(
             mode="w+", delete=False, encoding="utf-8"
         )
-        self.original_stdout_fd = os.dup(sys.stdout.fileno())
+        temp_fd = self.temp_file.fileno()
+
+        if not _active_transport_is_stdio():
+            self.original_stdout_fd = os.dup(sys.stdout.fileno())
+            os.dup2(temp_fd, sys.stdout.fileno())
+
         self.original_stderr_fd = os.dup(sys.stderr.fileno())
-        os.dup2(self.temp_file.fileno(), sys.stdout.fileno())
-        os.dup2(self.temp_file.fileno(), sys.stderr.fileno())
+        os.dup2(temp_fd, sys.stderr.fileno())
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        os.dup2(self.original_stdout_fd, sys.stdout.fileno())
-        os.dup2(self.original_stderr_fd, sys.stderr.fileno())
-        os.close(self.original_stdout_fd)
-        os.close(self.original_stderr_fd)
+        # Restore file descriptors — each is independent so if stdout fails,
+        # we still try to restore stderr.
+        try:
+            if self.original_stdout_fd is not None:
+                os.dup2(self.original_stdout_fd, sys.stdout.fileno())
+                os.close(self.original_stdout_fd)
+        except OSError:
+            pass
+        try:
+            if self.original_stderr_fd is not None:
+                os.dup2(self.original_stderr_fd, sys.stderr.fileno())
+                os.close(self.original_stderr_fd)
+        except OSError:
+            pass
 
-        self.temp_file.flush()
-        self.temp_file.seek(0)
-        self.captured_output = self.temp_file.read()
-        self.temp_file.close()
-        os.unlink(self.temp_file.name)
+        # Read captured output and clean up temp file.
+        if self.temp_file is not None:
+            try:
+                self.temp_file.flush()
+                self.temp_file.seek(0)
+                self.captured_output = self.temp_file.read()
+            except Exception:
+                pass
+            temp_name = self.temp_file.name
+            try:
+                self.temp_file.close()
+                os.unlink(temp_name)
+            except OSError:
+                pass
 
     def get_output(self):
         return self.captured_output
@@ -80,11 +163,11 @@ def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[s
     return msgs
 
 
-def format_goal(goal, default_msg):
-    if goal is None:
-        return default_msg
-    rendered = goal.get("rendered")
-    return rendered.replace("```lean\n", "").replace("\n```", "") if rendered else None
+def extract_goals_list(goal_response: dict | None) -> List[str]:
+    """Extract goals list from LSP response, returning empty list if no goals."""
+    if goal_response is None:
+        return []
+    return goal_response.get("goals", [])
 
 
 def _utf16_index_to_py_index(text: str, utf16_index: int) -> int | None:
@@ -353,3 +436,34 @@ def deprecated(func_or_msg: str | Callable | None = None) -> Callable:
         return _decorator
 
     return _decorator(func_or_msg)
+
+
+# LSP CompletionItemKind enum
+# https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
+COMPLETION_KIND: Dict[int, str] = {
+    1: "text",
+    2: "method",
+    3: "function",
+    4: "constructor",
+    5: "field",
+    6: "variable",
+    7: "class",
+    8: "interface",
+    9: "module",
+    10: "property",
+    11: "unit",
+    12: "value",
+    13: "enum",
+    14: "keyword",
+    15: "snippet",
+    16: "color",
+    17: "file",
+    18: "reference",
+    19: "folder",
+    20: "enum_member",
+    21: "constant",
+    22: "struct",
+    23: "event",
+    24: "operator",
+    25: "type_parameter",
+}

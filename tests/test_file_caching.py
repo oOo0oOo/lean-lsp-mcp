@@ -50,7 +50,10 @@ async def test_file_caching(
             "lean_goal", {"file_path": str(cache_test_file), "line": 5}
         )
         result1 = result_text(goal1)
-        assert "no goals" in result1.lower()
+        # With structured goals, completed proof has empty goals_after list
+        assert '"goals_after": []' in result1, (
+            f"Expected empty goals_after, got: {result1}"
+        )
 
         # Modify file on disk
         cache_test_file.write_text(

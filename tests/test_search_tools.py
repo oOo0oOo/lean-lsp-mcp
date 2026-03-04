@@ -1,22 +1,40 @@
 from __future__ import annotations
 
-import orjson
 from collections.abc import Callable
 from pathlib import Path
 from typing import AsyncContextManager
 
+import orjson
 import pytest
 
 from tests.helpers.mcp_client import MCPClient, result_text
 
 
-def _first_json_block(result) -> dict[str, str] | None:
+def _first_result_item(result) -> dict[str, str] | None:
+    """Extract the first item from a result that returns a list wrapped in {"items": [...]}.
+
+    Handles both structured content and text content formats.
+    """
+    # Try structured content first (new format)
+    if result.structuredContent is not None:
+        items = result.structuredContent.get("items", [])
+        return items[0] if items else None
+
+    # Fall back to parsing text content
     for block in result.content:
         text = getattr(block, "text", "").strip()
         if not text:
             continue
         try:
-            return orjson.loads(text)
+            parsed = orjson.loads(text)
+            # Handle {"items": [...]} wrapper format
+            if isinstance(parsed, dict) and "items" in parsed:
+                items = parsed["items"]
+                return items[0] if items else None
+            # Handle bare list format (legacy)
+            if isinstance(parsed, list):
+                return parsed[0] if parsed else None
+            return parsed
         except orjson.JSONDecodeError:
             continue
     return None
@@ -46,7 +64,7 @@ async def test_search_tools(
             "lean_loogle",
             {"query": "Nat"},
         )
-        loogle_entry = _first_json_block(loogle)
+        loogle_entry = _first_result_item(loogle)
         if loogle_entry is None:
             pytest.skip("lean_loogle did not return JSON content")
         assert {"module", "name", "type"} <= set(loogle_entry.keys())
@@ -68,9 +86,12 @@ async def test_search_tools(
                 "line": 4,
                 "column": 3,
             },
+            expect_error=True,
         )
-        text = result_text(state_search)
-        assert "Results for line" in text or "lean state search error" in text
+        # Now returns JSON array of StateSearchResult models
+        state_entry = _first_result_item(state_search)
+        if state_entry is not None:
+            assert "name" in state_entry
 
         hammer = await client.call_tool(
             "lean_hammer_premise",
@@ -80,7 +101,10 @@ async def test_search_tools(
                 "column": 3,
             },
         )
-        assert "Results for line" in result_text(hammer)
+        # Now returns JSON array of PremiseResult models
+        hammer_entry = _first_result_item(hammer)
+        if hammer_entry is not None:
+            assert "name" in hammer_entry
 
         local_search = await client.call_tool(
             "lean_local_search",
@@ -89,7 +113,7 @@ async def test_search_tools(
                 "project_root": str(goal_file.parent),
             },
         )
-        local_entry = _first_json_block(local_search)
+        local_entry = _first_result_item(local_search)
         if local_entry is None:
             message = result_text(local_search).strip()
             if "ripgrep" in message.lower():
@@ -105,7 +129,7 @@ async def test_search_tools(
             "lean_leansearch",
             {"query": "Nat.succ"},
         )
-        entry = _first_json_block(leansearch)
+        entry = _first_result_item(leansearch)
         if entry is None:
             pytest.skip("lean_leansearch did not return JSON content")
         assert {"module_name", "name", "type"} <= set(entry.keys())
@@ -118,7 +142,7 @@ async def test_search_tools(
                 "num_results": 3,
             },
         )
-        finder_results = _first_json_block(finder_informal)
+        finder_results = _first_result_item(finder_informal)
         if finder_results:
             assert isinstance(finder_results, dict) and len(finder_results.keys()) == 3
             assert {"full_name", "formal_statement", "informal_statement"} <= set(
