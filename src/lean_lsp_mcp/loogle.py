@@ -36,15 +36,14 @@ def get_cache_dir() -> Path:
 def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     """Query the remote loogle API.
 
-    Set LOOGLE_URL to use a self-hosted instance (e.g. vvuq-mcp).
-    Set LOOGLE_API_KEY for authenticated endpoints.
+    Set LOOGLE_URL to override the default endpoint.
+    Set LOOGLE_HEADERS to a JSON object of extra headers (e.g. '{"X-API-Key": "..."}').
     """
     base = os.environ.get("LOOGLE_URL", "https://loogle.lean-lang.org")
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1"}
-        api_key = os.environ.get("LOOGLE_API_KEY")
-        if api_key:
-            headers["X-API-Key"] = api_key
+        if extra := os.environ.get("LOOGLE_HEADERS"):
+            headers.update(json.loads(extra))
         req = urllib.request.Request(
             f"{base}/json?q={urllib.parse.quote(query)}",
             headers=headers,
