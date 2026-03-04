@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from lean_lsp_mcp import server
+from lean_lsp_mcp.models import DiagnosticSeverity
 
 
 class DummyClient:
@@ -369,3 +370,124 @@ def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
 
     assert result.items == []
     assert fake_client.restore_calls == [("Foo.lean", "disk-content")]
+
+
+# ---------------------------------------------------------------------------
+# Severity filtering in _process_diagnostics / diagnostic_messages
+# ---------------------------------------------------------------------------
+
+_MIXED_DIAGNOSTICS = [
+    {"severity": 1, "message": "unknown identifier", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}},
+    {"severity": 2, "message": "unused variable", "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}}},
+    {"severity": 3, "message": "declaration uses sorry", "range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 4}}},
+    {"severity": 4, "message": "consider using simp", "range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 3}}},
+]
+
+
+def test_process_diagnostics_no_severity_filter_returns_all() -> None:
+    result = server._process_diagnostics(_MIXED_DIAGNOSTICS, build_success=True, severity=None)
+    assert [d.severity for d in result.items] == ["error", "warning", "info", "hint"]
+
+
+def test_process_diagnostics_filter_errors_only() -> None:
+    result = server._process_diagnostics(_MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.error)
+    assert len(result.items) == 1
+    assert result.items[0].severity == "error"
+    assert result.items[0].message == "unknown identifier"
+
+
+def test_process_diagnostics_filter_warnings_only() -> None:
+    result = server._process_diagnostics(_MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.warning)
+    assert len(result.items) == 1
+    assert result.items[0].severity == "warning"
+    assert result.items[0].message == "unused variable"
+
+
+def test_process_diagnostics_filter_info_only() -> None:
+    result = server._process_diagnostics(_MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.info)
+    assert len(result.items) == 1
+    assert result.items[0].severity == "info"
+
+
+def test_process_diagnostics_filter_hint_only() -> None:
+    result = server._process_diagnostics(_MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.hint)
+    assert len(result.items) == 1
+    assert result.items[0].severity == "hint"
+
+
+def test_process_diagnostics_filter_no_matches_returns_empty() -> None:
+    error_only = [_MIXED_DIAGNOSTICS[0]]
+    result = server._process_diagnostics(error_only, build_success=True, severity=DiagnosticSeverity.warning)
+    assert result.items == []
+
+
+def test_process_diagnostics_build_failure_excluded_regardless_of_filter() -> None:
+    """Build stderr blobs at (1,1) should be excluded even when severity filter matches."""
+    # "lake setup-file" triggers is_build_stderr
+    build_diag = {
+        "severity": 1,
+        "message": "lake setup-file some/dep/path",
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+    }
+    result = server._process_diagnostics([build_diag], build_success=False, severity=DiagnosticSeverity.error)
+    assert result.items == []
+    assert result.success is False
+
+
+def test_diagnostic_messages_passes_severity_to_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """diagnostic_messages tool forwards the severity parameter to _process_diagnostics."""
+    captured: dict = {}
+
+    def fake_process(diagnostics, build_success, severity=None):
+        captured["severity"] = severity
+        from lean_lsp_mcp.models import DiagnosticsResult
+        return DiagnosticsResult(success=build_success, items=[])
+
+    class FakeDiagResult:
+        diagnostics = [{"severity": 2, "message": "unused", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}}}]
+        success = True
+
+    class FakeClient:
+        def open_file(self, *_a, **_kw): pass
+        def get_diagnostics(self, *_a, **_kw): return FakeDiagResult()
+
+    monkeypatch.setattr(server, "_process_diagnostics", fake_process)
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = FakeClient()
+
+    server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean", severity=DiagnosticSeverity.warning)
+
+    assert captured["severity"] == DiagnosticSeverity.warning
+
+
+def test_diagnostic_messages_default_severity_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_process(diagnostics, build_success, severity=None):
+        captured["severity"] = severity
+        from lean_lsp_mcp.models import DiagnosticsResult
+        return DiagnosticsResult(success=build_success, items=[])
+
+    class FakeDiagResult:
+        diagnostics = []
+        success = True
+
+    class FakeClient:
+        def open_file(self, *_a, **_kw): pass
+        def get_diagnostics(self, *_a, **_kw): return FakeDiagResult()
+
+    monkeypatch.setattr(server, "_process_diagnostics", fake_process)
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = FakeClient()
+
+    server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean")
+
+    assert captured["severity"] is None
