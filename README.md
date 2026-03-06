@@ -131,13 +131,13 @@ claude mcp add lean-lsp -s project uvx lean-lsp-mcp
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
 </details>
 
-#### Claude Skill: Lean4 Theorem Proving
-
-If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/plugins/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
-
 ### 4. Install ripgrep (optional but recommended)
 
 For the local search tool `lean_local_search`, install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
+
+### 5. Install the Lean 4 skill (optional but recommended)
+
+With any agentic coding platform such as Claude Code or Codex, you can install the [Agentic Coding Skill: Lean 4 Theorem Proving](https://github.com/cameronfreer/lean4-skills/). This skill provides additional prompts and templates for interacting with Lean 4 projects, including guidance on using `lean-lsp-mcp`.
 
 ## MCP Tools
 
