@@ -175,52 +175,58 @@ def _require_numpy():
     return np
 
 
-def _prepare_index(
+def _build_fresh_index(
     *,
-    project_root: Path,
+    index_dir: Path,
+    prefix: str,
+    current_states: dict[str, tuple[Path, int, int]],
     model_name: str,
-    rebuild: bool,
 ):
-    index_dir = get_cache_dir()
-    prefix = _index_prefix(project_root, model_name)
+    changed_entries: list[tuple[str, str, int, int, str]] = []
+    for rel, (file_path, mtime_ns, size) in current_states.items():
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        changed_entries.append((rel, text, mtime_ns, size, _content_hash(text)))
 
-    loaded = None if rebuild else _load_index(index_dir, prefix)
-    if loaded is None:
-        current_states = _list_file_states(project_root)
-        changed_entries: list[tuple[str, str, int, int, str]] = []
-        for rel, (file_path, mtime_ns, size) in current_states.items():
-            try:
-                text = file_path.read_text(encoding="utf-8")
-            except Exception:
-                continue
-            changed_entries.append((rel, text, mtime_ns, size, _content_hash(text)))
+    if not changed_entries:
+        return [], None
 
-        if not changed_entries:
-            return [], None
+    model = _load_model(model_name)
+    np = _require_numpy()
 
-        model = _load_model(model_name)
-        np = _require_numpy()
+    new_items: list[SemanticSearchItem] = []
+    for rel, text, *_ in changed_entries:
+        new_items.extend(_extract_decls_from_text(text, rel))
 
-        new_items: list[SemanticSearchItem] = []
-        for rel, text, *_ in changed_entries:
-            new_items.extend(_extract_decls_from_text(text, rel))
+    if not new_items:
+        return [], None
 
-        if not new_items:
-            return [], None
+    texts = [f"{item.name} {item.kind} {item.snippet}" for item in new_items]
+    embeddings = np.array(model.encode(texts, normalize_embeddings=True))
 
-        texts = [f"{item.name} {item.kind} {item.snippet}" for item in new_items]
-        embeddings = np.array(model.encode(texts, normalize_embeddings=True))
+    next_states = {
+        rel: {"mtime_ns": mtime_ns, "size": size, "content_hash": content_hash}
+        for rel, _text, mtime_ns, size, content_hash in changed_entries
+    }
+    _save_index(index_dir, prefix, new_items, embeddings, next_states)
+    return new_items, embeddings
 
-        next_states = {
-            rel: {"mtime_ns": mtime_ns, "size": size, "content_hash": content_hash}
-            for rel, _text, mtime_ns, size, content_hash in changed_entries
-        }
-        _save_index(index_dir, prefix, new_items, embeddings, next_states)
-        return new_items, embeddings
 
-    items, embeddings, previous_states = loaded
+def _update_index(
+    *,
+    index_dir: Path,
+    prefix: str,
+    current_states: dict[str, tuple[Path, int, int]],
+    loaded_items,
+    loaded_embeddings,
+    previous_states: dict[str, dict[str, int | str]],
+    model_name: str,
+):
+    items = loaded_items
+    embeddings = loaded_embeddings
 
-    current_states = _list_file_states(project_root)
     removed_files = set(previous_states) - set(current_states)
 
     changed_entries: list[tuple[str, str, int, int, str]] = []
@@ -293,6 +299,37 @@ def _prepare_index(
 
     _save_index(index_dir, prefix, merged_items, merged_embeddings, next_states)
     return merged_items, merged_embeddings
+
+
+def _prepare_index(
+    *,
+    project_root: Path,
+    model_name: str,
+    rebuild: bool,
+):
+    index_dir = get_cache_dir()
+    prefix = _index_prefix(project_root, model_name)
+    current_states = _list_file_states(project_root)
+
+    loaded = None if rebuild else _load_index(index_dir, prefix)
+    if loaded is None:
+        return _build_fresh_index(
+            index_dir=index_dir,
+            prefix=prefix,
+            current_states=current_states,
+            model_name=model_name,
+        )
+
+    items, embeddings, previous_states = loaded
+    return _update_index(
+        index_dir=index_dir,
+        prefix=prefix,
+        current_states=current_states,
+        loaded_items=items,
+        loaded_embeddings=embeddings,
+        previous_states=previous_states,
+        model_name=model_name,
+    )
 
 
 def local_semantic_search(

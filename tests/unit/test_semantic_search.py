@@ -193,6 +193,90 @@ def test_prepare_index_uses_content_hash_for_touched_files(
     assert len(saved) == 1
 
 
+def test_prepare_index_dispatches_to_fresh_index_builder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    file_path = project / "Sample.lean"
+    file_path.write_text("def foo := 1\n", encoding="utf-8")
+    stat = file_path.stat()
+    current_states = {"Sample.lean": (file_path, stat.st_mtime_ns, stat.st_size)}
+
+    monkeypatch.setattr(semantic_search, "_list_file_states", lambda _project_root: current_states)
+    monkeypatch.setattr(semantic_search, "_load_index", lambda _index_dir, _prefix: None)
+    monkeypatch.setattr(
+        semantic_search,
+        "_update_index",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("update path should not run without a cached index")
+        ),
+    )
+
+    called: dict[str, object] = {}
+
+    def fake_build_fresh_index(**kwargs):
+        called.update(kwargs)
+        return ["fresh"], "embeddings"
+
+    monkeypatch.setattr(semantic_search, "_build_fresh_index", fake_build_fresh_index)
+
+    items, embeddings = semantic_search._prepare_index(
+        project_root=project,
+        model_name="fake-model",
+        rebuild=False,
+    )
+
+    assert items == ["fresh"]
+    assert embeddings == "embeddings"
+    assert called["current_states"] == current_states
+    assert called["model_name"] == "fake-model"
+
+
+def test_prepare_index_dispatches_to_cached_index_updater(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    file_path = project / "Sample.lean"
+    file_path.write_text("def foo := 1\n", encoding="utf-8")
+    stat = file_path.stat()
+    current_states = {"Sample.lean": (file_path, stat.st_mtime_ns, stat.st_size)}
+    loaded = (["cached"], "embeddings", {"Sample.lean": {"mtime_ns": 1, "size": 12}})
+
+    monkeypatch.setattr(semantic_search, "_list_file_states", lambda _project_root: current_states)
+    monkeypatch.setattr(semantic_search, "_load_index", lambda _index_dir, _prefix: loaded)
+    monkeypatch.setattr(
+        semantic_search,
+        "_build_fresh_index",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fresh path should not run when a cached index exists")
+        ),
+    )
+
+    called: dict[str, object] = {}
+
+    def fake_update_index(**kwargs):
+        called.update(kwargs)
+        return ["updated"], "new-embeddings"
+
+    monkeypatch.setattr(semantic_search, "_update_index", fake_update_index)
+
+    items, embeddings = semantic_search._prepare_index(
+        project_root=project,
+        model_name="fake-model",
+        rebuild=False,
+    )
+
+    assert items == ["updated"]
+    assert embeddings == "new-embeddings"
+    assert called["current_states"] == current_states
+    assert called["loaded_items"] == ["cached"]
+    assert called["loaded_embeddings"] == "embeddings"
+    assert called["previous_states"] == {"Sample.lean": {"mtime_ns": 1, "size": 12}}
+    assert called["model_name"] == "fake-model"
+
+
 class _FakeScores(list):
     def argsort(self):
         return sorted(range(len(self)), key=lambda idx: self[idx])
