@@ -7,7 +7,7 @@ import ssl
 import time
 import urllib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -153,35 +153,41 @@ class BuildCoordinator:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self._lock = asyncio.Lock()
-        self._current_task: asyncio.Task | None = None
-        self._task_waiters: dict[asyncio.Task, int] = {}
-        self._superseded_waiters: dict[asyncio.Task, int] = {}
+        self._current_task: asyncio.Task[BuildResult] | None = None
 
-    async def run(self, build_factory) -> BuildResult:
+    async def run(
+        self, build_factory: Callable[[], Awaitable[BuildResult]]
+    ) -> BuildResult:
         if self.mode == "allow":
             return await build_factory()
 
         join_latest = False
         while True:
             task = await self._select_task(build_factory, start_new=not join_latest)
-            await self._register_waiter(task)
             try:
-                return await task
+                return await asyncio.shield(task)
             except asyncio.CancelledError:
-                if await self._consume_superseded(task):
-                    return BuildResult(
-                        success=False,
-                        output="",
-                        errors=["Build superseded by newer request."],
-                    )
-                join_latest = True
-                continue
+                if not task.cancelled():
+                    raise
+                if await self._was_superseded(task):
+                    if self.mode == "cancel":
+                        return BuildResult(
+                            success=False,
+                            output="",
+                            errors=["Build superseded by newer request."],
+                        )
+                    join_latest = True
+                    continue
+                raise
             except Exception as exc:
                 return BuildResult(success=False, output="", errors=[str(exc)])
-            finally:
-                await self._unregister_waiter(task)
 
-    async def _select_task(self, build_factory, *, start_new: bool) -> asyncio.Task:
+    async def _select_task(
+        self,
+        build_factory: Callable[[], Awaitable[BuildResult]],
+        *,
+        start_new: bool,
+    ) -> asyncio.Task[BuildResult]:
         async with self._lock:
             if self._current_task is None:
                 self._current_task = asyncio.create_task(build_factory())
@@ -189,12 +195,6 @@ class BuildCoordinator:
 
             if start_new and self.mode in {"cancel", "share"}:
                 if not self._current_task.done():
-                    if self.mode == "cancel":
-                        waiters = self._task_waiters.get(self._current_task, 0)
-                        if waiters:
-                            self._superseded_waiters[self._current_task] = (
-                                self._superseded_waiters.get(self._current_task, 0) + waiters
-                            )
                     self._current_task.cancel()
                 self._current_task = asyncio.create_task(build_factory())
                 return self._current_task
@@ -203,31 +203,9 @@ class BuildCoordinator:
                 self._current_task = asyncio.create_task(build_factory())
             return self._current_task
 
-    async def _register_waiter(self, task: asyncio.Task) -> None:
+    async def _was_superseded(self, task: asyncio.Task[BuildResult]) -> bool:
         async with self._lock:
-            self._task_waiters[task] = self._task_waiters.get(task, 0) + 1
-
-    async def _unregister_waiter(self, task: asyncio.Task) -> None:
-        async with self._lock:
-            remaining = self._task_waiters.get(task, 0) - 1
-            if remaining > 0:
-                self._task_waiters[task] = remaining
-                return
-
-            self._task_waiters.pop(task, None)
-            if task.done():
-                self._superseded_waiters.pop(task, None)
-
-    async def _consume_superseded(self, task: asyncio.Task) -> bool:
-        async with self._lock:
-            waiters = self._superseded_waiters.get(task, 0)
-            if waiters <= 0:
-                return False
-            if waiters == 1:
-                self._superseded_waiters.pop(task, None)
-            else:
-                self._superseded_waiters[task] = waiters - 1
-            return True
+            return self._current_task is not None and self._current_task is not task
 
 
 @dataclass
@@ -242,7 +220,6 @@ class AppContext:
     repl: Repl | None = None
     repl_enabled: bool = False
     build_coordinator: BuildCoordinator | None = None
-    build_concurrency_mode: str = "allow"
 
 
 @asynccontextmanager
@@ -289,8 +266,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                         'Add `require repl from git "https://github.com/leanprover-community/repl"` '
                         "to lakefile and run `lake build repl`. Falling back to LSP."
                     )
-        else:
-            logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
+            else:
+                logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
 
         build_mode = _get_build_concurrency_mode()
         build_coordinator = BuildCoordinator(build_mode)
@@ -311,7 +288,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             repl=repl,
             repl_enabled=repl_on,
             build_coordinator=build_coordinator,
-            build_concurrency_mode=build_mode,
         )
         yield context
     finally:
