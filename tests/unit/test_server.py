@@ -179,7 +179,7 @@ def test_load_tool_description_overrides_inline(
 def test_apply_tool_configuration_disables_and_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mcp = server.FastMCP(name="test")
+    mcp = server.FastMCP(name="test", instructions="base instructions")
 
     @mcp.tool("enabled_tool")
     def enabled_tool() -> str:
@@ -192,6 +192,7 @@ def test_apply_tool_configuration_disables_and_overrides(
         return "ok"
 
     monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "removed_tool")
+    monkeypatch.setenv("LEAN_MCP_INSTRUCTIONS", "custom server instructions")
     monkeypatch.setenv(
         "LEAN_MCP_TOOL_DESCRIPTIONS",
         json.dumps({"enabled_tool": "overridden description"}),
@@ -199,6 +200,7 @@ def test_apply_tool_configuration_disables_and_overrides(
 
     server.apply_tool_configuration(mcp)
 
+    assert mcp.instructions == "custom server instructions"
     assert mcp._tool_manager.get_tool("removed_tool") is None
     assert (
         mcp._tool_manager.get_tool("enabled_tool").description

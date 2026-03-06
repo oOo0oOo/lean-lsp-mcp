@@ -86,6 +86,7 @@ from lean_lsp_mcp.utils import (
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
+_INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
 
 
@@ -145,6 +146,11 @@ def apply_tool_configuration(server: FastMCP) -> None:
             continue
         server.remove_tool(name)
         logger.info("Disabled tool '%s' via %s", name, _DISABLED_TOOLS_ENV)
+
+    instructions_override = os.environ.get(_INSTRUCTIONS_ENV)
+    if instructions_override is not None:
+        server._mcp_server.instructions = instructions_override
+        logger.info("Overrode server instructions via %s", _INSTRUCTIONS_ENV)
 
     description_overrides = _load_tool_description_overrides()
     for name, description in description_overrides.items():
