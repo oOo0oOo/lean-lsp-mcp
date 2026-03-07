@@ -41,6 +41,7 @@ from lean_lsp_mcp.models import (
     CompletionsResult,
     DeclarationInfo,
     DiagnosticMessage,
+    DiagnosticSeverity,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
     InteractiveDiagnosticsResult,
@@ -536,7 +537,9 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
 
 
 def _process_diagnostics(
-    diagnostics: List[Dict], build_success: bool
+    diagnostics: List[Dict],
+    build_success: bool,
+    severity: Optional[DiagnosticSeverity] = None,
 ) -> DiagnosticsResult:
     """Process diagnostics, extracting dependency paths from build stderr.
 
@@ -563,11 +566,12 @@ def _process_diagnostics(
             continue  # Don't include the build stderr blob as a diagnostic item
 
         # Normal diagnostic from the queried file
+        severity_str = DIAGNOSTIC_SEVERITY.get(severity_int, f"unknown({severity_int})")
+        if severity is not None and severity_str != severity.value:
+            continue
         items.append(
             DiagnosticMessage(
-                severity=DIAGNOSTIC_SEVERITY.get(
-                    severity_int, f"unknown({severity_int})"
-                ),
+                severity=severity_str,
                 message=message,
                 line=line,
                 column=column,
@@ -608,6 +612,10 @@ def diagnostic_messages(
             description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient. For 'Try This' suggestions, prefer lean_code_actions."
         ),
     ] = False,
+    severity: Annotated[
+        Optional[DiagnosticSeverity],
+        Field(description="Filter by severity level. Returns all levels when omitted."),
+    ] = None,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
@@ -641,7 +649,7 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return _process_diagnostics(result.diagnostics, result.success)
+    return _process_diagnostics(result.diagnostics, result.success, severity=severity)
 
 
 @mcp.tool(
