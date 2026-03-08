@@ -325,7 +325,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.23.0"
+version = "0.23.1"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -353,7 +353,7 @@ yaml = [
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.12.1" },
     { name = "certifi", specifier = ">=2024.0.0" },
-    { name = "leanclient", specifier = "==0.9.2" },
+    { name = "leanclient", specifier = "==0.9.3" },
     { name = "mcp", extras = ["cli"], specifier = "==1.26.0" },
     { name = "orjson", specifier = ">=3.11.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
@@ -367,16 +367,16 @@ provides-extras = ["yaml", "lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.9.2"
+version = "0.9.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "psutil" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/09/b36fd7cd37666c673929b7116522c9f1656032ae96f0f5cc657bf9458d85/leanclient-0.9.2.tar.gz", hash = "sha256:acb1a754d1a71d55c06242d728f7d976be0eed2f4647070546731b1ba838d57d", size = 1132287, upload-time = "2026-01-12T18:19:36.719Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/6f/9e3590023af1d041a1a6e5c337ac6731a3fb4adfe3d50e79ca9b65ce400f/leanclient-0.9.3.tar.gz", hash = "sha256:3d51bdccf4011e457e2f95f07937e437300e36ec7873a75a6e156151d9ecdb9d", size = 1132706, upload-time = "2026-03-08T13:15:39.772Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/a2/a4a3eac7d01b92794e20ad041767c7f668d4c491ec1b8f14ccff8bcc0d9d/leanclient-0.9.2-py3-none-any.whl", hash = "sha256:18236b07c1a403162b13f7544962c36adc5285db8a5c0a463d692dca69a86e8c", size = 40158, upload-time = "2026-01-12T18:19:34.663Z" },
+    { url = "https://files.pythonhosted.org/packages/33/e4/e528dddbf0702a6030240813efcd2a8f4824de3223690de270e3c7f20b75/leanclient-0.9.3-py3-none-any.whl", hash = "sha256:e725f6652dd12bca84856bd8a5da65c191208f9b6e4955c25c4160d9afe326d6", size = 40405, upload-time = "2026-03-08T13:15:38.372Z" },
 ]
 
 [[package]]
