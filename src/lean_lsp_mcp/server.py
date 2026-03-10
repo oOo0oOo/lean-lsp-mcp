@@ -643,7 +643,9 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return _process_diagnostics(result.diagnostics, result.success, getattr(result, "timed_out", False))
+    return _process_diagnostics(
+        result.diagnostics, result.success, getattr(result, "timed_out", False)
+    )
 
 
 @mcp.tool(
@@ -1132,7 +1134,11 @@ def run_code(
     diagnostics = _to_diagnostic_messages(raw_diagnostics)
     has_errors = any(d.severity == "error" for d in diagnostics)
 
-    return RunResult(success=not has_errors, timed_out=getattr(raw_diagnostics, "timed_out", False), diagnostics=diagnostics)
+    return RunResult(
+        success=not has_errors,
+        timed_out=getattr(raw_diagnostics, "timed_out", False),
+        diagnostics=diagnostics,
+    )
 
 
 @mcp.tool(
