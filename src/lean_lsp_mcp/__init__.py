@@ -1,10 +1,11 @@
 import argparse
+import atexit
 import os
 import sys
 from contextlib import suppress
 
 import anyio
-from lean_lsp_mcp.client_utils import infer_project_path
+from lean_lsp_mcp.client_utils import close_shared_client, infer_project_path
 from lean_lsp_mcp.server import mcp
 
 _TRANSPORT_CLOSE_HINTS = (
@@ -123,6 +124,9 @@ def main():
         os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
     os.environ["LEAN_LSP_MCP_ACTIVE_TRANSPORT"] = args.transport
 
+    # Ensure shared LSP client is cleaned up on exit.
+    atexit.register(close_shared_client)
+
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     try:
@@ -134,4 +138,6 @@ def main():
             _silence_stdout()
             return 0
         raise
+    finally:
+        close_shared_client()
     return 0
