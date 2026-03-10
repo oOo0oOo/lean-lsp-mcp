@@ -28,6 +28,9 @@ name = \"McpTestProject\"
 
 [[lean_lib]]
 name = \"VerifyTest\"
+
+[[lean_lib]]
+name = \"GoalTrackerTest\"
 """
 
 LIB_MAIN_LEAN: Final[str] = """import Mathlib

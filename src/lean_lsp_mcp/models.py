@@ -297,6 +297,45 @@ class CodeActionsResult(BaseModel):
     )
 
 
+class LongProofEntry(BaseModel):
+    name: str = Field(description="Declaration name (or instance@LINE for anonymous)")
+    kind: str = Field(description="Declaration keyword (theorem, lemma, def, instance)")
+    file: str = Field(description="Relative file path")
+    line: int = Field(description="Declaration start line (1-indexed)")
+    line_count: int = Field(description="Number of lines in the proof body")
+    have_count: int = Field(description="Number of `have` statements")
+    calc_count: int = Field(description="Number of `calc` blocks")
+
+
+class LongProofResults(BaseModel):
+    items: List[LongProofEntry] = Field(
+        default_factory=list,
+        description="Long proof entries, sorted by line count descending",
+    )
+    files_scanned: int = Field(description="Number of .lean files scanned")
+
+
+class SorryLeaf(BaseModel):
+    name: str = Field(description="Fully qualified declaration name")
+    file: str = Field("", description="Absolute file path (empty if unresolved)")
+    line: int = Field(0, description="Line number, 1-indexed (0 if unknown)")
+
+
+class GoalTrackerResult(BaseModel):
+    target: str = Field(description="Declaration that was checked")
+    sorry_declarations: List[SorryLeaf] = Field(
+        default_factory=list,
+        description="Leaf declarations that explicitly contain sorry, with location info",
+    )
+    tree: str = Field(
+        "",
+        description="ASCII dependency tree showing sorry propagation paths (only if show_tree=true)",
+    )
+    total_transitive_deps: int = Field(
+        description="Total number of transitive dependencies checked"
+    )
+
+
 class SourceWarning(BaseModel):
     line: int = Field(description="Line number (1-indexed)")
     pattern: str = Field(description="Matched pattern text")

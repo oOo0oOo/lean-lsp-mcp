@@ -13,6 +13,7 @@ from leanclient import LeanLSPClient, DocumentContentChange
 
 # Import the actual snippet from the codebase
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from lean_lsp_mcp.goal_tracker import make_sorry_snippet, parse_sorry_result
 
@@ -27,7 +28,12 @@ TEST_CASES = [
     ("GoalTrackerTest.lean", "gt_helper", False, []),
     ("GoalTrackerTest.lean", "gt_uses_clean_helper", False, []),
     ("GoalTrackerTest.lean", "gt_sorry_def", True, ["gt_sorry_def"]),
-    ("GoalTrackerTest.lean", "gt_transitive_sorry", True, ["gt_transitive_sorry", "gt_sorry_def"]),
+    (
+        "GoalTrackerTest.lean",
+        "gt_transitive_sorry",
+        True,
+        ["gt_transitive_sorry", "gt_sorry_def"],
+    ),
     ("GoalTrackerTest.lean", "gt_level2_sorry", True, ["gt_level2_sorry"]),
     ("GoalTrackerTest.lean", "gt_level1", True, ["gt_level2_sorry"]),
     ("GoalTrackerTest.lean", "gt_chain_sorry", True, ["gt_level2_sorry"]),
@@ -43,13 +49,28 @@ TEST_CASES = [
     ("GoalTrackerTest.lean", "GtNs.ns_clean", False, []),
     ("GoalTrackerTest.lean", "GtNs.ns_sorry", True, ["GtNs.ns_sorry"]),
     ("GoalTrackerTest.lean", "GtNs.ns_uses_private", True, []),  # private sorry dep
-    ("GoalTrackerTest.lean", "GtOuter.GtInner.nested_sorry", True, ["GtOuter.GtInner.nested_sorry"]),
+    (
+        "GoalTrackerTest.lean",
+        "GtOuter.GtInner.nested_sorry",
+        True,
+        ["GtOuter.GtInner.nested_sorry"],
+    ),
     ("GoalTrackerTest.lean", "gt_in_section", False, []),
     ("GoalTrackerTest.lean", "gt_sub_sorry_a", True, ["gt_sub_sorry_a"]),
     ("GoalTrackerTest.lean", "gt_sub_sorry_b", True, ["gt_sub_sorry_b"]),
-    ("GoalTrackerTest.lean", "gt_sorry_with_sorry_deps", True, ["gt_sub_sorry_a", "gt_sub_sorry_b"]),
+    (
+        "GoalTrackerTest.lean",
+        "gt_sorry_with_sorry_deps",
+        True,
+        ["gt_sub_sorry_a", "gt_sub_sorry_b"],
+    ),
     ("GoalTrackerTest.lean", "gt_leaf_sorry_self", True, ["gt_leaf_sorry_self"]),
-    ("GoalTrackerTest.lean", "GtPrivate.pub_with_priv_dep", True, []),  # private sorry dep
+    (
+        "GoalTrackerTest.lean",
+        "GtPrivate.pub_with_priv_dep",
+        True,
+        [],
+    ),  # private sorry dep
     ("GoalTrackerTest.lean", "gt_inline_have_sorry", True, ["gt_inline_have_sorry"]),
     ("GoalTrackerTest.lean", "gt_mixed_deps", True, ["gt_sorry_dep"]),
     ("GoalTrackerTest.lean", "gt_deep_chain", True, ["gt_deep_sorry"]),
@@ -73,16 +94,41 @@ TEST_CASES = [
     ("GoalTrackerImport.lean", "gtImport_uses_sorry_val", True, ["gtBase_sorry_val"]),
     ("GoalTrackerImport.lean", "gtImport_uses_clean", False, []),
     ("GoalTrackerImport.lean", "gtImport_chain", True, ["gtBase_chain_sorry"]),
-    ("GoalTrackerImport.lean", "gtImport_uses_ns_sorry", True, ["GtBaseNs.ns_sorry_def"]),
+    (
+        "GoalTrackerImport.lean",
+        "gtImport_uses_ns_sorry",
+        True,
+        ["GtBaseNs.ns_sorry_def"],
+    ),
     ("GoalTrackerImport.lean", "gtImport_uses_priv_chain", True, []),
-    ("GoalTrackerImport.lean", "gtImport_uses_sorry_inst", True, ["gtBase_sorry_instance"]),
-    ("GoalTrackerImport.lean", "gtImport_mixed", True, ["gtBase_sorry_val", "gtImport_local_sorry"]),
+    (
+        "GoalTrackerImport.lean",
+        "gtImport_uses_sorry_inst",
+        True,
+        ["gtBase_sorry_instance"],
+    ),
+    (
+        "GoalTrackerImport.lean",
+        "gtImport_mixed",
+        True,
+        ["gtBase_sorry_val", "gtImport_local_sorry"],
+    ),
     ("GoalTrackerImport.lean", "gtImport_fully_clean", False, []),
     ("GoalTrackerImport.lean", "gtImport_uses_noncomputable", False, []),
     ("GoalTrackerImport.lean", "gtImport_diamond", True, ["gtBase_sorry_val"]),
     ("GoalTrackerImport.lean", "gtImport_deep_chain", True, ["gtBase_chain_sorry"]),
-    ("GoalTrackerImport.lean", "GtImportNs.ns_uses_base_sorry", True, ["gtBase_sorry_val"]),
-    ("GoalTrackerImport.lean", "GtImportNs.ns_local_sorry", True, ["GtImportNs.ns_local_sorry"]),
+    (
+        "GoalTrackerImport.lean",
+        "GtImportNs.ns_uses_base_sorry",
+        True,
+        ["gtBase_sorry_val"],
+    ),
+    (
+        "GoalTrackerImport.lean",
+        "GtImportNs.ns_local_sorry",
+        True,
+        ["GtImportNs.ns_local_sorry"],
+    ),
     ("GoalTrackerImport.lean", "gtImport_where", True, ["gtBase_sorry_val"]),
     ("GoalTrackerImport.lean", "gtImport_let_sorry", True, ["gtBase_sorry_val"]),
     # --- GoalTrackerMiddle.lean (sorry-free intermediate) ---
@@ -99,7 +145,12 @@ TEST_CASES = [
     ("GoalTrackerTop.lean", "gtTop_ns_chain", True, ["GtBaseNs.ns_sorry_def"]),
     ("GoalTrackerTop.lean", "gtTop_fully_clean", False, []),
     ("GoalTrackerTop.lean", "gtTop_local_sorry", True, ["gtTop_local_sorry"]),
-    ("GoalTrackerTop.lean", "gtTop_mixed", True, ["gtBase_sorry_val", "gtTop_local_sorry"]),
+    (
+        "GoalTrackerTop.lean",
+        "gtTop_mixed",
+        True,
+        ["gtBase_sorry_val", "gtTop_local_sorry"],
+    ),
     ("GoalTrackerTop.lean", "gtTop_diamond", True, ["gtBase_sorry_val"]),
     # --- GoalTrackerHeavy.lean (Mathlib regression) ---
     ("GoalTrackerHeavy.lean", "gtHeavy_sorry", True, ["gtHeavy_sorry"]),
@@ -120,11 +171,15 @@ def run_verify(client: LeanLSPClient, rel_path: str, decl: str) -> list[str]:
 
     change = DocumentContentChange(snippet, [appended_line, 0], [appended_line, 0])
     client.update_file(rel_path, [change])
-    raw = client.get_diagnostics(rel_path, start_line=appended_line, inactivity_timeout=120.0)
+    raw = client.get_diagnostics(
+        rel_path, start_line=appended_line, inactivity_timeout=120.0
+    )
     diags = list(raw)
 
     # Restore
-    restore = DocumentContentChange("", [appended_line, 0], [appended_line + snippet_lines, 0])
+    restore = DocumentContentChange(
+        "", [appended_line, 0], [appended_line + snippet_lines, 0]
+    )
     client.update_file(rel_path, [restore])
 
     axioms = []
@@ -147,14 +202,18 @@ def run_tracker(client: LeanLSPClient, rel_path: str, decl: str) -> dict:
 
     change = DocumentContentChange(snippet, [appended_line, 0], [appended_line, 0])
     client.update_file(rel_path, [change])
-    raw = client.get_diagnostics(rel_path, start_line=appended_line, inactivity_timeout=120.0)
+    raw = client.get_diagnostics(
+        rel_path, start_line=appended_line, inactivity_timeout=120.0
+    )
     diags = list(raw)
 
     # Check for errors
     errors = [d.get("message", "") for d in diags if d.get("severity") == 1]
 
     # Restore
-    restore = DocumentContentChange("", [appended_line, 0], [appended_line + snippet_lines, 0])
+    restore = DocumentContentChange(
+        "", [appended_line, 0], [appended_line + snippet_lines, 0]
+    )
     client.update_file(rel_path, [restore])
 
     if errors:
@@ -191,7 +250,9 @@ def main():
             elapsed = time.monotonic() - t0
 
             if "error" in result:
-                print(f"  ERROR  {decl} ({file}) [{elapsed:.1f}s]: {result['error'][:1]}")
+                print(
+                    f"  ERROR  {decl} ({file}) [{elapsed:.1f}s]: {result['error'][:1]}"
+                )
                 errors += 1
                 continue
 
@@ -214,11 +275,15 @@ def main():
                 if not leaves_ok:
                     missing = expect_leaf_set - got_leaves
                     reasons.append(f"missing leaves: {missing}, got: {got_leaves}")
-                print(f"  FAIL   {decl} ({file}) [{elapsed:.1f}s]: {'; '.join(reasons)}")
+                print(
+                    f"  FAIL   {decl} ({file}) [{elapsed:.1f}s]: {'; '.join(reasons)}"
+                )
                 failed += 1
 
-        print(f"\n{'='*60}")
-        print(f"Results: {passed} passed, {failed} failed, {errors} errors out of {len(TEST_CASES)}")
+        print(f"\n{'=' * 60}")
+        print(
+            f"Results: {passed} passed, {failed} failed, {errors} errors out of {len(TEST_CASES)}"
+        )
         if failed == 0 and errors == 0:
             print("ALL TESTS PASSED")
         else:

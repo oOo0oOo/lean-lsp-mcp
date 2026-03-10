@@ -17,3 +17,6 @@ name = "McpTestProject"
 
 [[lean_lib]]
 name = "VerifyTest"
+
+[[lean_lib]]
+name = "GoalTrackerTest"

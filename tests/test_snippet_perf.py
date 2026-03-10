@@ -176,15 +176,17 @@ def parse_results(diagnostics: list[dict]) -> dict:
             continue
         msg = diag.get("message", "")
         if msg.startswith("MCP_NODE:"):
-            obj = json.loads(msg[len("MCP_NODE:"):])
+            obj = json.loads(msg[len("MCP_NODE:") :])
             nodes[obj["name"]] = obj
         elif msg.startswith("MCP_SUMMARY:"):
-            obj = json.loads(msg[len("MCP_SUMMARY:"):])
+            obj = json.loads(msg[len("MCP_SUMMARY:") :])
             visited = obj.get("visited", 0)
     return {"nodes": nodes, "visited": visited}
 
 
-def run_snippet(client: LeanLSPClient, rel_path: str, snippet: str) -> tuple[dict, float]:
+def run_snippet(
+    client: LeanLSPClient, rel_path: str, snippet: str
+) -> tuple[dict, float]:
     """Append snippet, get diagnostics, restore, return (parsed_result, elapsed_seconds)."""
     original = client.get_file_content(rel_path)
     original_lines = original.split("\n")
@@ -195,7 +197,9 @@ def run_snippet(client: LeanLSPClient, rel_path: str, snippet: str) -> tuple[dic
     client.update_file(rel_path, [change])
 
     t0 = time.monotonic()
-    raw = client.get_diagnostics(rel_path, start_line=appended_line, inactivity_timeout=300.0)
+    raw = client.get_diagnostics(
+        rel_path, start_line=appended_line, inactivity_timeout=300.0
+    )
     elapsed = time.monotonic() - t0
 
     diags = list(raw)
@@ -208,7 +212,9 @@ def run_snippet(client: LeanLSPClient, rel_path: str, snippet: str) -> tuple[dic
     result = parse_results(diags)
 
     # Restore
-    restore = DocumentContentChange("", [appended_line, 0], [appended_line + snippet_lines, 0])
+    restore = DocumentContentChange(
+        "", [appended_line, 0], [appended_line + snippet_lines, 0]
+    )
     client.update_file(rel_path, [restore])
 
     return result, elapsed
@@ -222,8 +228,12 @@ def compare_results(old_res: dict, new_res: dict):
     old_tainted = set(old_res["nodes"].keys())
     new_tainted = set(new_res["nodes"].keys())
 
-    print(f"\n  Old: {len(old_sorry)} sorry leaves, {len(old_tainted)} tainted nodes, {old_res['visited']} visited")
-    print(f"  New: {len(new_sorry)} sorry leaves, {len(new_tainted)} tainted nodes, {new_res['visited']} visited")
+    print(
+        f"\n  Old: {len(old_sorry)} sorry leaves, {len(old_tainted)} tainted nodes, {old_res['visited']} visited"
+    )
+    print(
+        f"  New: {len(new_sorry)} sorry leaves, {len(new_tainted)} tainted nodes, {new_res['visited']} visited"
+    )
 
     if old_sorry == new_sorry:
         print("  Sorry leaves MATCH")

@@ -5,6 +5,7 @@
 "With fix" = max_wait set. "Without fix" = max_wait not set (no timeout).
 For "without fix" on the stuck file, we use a short bash timeout to prove it blocks.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -71,16 +72,22 @@ async def connect_http() -> AsyncIterator[ClientSession]:
     """Start MCP server with streamable-http, connect to it."""
     # Find a free port
     import socket
+
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
 
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "lean_lsp_mcp",
-            "--transport", "streamable-http",
-            "--host", "127.0.0.1",
-            "--port", str(port),
+            sys.executable,
+            "-m",
+            "lean_lsp_mcp",
+            "--transport",
+            "streamable-http",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
         ],
         env=_server_env(),
         cwd=str(REPO_ROOT),
@@ -95,6 +102,7 @@ async def connect_http() -> AsyncIterator[ClientSession]:
         await asyncio.sleep(0.5)
         try:
             import httpx
+
             async with httpx.AsyncClient() as client:
                 # Just check if port is listening
                 await client.get(f"http://127.0.0.1:{port}/mcp", timeout=2.0)
@@ -109,7 +117,11 @@ async def connect_http() -> AsyncIterator[ClientSession]:
         raise RuntimeError("HTTP server did not start in time")
 
     try:
-        async with streamablehttp_client(url, timeout=600, sse_read_timeout=600) as (read_stream, write_stream, _):
+        async with streamablehttp_client(url, timeout=600, sse_read_timeout=600) as (
+            read_stream,
+            write_stream,
+            _,
+        ):
             session = ClientSession(read_stream, write_stream)
             async with session:
                 await session.initialize()
@@ -129,9 +141,7 @@ async def call_diagnostics(session: ClientSession, file_path: str) -> dict:
         "lean_diagnostic_messages",
         {"file_path": file_path},
     )
-    text = "\n".join(
-        block.text for block in result.content if hasattr(block, "text")
-    )
+    text = "\n".join(block.text for block in result.content if hasattr(block, "text"))
     return json.loads(text)
 
 
@@ -169,9 +179,13 @@ class TestWithFixLeanclient:
             )
             elapsed = time.time() - t0
 
-            assert result.timed_out is True, f"Expected timed_out=True, got {result.timed_out}"
+            assert result.timed_out is True, (
+                f"Expected timed_out=True, got {result.timed_out}"
+            )
             assert result.success is False
-            assert elapsed < MAX_WAIT_FIX + 15, f"Took {elapsed:.1f}s, expected ~{MAX_WAIT_FIX}s"
+            assert elapsed < MAX_WAIT_FIX + 15, (
+                f"Took {elapsed:.1f}s, expected ~{MAX_WAIT_FIX}s"
+            )
             assert elapsed >= MAX_WAIT_FIX - 1, f"Returned too fast ({elapsed:.1f}s)"
         finally:
             client.close()
@@ -190,7 +204,9 @@ class TestWithFixLeanclient:
             )
             elapsed = time.time() - t0
 
-            assert result.timed_out is False, f"Expected timed_out=False, got {result.timed_out}"
+            assert result.timed_out is False, (
+                f"Expected timed_out=False, got {result.timed_out}"
+            )
             assert result.success is True
             assert elapsed < 60, f"Normal file took too long ({elapsed:.1f}s)"
         finally:
@@ -208,7 +224,7 @@ class TestWithoutFixLeanclient:
         # Run in subprocess with timeout to prove it blocks
         script = f"""
 import sys
-sys.path.insert(0, "{REPO_ROOT / '.venv/lib/python3.10/site-packages'}")
+sys.path.insert(0, "{REPO_ROOT / ".venv/lib/python3.10/site-packages"}")
 from leanclient import LeanLSPClient
 client = LeanLSPClient("{QI_PROJECT}")
 result = client.get_diagnostics("QuantumInformation/ReproSlow.lean", inactivity_timeout=15.0)

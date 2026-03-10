@@ -46,6 +46,8 @@ from lean_lsp_mcp.models import (
     InteractiveDiagnosticsResult,
     FileOutline,
     GoalState,
+    GoalTrackerResult,
+    SorryLeaf,
     HoverInfo,
     LeanFinderResult,
     LeanFinderResults,
@@ -53,6 +55,8 @@ from lean_lsp_mcp.models import (
     LeanSearchResults,
     LocalSearchResult,
     LocalSearchResults,
+    LongProofEntry,
+    LongProofResults,
     LoogleResult,
     LoogleResults,
     MultiAttemptResult,
@@ -643,7 +647,9 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return _process_diagnostics(result.diagnostics, result.success, getattr(result, "timed_out", False))
+    return _process_diagnostics(
+        result.diagnostics, result.success, getattr(result, "timed_out", False)
+    )
 
 
 @mcp.tool(
@@ -1132,7 +1138,11 @@ def run_code(
     diagnostics = _to_diagnostic_messages(raw_diagnostics)
     has_errors = any(d.severity == "error" for d in diagnostics)
 
-    return RunResult(success=not has_errors, timed_out=getattr(raw_diagnostics, "timed_out", False), diagnostics=diagnostics)
+    return RunResult(
+        success=not has_errors,
+        timed_out=getattr(raw_diagnostics, "timed_out", False),
+        diagnostics=diagnostics,
+    )
 
 
 @mcp.tool(
@@ -1225,6 +1235,225 @@ def verify_theorem(
     return VerifyResult(axioms=axioms, warnings=w)
 
 
+@mcp.tool(
+    "lean_goal_tracker",
+    annotations=ToolAnnotations(
+        title="Goal Tracker",
+        readOnlyHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def goal_tracker(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    decl_name: Annotated[
+        str,
+        Field(description="Declaration name to check (must be defined in the file)"),
+    ],
+    show_tree: Annotated[
+        bool,
+        Field(description="Include ASCII dependency tree in output"),
+    ] = False,
+) -> GoalTrackerResult:
+    """Check if a declaration transitively depends on sorry. Searches all transitive dependencies."""
+    from lean_lsp_mcp.goal_tracker import (
+        make_sorry_snippet,
+        parse_sorry_result,
+        render_tree,
+    )
+
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
+
+    # Resolve short names by scanning file text for namespace/end blocks.
+    # Document symbols are unreliable (LSP truncates large files), so we parse
+    # the source directly to find which namespace the declaration lives in.
+    # Private declarations get mangled by Lean to:
+    #   _private.<module_dotpath>.0.<namespace>.<name>
+    # We detect `private` in the source and construct the mangled FQN.
+    resolved_name = decl_name
+    if "." not in decl_name:
+        try:
+            content_for_resolve = original_content
+            lines_for_resolve = content_for_resolve.splitlines()
+            ns_stack: list[str] = []
+            _modifiers = {
+                "private",
+                "protected",
+                "noncomputable",
+                "nonrec",
+                "unsafe",
+                "partial",
+                "@[simp]",
+                "@[inline]",
+            }
+            _core_keywords = {
+                "theorem",
+                "lemma",
+                "def",
+                "abbrev",
+                "instance",
+                "inductive",
+                "structure",
+                "class",
+            }
+            candidates: list[str] = []
+            for src_line in lines_for_resolve:
+                s = src_line.strip()
+                if s.startswith("namespace "):
+                    ns_stack.append(s[len("namespace ") :].strip())
+                elif s.startswith("end "):
+                    ended = s[len("end ") :].strip()
+                    if ns_stack and ns_stack[-1] == ended:
+                        ns_stack.pop()
+                else:
+                    # Strip leading modifiers/attributes to find the core keyword
+                    words = s.split()
+                    idx = 0
+                    is_private = False
+                    while idx < len(words) and (
+                        words[idx] in _modifiers or words[idx].startswith("@[")
+                    ):
+                        if words[idx] == "private":
+                            is_private = True
+                        idx += 1
+                    if (
+                        idx < len(words)
+                        and words[idx] in _core_keywords
+                        and idx + 1 < len(words)
+                    ):
+                        name_part = words[idx + 1].rstrip(":({[")
+                        if name_part == decl_name:
+                            fqn = (
+                                ".".join(ns_stack + [decl_name])
+                                if ns_stack
+                                else decl_name
+                            )
+                            if is_private:
+                                # Lean mangles private decls as:
+                                #   _private.<module_dotpath>.0.<fqn>
+                                module_dotpath = (
+                                    rel_path.removesuffix(".lean")
+                                    .replace("/", ".")
+                                    .replace("\\", ".")
+                                )
+                                fqn = f"_private.{module_dotpath}.0.{fqn}"
+                            candidates.append(fqn)
+            if len(candidates) == 1:
+                resolved_name = candidates[0]
+            elif len(candidates) > 1:
+                # Deduplicate (same FQN found twice shouldn't happen, but be safe)
+                unique = list(dict.fromkeys(candidates))
+                if len(unique) == 1:
+                    resolved_name = unique[0]
+                else:
+                    raise LeanToolError(
+                        f"Ambiguous name '{decl_name}', matches: {unique}"
+                    )
+        except LeanToolError:
+            raise
+        except Exception:
+            pass  # Fall through with original name
+
+    snippet = make_sorry_snippet(resolved_name)
+    snippet_lines = snippet.count("\n")
+    original_lines = original_content.split("\n")
+    appended_line = len(original_lines)  # 0-indexed line where snippet starts
+
+    # Check for import errors before appending snippet (avoids 2-min hang
+    # waiting for diagnostics that will never arrive in the appended region).
+    pre_result = client.get_diagnostics(rel_path)
+    pre_diags = (
+        pre_result.diagnostics if hasattr(pre_result, "diagnostics") else pre_result
+    )
+    import_errors = [
+        d.get("message", "").split("\n")[0]
+        for d in pre_diags
+        if d.get("severity") == 1 and "unknown module" in d.get("message", "")
+    ]
+    if import_errors:
+        raise LeanToolError(
+            f"Import errors — run lean_build first: {'; '.join(import_errors)}"
+        )
+
+    try:
+        change = DocumentContentChange(
+            snippet,
+            [appended_line, 0],
+            [appended_line, 0],
+        )
+        client.update_file(rel_path, [change])
+        raw = client.get_diagnostics(
+            rel_path, start_line=appended_line, inactivity_timeout=120.0
+        )
+        check_lsp_response(raw, "get_diagnostics")
+
+        appended_diags = list(raw)
+
+        # Check for errors in the appended snippet
+        errors = [
+            d.get("message", "") for d in appended_diags if d.get("severity") == 1
+        ]
+        if errors:
+            raise LeanToolError(f"Goal tracker failed: {'; '.join(errors)}")
+
+        nodes, total_visited = parse_sorry_result(appended_diags)
+    finally:
+        try:
+            restore_change = DocumentContentChange(
+                "",
+                [appended_line, 0],
+                [appended_line + snippet_lines, 0],
+            )
+            client.update_file(rel_path, [restore_change])
+        except Exception as exc:
+            logger.warning(
+                "Failed to restore `%s` after goal_tracker: %s", rel_path, exc
+            )
+
+    # Build enriched sorry leaf list with file/line info
+    project_path = ctx.request_context.lifespan_context.lean_project_path
+    sorry_leaves: list[SorryLeaf] = []
+    for name, node in nodes.items():
+        if not node.explicit_sorry:
+            continue
+        file_str = ""
+        line_1indexed = 0
+        if node.module and project_path:
+            # Module name like "Foo.Bar.Baz" → "Foo/Bar/Baz.lean"
+            rel = node.module.replace(".", "/") + ".lean"
+            candidate = project_path / rel
+            if candidate.is_file():
+                file_str = str(candidate)
+        if node.line is not None:
+            line_1indexed = node.line + 1  # Lean emits 0-indexed
+        sorry_leaves.append(SorryLeaf(name=name, file=file_str, line=line_1indexed))
+
+    tree_str = ""
+    if show_tree and nodes:
+        tree_lines = render_tree(resolved_name, nodes)
+        tree_str = "\n".join(tree_lines)
+
+    return GoalTrackerResult(
+        target=decl_name,
+        sorry_declarations=sorry_leaves,
+        tree=tree_str,
+        total_transitive_deps=total_visited,
+    )
+
+
 class LocalSearchError(Exception):
     pass
 
@@ -1283,6 +1512,44 @@ async def local_search(
         return LocalSearchResults(items=results)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
+
+
+@mcp.tool(
+    "lean_long_proofs",
+    annotations=ToolAnnotations(
+        title="Long Proofs",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def long_proofs(
+    ctx: Context,
+    file_path: Annotated[
+        str, Field(description="Absolute path to a .lean file or directory to scan")
+    ],
+    warn_threshold: Annotated[
+        int, Field(description="Minimum proof lines to report", ge=1)
+    ] = 30,
+) -> LongProofResults:
+    """Find long tactic proofs. Scans for `theorem`/`lemma`/`def`/`instance` declarations with `:= by` blocks exceeding the line threshold."""
+    if not _RG_AVAILABLE:
+        raise LeanToolError(_RG_MESSAGE)
+
+    from lean_lsp_mcp.long_proof_utils import find_long_proofs
+
+    scan_path = Path(file_path).expanduser().resolve()
+    if not scan_path.exists():
+        raise LeanToolError(f"Path does not exist: {file_path}")
+
+    entries, files_scanned = await asyncio.to_thread(
+        find_long_proofs,
+        scan_path,
+        warn_threshold,
+    )
+
+    items = [LongProofEntry(**e) for e in entries]
+    return LongProofResults(items=items, files_scanned=files_scanned)
 
 
 @mcp.tool(

@@ -26,8 +26,17 @@ DECL = "InfoTheory.DeFinetti.quantum_deFinetti"
 
 # Known external module roots (skip these entirely)
 EXTERNAL_ROOTS = {
-    "Mathlib", "Init", "Lean", "Std", "Batteries", "Aesop",
-    "ProofWidgets", "ImportGraph", "LabelAttr", "Qq", "Cache",
+    "Mathlib",
+    "Init",
+    "Lean",
+    "Std",
+    "Batteries",
+    "Aesop",
+    "ProofWidgets",
+    "ImportGraph",
+    "LabelAttr",
+    "Qq",
+    "Cache",
 }
 
 
@@ -43,7 +52,7 @@ def find_sorry_modules(src_root: Path) -> set[str]:
     for lean_file in src_root.rglob("*.lean"):
         text = lean_file.read_text()
         # Match 'sorry' as a word (not in comments ideally, but good enough)
-        if re.search(r'\bsorry\b', text):
+        if re.search(r"\bsorry\b", text):
             sorry_modules.add(file_to_module(lean_file, src_root))
     return sorry_modules
 
@@ -56,7 +65,7 @@ def build_import_graph(src_root: Path) -> dict[str, set[str]]:
         for line in lean_file.read_text().splitlines():
             line = line.strip()
             if line.startswith("import "):
-                imported = line[len("import "):].strip()
+                imported = line[len("import ") :].strip()
                 graph[mod].add(imported)
     return dict(graph)
 
@@ -180,8 +189,7 @@ def make_snippet_filtered(decl_name: str, allowed_modules: set[str]) -> str:
     """Optimized: BFS restricted to allowed modules only."""
     # Build Lean array literal for allowed module names
     mod_array = ", ".join(
-        f'"{m}".splitOn "." |>.foldl mkN .anonymous'
-        for m in sorted(allowed_modules)
+        f'"{m}".splitOn "." |>.foldl mkN .anonymous' for m in sorted(allowed_modules)
     )
 
     return f"""
@@ -277,15 +285,17 @@ def parse_results(diagnostics: list[dict]) -> dict:
             continue
         msg = diag.get("message", "")
         if msg.startswith("MCP_NODE:"):
-            obj = json.loads(msg[len("MCP_NODE:"):])
+            obj = json.loads(msg[len("MCP_NODE:") :])
             nodes[obj["name"]] = obj
         elif msg.startswith("MCP_SUMMARY:"):
-            obj = json.loads(msg[len("MCP_SUMMARY:"):])
+            obj = json.loads(msg[len("MCP_SUMMARY:") :])
             visited = obj.get("visited", 0)
     return {"nodes": nodes, "visited": visited}
 
 
-def run_snippet(client: LeanLSPClient, rel_path: str, snippet: str) -> tuple[dict, float]:
+def run_snippet(
+    client: LeanLSPClient, rel_path: str, snippet: str
+) -> tuple[dict, float]:
     """Append snippet, get diagnostics, restore, return (parsed_result, elapsed_seconds)."""
     original = client.get_file_content(rel_path)
     original_lines = original.split("\n")
@@ -296,7 +306,9 @@ def run_snippet(client: LeanLSPClient, rel_path: str, snippet: str) -> tuple[dic
     client.update_file(rel_path, [change])
 
     t0 = time.monotonic()
-    raw = client.get_diagnostics(rel_path, start_line=appended_line, inactivity_timeout=300.0)
+    raw = client.get_diagnostics(
+        rel_path, start_line=appended_line, inactivity_timeout=300.0
+    )
     elapsed = time.monotonic() - t0
 
     diags = list(raw)
@@ -307,7 +319,9 @@ def run_snippet(client: LeanLSPClient, rel_path: str, snippet: str) -> tuple[dic
 
     result = parse_results(diags)
 
-    restore = DocumentContentChange("", [appended_line, 0], [appended_line + snippet_lines, 0])
+    restore = DocumentContentChange(
+        "", [appended_line, 0], [appended_line + snippet_lines, 0]
+    )
     client.update_file(rel_path, [restore])
 
     return result, elapsed
@@ -321,8 +335,12 @@ def compare_results(cur_res: dict, filt_res: dict):
     cur_tainted = set(cur_res["nodes"].keys())
     filt_tainted = set(filt_res["nodes"].keys())
 
-    print(f"\n  Current:  {len(cur_sorry)} sorry leaves, {len(cur_tainted)} tainted, {cur_res['visited']} visited")
-    print(f"  Filtered: {len(filt_sorry)} sorry leaves, {len(filt_tainted)} tainted, {filt_res['visited']} visited")
+    print(
+        f"\n  Current:  {len(cur_sorry)} sorry leaves, {len(cur_tainted)} tainted, {cur_res['visited']} visited"
+    )
+    print(
+        f"  Filtered: {len(filt_sorry)} sorry leaves, {len(filt_tainted)} tainted, {filt_res['visited']} visited"
+    )
 
     if cur_sorry == filt_sorry:
         print("  Sorry leaves MATCH")
@@ -356,7 +374,7 @@ def main():
     reachable = find_sorry_reachable_modules(import_graph, sorry_modules, all_modules)
     precompute_time = time.monotonic() - t0
 
-    print(f"Pre-computation: {precompute_time*1000:.0f}ms")
+    print(f"Pre-computation: {precompute_time * 1000:.0f}ms")
     print(f"  Sorry-containing modules: {len(sorry_modules)}")
     print(f"  Total project modules: {len(all_modules)}")
     print(f"  Sorry-reachable modules: {len(reachable)}")
@@ -382,13 +400,17 @@ def main():
 
         # Run filtered snippet
         print("\nRunning FILTERED snippet (module-filtered BFS)...")
-        filt_res, filt_time = run_snippet(client, FILE, make_snippet_filtered(DECL, reachable))
+        filt_res, filt_time = run_snippet(
+            client, FILE, make_snippet_filtered(DECL, reachable)
+        )
         print(f"  Time: {filt_time:.1f}s")
 
         # Compare
         print("\n=== COMPARISON ===")
         print(f"  Current:  {cur_time:.1f}s")
-        print(f"  Filtered: {filt_time:.1f}s  (+ {precompute_time*1000:.0f}ms precompute)")
+        print(
+            f"  Filtered: {filt_time:.1f}s  (+ {precompute_time * 1000:.0f}ms precompute)"
+        )
         if filt_time > 0:
             print(f"  Speedup: {cur_time / filt_time:.1f}x")
         compare_results(cur_res, filt_res)

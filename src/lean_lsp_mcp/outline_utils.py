@@ -127,19 +127,11 @@ def _extract_declarations(content: str, start: int, end: int) -> List[Dict]:
 def _flatten_symbols(
     symbols: List[Dict], indent: int = 0, content: str = ""
 ) -> List[Tuple[Dict, int]]:
-    """Recursively flatten symbol hierarchy, extracting declarations from namespaces."""
+    """Recursively flatten symbol hierarchy."""
     result = []
     for sym in symbols:
         result.append((sym, indent))
         children = sym.get("children", [])
-
-        # Extract theorem/lemma/def from namespace bodies
-        if content and sym.get("kind") == "namespace":
-            ns_range = sym["range"]
-            ns_start = ns_range["start"]["line"]
-            ns_end = ns_range["end"]["line"]
-            children = children + _extract_declarations(content, ns_start, ns_end)
-
         if children:
             result.extend(_flatten_symbols(children, indent + 1, content))
     return result
