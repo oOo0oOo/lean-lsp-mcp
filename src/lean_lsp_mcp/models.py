@@ -112,6 +112,10 @@ class AttemptResult(BaseModel):
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics for this attempt"
     )
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out (results are partial)",
+    )
 
 
 class BuildResult(BaseModel):
@@ -122,6 +126,10 @@ class BuildResult(BaseModel):
 
 class RunResult(BaseModel):
     success: bool = Field(description="Whether code compiled successfully")
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out (results are partial)",
+    )
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Compiler diagnostics"
     )
@@ -142,6 +150,10 @@ class DiagnosticsResult(BaseModel):
 
     success: bool = Field(
         True, description="True if the queried file/range has no errors"
+    )
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out (results are partial, not a real build failure)",
     )
     items: List[DiagnosticMessage] = Field(
         default_factory=list, description="List of diagnostic messages"
