@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -98,7 +97,7 @@ async def connect_http() -> AsyncIterator[ClientSession]:
             import httpx
             async with httpx.AsyncClient() as client:
                 # Just check if port is listening
-                resp = await client.get(f"http://127.0.0.1:{port}/mcp", timeout=2.0)
+                await client.get(f"http://127.0.0.1:{port}/mcp", timeout=2.0)
                 break
         except Exception:
             if proc.poll() is not None:
