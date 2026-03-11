@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 
 from lean_lsp_mcp.client_utils import (
+    CLIENT_LOCK,
+    close_shared_client,
+    replace_shared_client,
+    set_build_in_progress,
     setup_client_for_file,
     startup_client,
     valid_lean_project_path,
@@ -48,6 +52,15 @@ class _RequestContext:
 class _Context:
     def __init__(self, lifespan_context: _LifespanContext) -> None:
         self.request_context = _RequestContext(lifespan_context)
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_client():
+    """Reset the shared LSP client singleton between tests."""
+    yield
+    with CLIENT_LOCK:
+        set_build_in_progress(False)
+    close_shared_client()
 
 
 @pytest.fixture
@@ -107,6 +120,10 @@ def test_startup_client_switches_project_even_if_close_fails(
     (new_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
 
     old_client = _FailingCloseClient(old_project)
+    # Install the old client as the shared singleton so _get_or_create_shared_client
+    # will attempt to close it when switching projects.
+    with CLIENT_LOCK:
+        replace_shared_client(old_client, old_project)
     ctx = _Context(_LifespanContext(new_project, old_client))
 
     startup_client(ctx)
@@ -231,5 +248,35 @@ def test_startup_client_serializes_concurrent_calls(
         for future in futures:
             assert future.result() is None
 
+    assert len(patched_clients) == 1
+    assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+def test_build_in_progress_blocks_client_creation(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    """While a build is in progress, startup_client must refuse to spawn a new client."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+
+    ctx = _Context(_LifespanContext(project, None))
+
+    # Simulate lean_build setting the flag
+    with CLIENT_LOCK:
+        set_build_in_progress(True)
+
+    with pytest.raises(ValueError, match="build is in progress"):
+        startup_client(ctx)
+
+    # No client should have been created
+    assert len(patched_clients) == 0
+    assert ctx.request_context.lifespan_context.client is None
+
+    # After build completes, client creation works again
+    with CLIENT_LOCK:
+        set_build_in_progress(False)
+
+    startup_client(ctx)
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]

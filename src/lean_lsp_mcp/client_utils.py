@@ -13,9 +13,111 @@ from lean_lsp_mcp.utils import OutputCapture
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
 
+# ---------------------------------------------------------------------------
+# Shared LSP client singleton.
+#
+# With ``streamable-http`` transport every MCP session gets its own
+# ``app_lifespan`` invocation.  The LSP client (which spawns ``lake serve``)
+# is expensive to create and consumes significant RAM, so we share a single
+# instance across all sessions — same pattern used for loogle.
+#
+# For ``stdio`` transport there is only one session, so this is a no-op.
+# ---------------------------------------------------------------------------
+_shared_client: LeanLSPClient | None = None
+_shared_client_project: Path | None = None
+_build_in_progress: bool = False
+
+
+def _get_or_create_shared_client(lean_project_path: Path) -> LeanLSPClient:
+    """Return the shared LSP client, creating it if needed.
+
+    Must be called while holding CLIENT_LOCK.
+    """
+    global _shared_client, _shared_client_project
+
+    if _build_in_progress:
+        raise ValueError(
+            "A project build is in progress. Retry after the build completes."
+        )
+
+    if _shared_client is not None:
+        if _shared_client_project == lean_project_path:
+            return _shared_client
+        # Project changed — close old client
+        try:
+            _shared_client.close()
+        except Exception:
+            logger.exception("Shared Lean client close failed")
+        _shared_client = None
+        _shared_client_project = None
+
+    prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
+    try:
+        with OutputCapture() as output:
+            client = LeanLSPClient(
+                lean_project_path,
+                initial_build=False,
+                prevent_cache_get=prevent_cache,
+            )
+            logger.info(f"Shared LSP client connected at {lean_project_path}")
+        build_output = output.get_output()
+        if build_output:
+            logger.debug(f"Build output: {build_output}")
+    except Exception as e:
+        logger.exception("Failed to start shared Lean LSP client")
+        raise ValueError(
+            f"Failed to start Lean language server at '{lean_project_path}': {e}"
+        ) from e
+
+    _shared_client = client
+    _shared_client_project = lean_project_path
+    return client
+
+
+def set_build_in_progress(value: bool) -> None:
+    """Mark whether a build is in progress.
+
+    While True, ``_get_or_create_shared_client`` will refuse to spawn a new
+    ``lake serve`` (the oleans are being rewritten and any new LSP would give
+    wrong results).  Must be called while holding CLIENT_LOCK.
+    """
+    assert CLIENT_LOCK.locked(), "set_build_in_progress requires CLIENT_LOCK"
+    global _build_in_progress
+    _build_in_progress = value
+
+
+def replace_shared_client(
+    client: LeanLSPClient | None, project_path: Path | None
+) -> None:
+    """Replace the shared client (e.g. after ``lean_build`` restarts the LSP).
+
+    Must be called while holding CLIENT_LOCK.
+    """
+    assert CLIENT_LOCK.locked(), "replace_shared_client requires CLIENT_LOCK"
+    global _shared_client, _shared_client_project
+    _shared_client = client
+    _shared_client_project = project_path
+
+
+def close_shared_client() -> None:
+    """Close the shared client (for clean shutdown)."""
+    global _shared_client, _shared_client_project
+    with CLIENT_LOCK:
+        if _shared_client is not None:
+            try:
+                _shared_client.close()
+            except Exception:
+                logger.exception("Shared Lean client close failed during shutdown")
+            _shared_client = None
+            _shared_client_project = None
+
 
 def startup_client(ctx: Context):
     """Initialize the Lean LSP client if not already set up.
+
+    Uses a shared singleton so that multiple MCP sessions (e.g. from
+    sequential ``claude -p`` calls against an HTTP server) reuse the same
+    ``lake serve`` process instead of spawning a new one each time.
 
     Args:
         ctx (Context): Context object.
@@ -25,38 +127,7 @@ def startup_client(ctx: Context):
         if lean_project_path is None:
             raise ValueError("lean project path is not set.")
 
-        # Check if already correct client
-        client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
-
-        if client is not None:
-            # Both are Path objects now, direct comparison works
-            if client.project_path == lean_project_path:
-                return  # Client already set up correctly - reuse it!
-            # Different project path - close old client
-            try:
-                client.close()
-            except Exception:
-                logger.exception("Lean client close failed")
-
-        # Need to create a new client
-        # In test environments, prevent repeated cache downloads
-        prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
-        try:
-            with OutputCapture() as output:
-                client = LeanLSPClient(
-                    lean_project_path,
-                    initial_build=False,
-                    prevent_cache_get=prevent_cache,
-                )
-                logger.info(f"Connected to Lean language server at {lean_project_path}")
-            build_output = output.get_output()
-            if build_output:
-                logger.debug(f"Build output: {build_output}")
-        except Exception as e:
-            logger.exception("Failed to start Lean LSP client")
-            raise ValueError(
-                f"Failed to start Lean language server at '{lean_project_path}': {e}"
-            ) from e
+        client = _get_or_create_shared_client(lean_project_path)
         ctx.request_context.lifespan_context.client = client
 
 

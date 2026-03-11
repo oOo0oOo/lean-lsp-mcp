@@ -23,7 +23,10 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    CLIENT_LOCK,
     infer_project_path,
+    replace_shared_client,
+    set_build_in_progress,
     setup_client_for_file,
     startup_client,
 )
@@ -279,15 +282,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
         yield context
     finally:
-        logger.info("Closing Lean LSP client")
+        logger.info("Session ending — cleaning up per-session resources")
 
-        if context and context.client:
-            try:
-                context.client.close()
-            except Exception:
-                logger.exception(
-                    "Lean client close failed during app_lifespan teardown"
-                )
+        # NOTE: Do NOT close context.client here.  The LSP client is a shared
+        # singleton managed by client_utils.  Closing it would kill ``lake
+        # serve`` for all other sessions.  The shared client is cleaned up via
+        # close_shared_client() at process exit (see __init__.py).
 
         if repl:
             try:
@@ -401,13 +401,18 @@ async def lsp_build(
     errors: List[str] = []
 
     try:
-        client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        if client:
-            ctx.request_context.lifespan_context.client = None
-            try:
-                client.close()
-            except Exception:
-                logger.exception("Lean client close failed during lsp_build restart")
+        with CLIENT_LOCK:
+            set_build_in_progress(True)
+            client = ctx.request_context.lifespan_context.client
+            if client:
+                ctx.request_context.lifespan_context.client = None
+                try:
+                    client.close()
+                except Exception:
+                    logger.exception(
+                        "Lean client close failed during lsp_build restart"
+                    )
+                replace_shared_client(None, None)
 
         if clean:
             await ctx.report_progress(
@@ -459,6 +464,8 @@ async def lsp_build(
         await process.wait()
 
         if process.returncode != 0:
+            with CLIENT_LOCK:
+                set_build_in_progress(False)
             return BuildResult(
                 success=False,
                 output="\n".join(log_lines[-output_lines:]) if output_lines else "",
@@ -473,6 +480,9 @@ async def lsp_build(
             )
 
         logger.info("Built project and re-started LSP client")
+        with CLIENT_LOCK:
+            set_build_in_progress(False)
+            replace_shared_client(client, lean_project_path_obj)
         ctx.request_context.lifespan_context.client = client
 
         return BuildResult(
@@ -482,6 +492,8 @@ async def lsp_build(
         )
 
     except Exception as e:
+        with CLIENT_LOCK:
+            set_build_in_progress(False)
         return BuildResult(
             success=False,
             output="\n".join(log_lines[-output_lines:]) if output_lines else "",
