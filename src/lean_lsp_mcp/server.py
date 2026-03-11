@@ -7,7 +7,7 @@ import ssl
 import time
 import urllib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +120,14 @@ async def _safe_report_progress(
         return
 
 
+def _get_build_concurrency_mode() -> str:
+    mode = os.environ.get("LEAN_BUILD_CONCURRENCY", "allow").strip().lower()
+    if mode not in {"allow", "cancel", "share"}:
+        logger.warning("Invalid LEAN_BUILD_CONCURRENCY=%s, defaulting to allow.", mode)
+        mode = "allow"
+    return mode
+
+
 _LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
 _LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
 if _LOG_FILE_CONFIG:
@@ -154,6 +162,47 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+
+
+class BuildCoordinator:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self._lock = asyncio.Lock()
+        self._current_task: asyncio.Task[BuildResult] | None = None
+
+    async def run(
+        self, build_factory: Callable[[], Awaitable[BuildResult]]
+    ) -> BuildResult:
+        if self.mode == "allow":
+            return await build_factory()
+
+        async with self._lock:
+            if self._current_task and not self._current_task.done():
+                self._current_task.cancel()
+            self._current_task = asyncio.create_task(build_factory())
+            task = self._current_task
+
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise
+            # Task was superseded by a newer build
+            if self.mode == "cancel":
+                return BuildResult(
+                    success=False,
+                    output="",
+                    errors=["Build superseded by newer request."],
+                )
+            # share: wait for the latest build (follow the chain if it also got superseded)
+            while True:
+                latest = self._current_task
+                try:
+                    return await latest
+                except asyncio.CancelledError:
+                    if self._current_task is latest:
+                        raise
+                    continue
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +270,7 @@ class AppContext:
     # REPL for efficient multi-attempt execution
     repl: Repl | None = None
     repl_enabled: bool = False
+    build_coordinator: BuildCoordinator | None = None
 
 
 @asynccontextmanager
@@ -261,6 +311,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
 
+        build_mode = _get_build_concurrency_mode()
+        build_coordinator = BuildCoordinator(build_mode)
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -276,6 +329,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_local_available=loogle_local_available,
             repl=repl,
             repl_enabled=repl_on,
+            build_coordinator=build_coordinator,
         )
         yield context
     finally:
@@ -397,8 +451,31 @@ async def lsp_build(
             "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
         )
 
+    async def build_factory() -> BuildResult:
+        return await _run_build(ctx, lean_project_path_obj, clean, output_lines)
+
+    app_ctx = ctx.request_context.lifespan_context
+    coordinator = app_ctx.build_coordinator
+    if coordinator is None or coordinator.mode == "allow":
+        return await build_factory()
+    return await coordinator.run(build_factory)
+
+
+async def _run_build(
+    ctx: Context,
+    lean_project_path_obj: Path,
+    clean: bool,
+    output_lines: int,
+) -> BuildResult:
     log_lines: List[str] = []
     errors: List[str] = []
+    active_proc: asyncio.subprocess.Process | None = None
+
+    async def _run_proc(*args: str, **kwargs) -> asyncio.subprocess.Process:
+        nonlocal active_proc
+        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+        active_proc = proc
+        return proc
 
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -410,24 +487,22 @@ async def lsp_build(
                 logger.exception("Lean client close failed during lsp_build restart")
 
         if clean:
-            await ctx.report_progress(
-                progress=1, total=16, message="Running `lake clean`"
+            await _safe_report_progress(
+                ctx, progress=1, total=16, message="Running `lake clean`"
             )
-            clean_proc = await asyncio.create_subprocess_exec(
-                "lake", "clean", cwd=lean_project_path_obj
-            )
+            clean_proc = await _run_proc("lake", "clean", cwd=lean_project_path_obj)
             await clean_proc.wait()
 
-        await ctx.report_progress(
-            progress=2, total=16, message="Running `lake exe cache get`"
+        await _safe_report_progress(
+            ctx, progress=2, total=16, message="Running `lake exe cache get`"
         )
-        cache_proc = await asyncio.create_subprocess_exec(
+        cache_proc = await _run_proc(
             "lake", "exe", "cache", "get", cwd=lean_project_path_obj
         )
         await cache_proc.wait()
 
         # Run build with progress reporting
-        process = await asyncio.create_subprocess_exec(
+        process = await _run_proc(
             "lake",
             "build",
             "--verbose",
@@ -450,7 +525,8 @@ async def lsp_build(
             if m := re.search(
                 r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
             ):
-                await ctx.report_progress(
+                await _safe_report_progress(
+                    ctx,
                     progress=int(m.group(1)),
                     total=int(m.group(2)),
                     message=m.group(3) or "Building",
@@ -481,6 +557,15 @@ async def lsp_build(
             errors=[],
         )
 
+    except asyncio.CancelledError:
+        if active_proc and active_proc.returncode is None:
+            active_proc.terminate()
+            try:
+                await asyncio.wait_for(active_proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                active_proc.kill()
+                await active_proc.wait()
+        raise
     except Exception as e:
         return BuildResult(
             success=False,
