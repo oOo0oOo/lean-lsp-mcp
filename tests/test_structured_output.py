@@ -65,21 +65,20 @@ async def test_diagnostics_structured_output_not_double_encoded(
 
         structured = result.structuredContent
 
-        # The result should have an 'items' field, not a 'result' field
-        # If it has 'result' with a string value, that indicates double-encoding
-        if "result" in structured:
-            result_value = structured["result"]
-            if isinstance(result_value, str):
-                # Try to parse it as JSON to confirm it's double-encoded
-                try:
-                    parsed = json.loads(result_value)
-                    pytest.fail(
-                        f"Diagnostics are double-encoded! "
-                        f"structuredContent['result'] is a JSON string that parses to: {type(parsed).__name__}. "
-                        f"Expected structuredContent to contain 'items' with a list directly."
-                    )
-                except json.JSONDecodeError:
-                    pass  # Not JSON, different issue
+        # FastMCP may wrap the model under a 'result' key
+        if "result" in structured and isinstance(structured["result"], dict):
+            structured = structured["result"]
+        elif "result" in structured and isinstance(structured["result"], str):
+            # A string value indicates double-encoding
+            try:
+                parsed = json.loads(structured["result"])
+                pytest.fail(
+                    f"Diagnostics are double-encoded! "
+                    f"structuredContent['result'] is a JSON string that parses to: {type(parsed).__name__}. "
+                    f"Expected structuredContent to contain 'items' with a list directly."
+                )
+            except json.JSONDecodeError:
+                pass  # Not JSON, different issue
 
         # Should have 'items' field with a list
         assert "items" in structured, (

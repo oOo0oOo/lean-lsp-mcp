@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
 from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
+    OutputCapture,
     extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
@@ -132,6 +135,55 @@ def test_optional_token_verifier() -> None:
     assert granted is not None
     assert granted.token == "secret"
     assert rejected is None
+
+
+def test_output_capture_does_not_touch_stdout_in_stdio_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
+
+    real_dup = os.dup
+    real_dup2 = os.dup2
+    stdout_fd = sys.stdout.fileno()
+    dup2_targets: list[int] = []
+
+    def guarded_dup(fd: int) -> int:
+        if fd == stdout_fd:
+            raise AssertionError("stdout fd must not be duplicated in stdio mode")
+        return real_dup(fd)
+
+    def tracking_dup2(src: int, dst: int) -> None:
+        dup2_targets.append(dst)
+        real_dup2(src, dst)
+
+    monkeypatch.setattr(os, "dup", guarded_dup)
+    monkeypatch.setattr(os, "dup2", tracking_dup2)
+
+    with OutputCapture() as capture:
+        sys.stderr.write("stderr-only\n")
+        sys.stderr.flush()
+
+    assert stdout_fd not in dup2_targets
+    assert "stderr-only" in capture.get_output()
+
+
+def test_output_capture_captures_stdout_when_not_stdio(monkeypatch) -> None:
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "streamable-http")
+
+    with OutputCapture() as capture:
+        print("stdout-kept")
+        sys.stdout.flush()
+
+    assert "stdout-kept" in capture.get_output()
+
+
+def test_output_capture_stdio_subset_cleanup_does_not_crash(monkeypatch) -> None:
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
+
+    with OutputCapture() as capture:
+        pass
+
+    assert capture.get_output() == ""
 
 
 def test_format_diagnostics_line_filter() -> None:

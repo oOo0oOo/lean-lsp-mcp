@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,9 +18,43 @@ class DummyClient:
         self.closed_calls += 1
 
 
-def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
+class _FailingCloseClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise PermissionError("operation not permitted")
+
+
+class _FailingRepl:
+    instances: list["_FailingRepl"] = []
+
+    def __init__(self, project_dir: str, repl_path: str) -> None:
+        self.timeout = 60
+        self.close_calls = 0
+        self.project_dir = project_dir
+        self.repl_path = repl_path
+        self.__class__.instances.append(self)
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        raise RuntimeError("close boom")
+
+
+@pytest.fixture(autouse=True)
+def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
+    monkeypatch.delenv("LEAN_REPL", raising=False)
+
+
+def _make_ctx(
+    rate_limit: dict[str, list[int]] | None = None,
+    *,
+    lean_project_path: Path | None = None,
+) -> types.SimpleNamespace:
     context = server.AppContext(
-        lean_project_path=None,
+        lean_project_path=lean_project_path,
         client=None,
         rate_limit=rate_limit or {"test": []},
         lean_search_available=True,
@@ -69,6 +105,57 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
     assert dummy_client.closed_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_app_lifespan_suppresses_client_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
+
+    dummy_client = _FailingCloseClient()
+
+    async with server.app_lifespan(object()) as context:
+        context.client = dummy_client
+
+    assert dummy_client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_suppresses_repl_close_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _FailingRepl.instances.clear()
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
+    monkeypatch.setattr(server, "repl_enabled", lambda: True)
+    monkeypatch.setattr(
+        "lean_lsp_mcp.repl.find_repl_binary",
+        lambda _path: "/tmp/repl",
+    )
+    monkeypatch.setattr(server, "Repl", _FailingRepl)
+
+    async with server.app_lifespan(object()) as context:
+        assert context.repl is not None
+
+    assert len(_FailingRepl.instances) == 1
+    assert _FailingRepl.instances[0].close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_preserves_startup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(_project_path):
+        raise RuntimeError("startup boom")
+
+    monkeypatch.setattr(server, "_ensure_shared_loogle", boom)
+
+    with pytest.raises(RuntimeError, match="startup boom"):
+        async with server.app_lifespan(object()):
+            pass
+
+
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
     monkeypatch.setattr(server.time, "time", lambda: next(times))
@@ -113,6 +200,65 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert wrapped(ctx=ctx) == "ok"
     assert rate_limit["test"] == [100]
+
+
+def test_parse_disabled_tools() -> None:
+    assert server._parse_disabled_tools(None) == set()
+    assert server._parse_disabled_tools("") == set()
+    assert server._parse_disabled_tools("lean_build, lean_run_code ,,") == {
+        "lean_build",
+        "lean_run_code",
+    }
+
+
+def test_load_tool_description_overrides_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        json.dumps(
+            {
+                "lean_build": "Build tool from env",
+                "lean_goal": "Goal tool from env",
+            }
+        ),
+    )
+
+    overrides = server._load_tool_description_overrides()
+    assert overrides["lean_build"] == "Build tool from env"
+    assert overrides["lean_goal"] == "Goal tool from env"
+
+
+def test_apply_tool_configuration_disables_and_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mcp = server.FastMCP(name="test", instructions="base instructions")
+
+    @mcp.tool("enabled_tool")
+    def enabled_tool() -> str:
+        """enabled description"""
+        return "ok"
+
+    @mcp.tool("removed_tool")
+    def removed_tool() -> str:
+        """removed description"""
+        return "ok"
+
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "removed_tool")
+    monkeypatch.setenv("LEAN_MCP_INSTRUCTIONS", "custom server instructions")
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        json.dumps({"enabled_tool": "overridden description"}),
+    )
+
+    server.apply_tool_configuration(mcp)
+
+    assert mcp.instructions == "custom server instructions"
+    assert mcp._tool_manager.get_tool("removed_tool") is None
+    assert (
+        mcp._tool_manager.get_tool("enabled_tool").description
+        == "overridden description"
+    )
 
 
 @pytest.mark.asyncio
@@ -169,3 +315,127 @@ async def test_local_search_requires_project_root_when_unset(
         await server.local_search(ctx=ctx, query="foo", project_root=str(missing_path))
 
     assert "does not exist" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_shared_loogle_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two calls to _ensure_shared_loogle return the same manager instance."""
+    # Reset shared state
+    server._shared_loogle_init_done = False
+    server._shared_loogle_manager = None
+    server._shared_loogle_available = False
+
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    fake_manager = MagicMock()
+    fake_manager.ensure_installed.return_value = True
+    fake_manager.start = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
+
+    mgr1, avail1 = await server._ensure_shared_loogle(None)
+    mgr2, avail2 = await server._ensure_shared_loogle(None)
+
+    assert mgr1 is mgr2
+    assert mgr1 is fake_manager
+    assert avail1 is True
+    assert avail2 is True
+    # LoogleManager constructed and started only once
+    assert fake_manager.ensure_installed.call_count == 1
+    assert fake_manager.start.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_loogle_retries_after_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server._shared_loogle_init_done = False
+    server._shared_loogle_manager = None
+    server._shared_loogle_available = False
+
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    fake_manager = MagicMock()
+    fake_manager.ensure_installed.return_value = True
+    fake_manager.start = AsyncMock(side_effect=[False, True])
+
+    monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
+
+    mgr1, avail1 = await server._ensure_shared_loogle(None)
+    assert mgr1 is fake_manager
+    assert avail1 is False
+    assert server._shared_loogle_init_done is False
+
+    mgr2, avail2 = await server._ensure_shared_loogle(None)
+    assert mgr2 is fake_manager
+    assert avail2 is True
+    assert server._shared_loogle_init_done is True
+    assert fake_manager.start.call_count == 2
+
+
+class _BaseMultiAttemptClient:
+    def __init__(self) -> None:
+        self.open_calls: list[tuple[str, bool]] = []
+        self.restore_calls: list[tuple[str, str]] = []
+
+    def open_file(
+        self,
+        path: str,
+        dependency_build_mode: str = "never",
+        force_reopen: bool = False,
+    ) -> None:
+        _ = dependency_build_mode
+        self.open_calls.append((path, force_reopen))
+
+    def update_file(self, _path: str, _changes: list[object]) -> None:
+        return
+
+    def get_diagnostics(self, _path: str) -> list[dict]:
+        return []
+
+    def get_goal(self, _path: str, _line: int, _column: int) -> dict:
+        return {}
+
+    def update_file_content(self, path: str, content: str) -> None:
+        self.restore_calls.append((path, content))
+
+
+def test_multi_attempt_force_reopens_after_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient(_BaseMultiAttemptClient):
+        def get_file_content(self, _path: str) -> str:
+            return "buffer-content"
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    monkeypatch.setattr(server, "get_file_contents", lambda _path: "original")
+
+    result = server._multi_attempt_lsp(ctx, "/abs/Foo.lean", line=1, snippets=[])
+
+    assert result.items == []
+    assert fake_client.restore_calls == [("Foo.lean", "buffer-content")]
+    assert fake_client.open_calls == [("Foo.lean", False), ("Foo.lean", True)]
+
+
+def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient(_BaseMultiAttemptClient):
+        def get_file_content(self, _path: str) -> str:
+            raise RuntimeError("buffer unavailable")
+
+    fake_client = FakeClient()
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    monkeypatch.setattr(server, "get_file_contents", lambda _path: "disk-content")
+
+    result = server._multi_attempt_lsp(ctx, "/abs/Foo.lean", line=1, snippets=[])
+
+    assert result.items == []
+    assert fake_client.restore_calls == [("Foo.lean", "disk-content")]

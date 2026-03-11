@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import json
 import logging.config
 import os
 import re
@@ -7,7 +8,7 @@ import ssl
 import time
 import urllib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
     infer_project_path,
+    resolve_file_path,
     setup_client_for_file,
     startup_client,
 )
@@ -34,12 +36,16 @@ from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
+    CodeAction,
+    CodeActionEdit,
+    CodeActionsResult,
     CompletionItem,
     CompletionsResult,
     DeclarationInfo,
     DiagnosticMessage,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
+    InteractiveDiagnosticsResult,
     FileOutline,
     GoalState,
     HoverInfo,
@@ -56,9 +62,13 @@ from lean_lsp_mcp.models import (
     PremiseResults,
     ProofProfileResult,
     RunResult,
+    WidgetSourceResult,
+    WidgetsResult,
+    SourceWarning,
     StateSearchResult,
     StateSearchResults,
     TermGoalState,
+    VerifyResult,
 )
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
@@ -71,7 +81,6 @@ from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
     OutputCapture,
     check_lsp_response,
-    deprecated,
     extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
@@ -83,6 +92,17 @@ from lean_lsp_mcp.utils import (
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
+_DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
+_INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
+_TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
+
+
+def _raise_invalid_path(file_path: str) -> None:
+    """Raise a descriptive error when a file can't be resolved to a Lean project."""
+    raise LeanToolError(
+        f"Invalid Lean file path: '{file_path}' not found in any Lean project "
+        "(no lean-toolchain ancestor or file does not exist)"
+    )
 
 
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
@@ -103,6 +123,66 @@ async def _safe_report_progress(
         await ctx.report_progress(progress=progress, total=total, message=message)
     except Exception:
         return
+
+
+def _parse_disabled_tools(raw_value: str | None) -> set[str]:
+    if not raw_value:
+        return set()
+    return {name.strip() for name in raw_value.split(",") if name.strip()}
+
+
+def _load_tool_description_overrides() -> dict[str, str]:
+    overrides: dict[str, str] = {}
+
+    inline = os.environ.get(_TOOL_DESCRIPTIONS_ENV, "").strip()
+    if inline:
+        try:
+            payload = json.loads(inline)
+        except json.JSONDecodeError as exc:
+            logger.warning("Invalid %s JSON: %s", _TOOL_DESCRIPTIONS_ENV, exc)
+        else:
+            if not isinstance(payload, dict):
+                logger.warning("%s must be a JSON object.", _TOOL_DESCRIPTIONS_ENV)
+            else:
+                for key, value in payload.items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        overrides[key] = value
+
+    return overrides
+
+
+def apply_tool_configuration(server: FastMCP) -> None:
+    """Apply optional runtime tool configuration from environment variables."""
+    disabled = _parse_disabled_tools(os.environ.get(_DISABLED_TOOLS_ENV))
+    for name in sorted(disabled):
+        tool = server._tool_manager.get_tool(name)
+        if tool is None:
+            logger.warning("Cannot disable unknown tool '%s'", name)
+            continue
+        server.remove_tool(name)
+        logger.info("Disabled tool '%s' via %s", name, _DISABLED_TOOLS_ENV)
+
+    instructions_override = os.environ.get(_INSTRUCTIONS_ENV)
+    if instructions_override is not None:
+        server._mcp_server.instructions = instructions_override
+        logger.info("Overrode server instructions via %s", _INSTRUCTIONS_ENV)
+
+    description_overrides = _load_tool_description_overrides()
+    for name, description in description_overrides.items():
+        tool = server._tool_manager.get_tool(name)
+        if tool is None:
+            logger.warning("Cannot override description for unknown tool '%s'", name)
+            continue
+        tool.description = description
+        logger.info("Overrode description for '%s'", name)
+
+
+def _get_build_concurrency_mode() -> str:
+    mode = os.environ.get("LEAN_BUILD_CONCURRENCY", "allow").strip().lower()
+    if mode not in {"allow", "cancel", "share"}:
+        logger.warning("Invalid LEAN_BUILD_CONCURRENCY=%s, defaulting to allow.", mode)
+        mode = "allow"
+    return mode
 
 
 _LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
@@ -141,6 +221,101 @@ logger = get_logger(__name__)
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 
 
+class BuildCoordinator:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self._lock = asyncio.Lock()
+        self._current_task: asyncio.Task[BuildResult] | None = None
+
+    async def run(
+        self, build_factory: Callable[[], Awaitable[BuildResult]]
+    ) -> BuildResult:
+        if self.mode == "allow":
+            return await build_factory()
+
+        async with self._lock:
+            if self._current_task and not self._current_task.done():
+                self._current_task.cancel()
+            self._current_task = asyncio.create_task(build_factory())
+            task = self._current_task
+
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise
+            # Task was superseded by a newer build
+            if self.mode == "cancel":
+                return BuildResult(
+                    success=False,
+                    output="",
+                    errors=["Build superseded by newer request."],
+                )
+            # share: wait for the latest build (follow the chain if it also got superseded)
+            while True:
+                latest = self._current_task
+                try:
+                    return await latest
+                except asyncio.CancelledError:
+                    if self._current_task is latest:
+                        raise
+                    continue
+
+
+# ---------------------------------------------------------------------------
+# Shared singletons for resources that should NOT be duplicated per-session.
+#
+# With the ``streamable-http`` transport every MCP session gets its own
+# ``app_lifespan`` invocation.  Heavy resources like the local loogle
+# subprocess (~6 GB RSS for the Mathlib index) must be initialised exactly
+# once and shared across sessions; otherwise N concurrent clients would
+# spawn N loogle processes and exhaust memory.
+# ---------------------------------------------------------------------------
+_shared_loogle_manager: LoogleManager | None = None
+_shared_loogle_available: bool = False
+_shared_loogle_init_done: bool = False
+_shared_loogle_lock = asyncio.Lock()
+
+
+async def _ensure_shared_loogle(
+    lean_project_path: Path | None,
+) -> tuple[LoogleManager | None, bool]:
+    """Lazily initialise the shared loogle singleton (once, thread-safe)."""
+    global _shared_loogle_manager, _shared_loogle_available, _shared_loogle_init_done
+
+    async with _shared_loogle_lock:
+        if _shared_loogle_init_done:
+            return _shared_loogle_manager, _shared_loogle_available
+
+        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            _shared_loogle_init_done = True
+            return None, False
+
+        try:
+            logger.info("Local loogle enabled, initializing (shared)...")
+            manager = _shared_loogle_manager
+            if manager is None:
+                manager = LoogleManager(project_path=lean_project_path)
+                _shared_loogle_manager = manager
+
+            _shared_loogle_available = (
+                manager.ensure_installed() and await manager.start()
+            )
+            if _shared_loogle_available:
+                _shared_loogle_init_done = True
+                logger.info("Shared local loogle started successfully")
+            else:
+                logger.warning("Local loogle unavailable, will use remote API")
+        except Exception:
+            _shared_loogle_available = False
+            logger.exception("Local loogle initialization failed, will retry later")
+        return _shared_loogle_manager, _shared_loogle_available
+
+
 @dataclass
 class AppContext:
     lean_project_path: Path | None
@@ -152,14 +327,14 @@ class AppContext:
     # REPL for efficient multi-attempt execution
     repl: Repl | None = None
     repl_enabled: bool = False
+    build_coordinator: BuildCoordinator | None = None
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
-    loogle_manager: LoogleManager | None = None
-    loogle_local_available = False
     repl: Repl | None = None
     repl_on = False
+    context: AppContext | None = None
 
     try:
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
@@ -168,18 +343,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         else:
             lean_project_path = Path(lean_project_path_str).resolve()
 
-        # Initialize local loogle if enabled via env var or CLI
-        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() in ("1", "true", "yes"):
-            logger.info("Local loogle enabled, initializing...")
-            loogle_manager = LoogleManager(project_path=lean_project_path)
-            if loogle_manager.ensure_installed():
-                if await loogle_manager.start():
-                    loogle_local_available = True
-                    logger.info("Local loogle started successfully")
-                else:
-                    logger.warning("Local loogle failed to start, will use remote API")
-            else:
-                logger.warning("Local loogle installation failed, will use remote API")
+        # Use the shared loogle singleton (initialised at most once)
+        loogle_manager, loogle_local_available = await _ensure_shared_loogle(
+            lean_project_path
+        )
 
         # Initialize REPL if enabled
         if repl_enabled():
@@ -201,6 +368,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             else:
                 logger.warning("REPL requires LEAN_PROJECT_PATH to be set")
 
+        build_mode = _get_build_concurrency_mode()
+        build_coordinator = BuildCoordinator(build_mode)
+
         context = AppContext(
             lean_project_path=lean_project_path,
             client=None,
@@ -216,19 +386,25 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_local_available=loogle_local_available,
             repl=repl,
             repl_enabled=repl_on,
+            build_coordinator=build_coordinator,
         )
         yield context
     finally:
         logger.info("Closing Lean LSP client")
 
-        if context.client:
-            context.client.close()
-
-        if loogle_manager:
-            await loogle_manager.stop()
+        if context and context.client:
+            try:
+                context.client.close()
+            except Exception:
+                logger.exception(
+                    "Lean client close failed during app_lifespan teardown"
+                )
 
         if repl:
-            await repl.close()
+            try:
+                await repl.close()
+            except Exception:
+                logger.exception("REPL close failed during app_lifespan teardown")
 
 
 mcp_kwargs = dict(
@@ -321,45 +497,72 @@ async def lsp_build(
     ] = 20,
 ) -> BuildResult:
     """Build the Lean project and restart LSP. Use only if needed (e.g. new imports)."""
+    lifespan = ctx.request_context.lifespan_context
+    configured_root = lifespan.lean_project_path
+
     if not lean_project_path:
-        lean_project_path_obj = ctx.request_context.lifespan_context.lean_project_path
+        lean_project_path_obj = configured_root
     else:
         lean_project_path_obj = Path(lean_project_path).resolve()
-        ctx.request_context.lifespan_context.lean_project_path = lean_project_path_obj
+        lifespan.lean_project_path = lean_project_path_obj
 
     if lean_project_path_obj is None:
         raise LeanToolError(
             "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
         )
 
+    async def build_factory() -> BuildResult:
+        return await _run_build(ctx, lean_project_path_obj, clean, output_lines)
+
+    app_ctx = ctx.request_context.lifespan_context
+    coordinator = app_ctx.build_coordinator
+    if coordinator is None or coordinator.mode == "allow":
+        return await build_factory()
+    return await coordinator.run(build_factory)
+
+
+async def _run_build(
+    ctx: Context,
+    lean_project_path_obj: Path,
+    clean: bool,
+    output_lines: int,
+) -> BuildResult:
     log_lines: List[str] = []
     errors: List[str] = []
+    active_proc: asyncio.subprocess.Process | None = None
+
+    async def _run_proc(*args: str, **kwargs) -> asyncio.subprocess.Process:
+        nonlocal active_proc
+        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+        active_proc = proc
+        return proc
 
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
         if client:
             ctx.request_context.lifespan_context.client = None
-            client.close()
+            try:
+                client.close()
+            except Exception:
+                logger.exception("Lean client close failed during lsp_build restart")
 
         if clean:
-            await ctx.report_progress(
-                progress=1, total=16, message="Running `lake clean`"
+            await _safe_report_progress(
+                ctx, progress=1, total=16, message="Running `lake clean`"
             )
-            clean_proc = await asyncio.create_subprocess_exec(
-                "lake", "clean", cwd=lean_project_path_obj
-            )
+            clean_proc = await _run_proc("lake", "clean", cwd=lean_project_path_obj)
             await clean_proc.wait()
 
-        await ctx.report_progress(
-            progress=2, total=16, message="Running `lake exe cache get`"
+        await _safe_report_progress(
+            ctx, progress=2, total=16, message="Running `lake exe cache get`"
         )
-        cache_proc = await asyncio.create_subprocess_exec(
+        cache_proc = await _run_proc(
             "lake", "exe", "cache", "get", cwd=lean_project_path_obj
         )
         await cache_proc.wait()
 
         # Run build with progress reporting
-        process = await asyncio.create_subprocess_exec(
+        process = await _run_proc(
             "lake",
             "build",
             "--verbose",
@@ -382,7 +585,8 @@ async def lsp_build(
             if m := re.search(
                 r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
             ):
-                await ctx.report_progress(
+                await _safe_report_progress(
+                    ctx,
                     progress=int(m.group(1)),
                     total=int(m.group(2)),
                     message=m.group(3) or "Building",
@@ -413,50 +617,21 @@ async def lsp_build(
             errors=[],
         )
 
+    except asyncio.CancelledError:
+        if active_proc and active_proc.returncode is None:
+            active_proc.terminate()
+            try:
+                await asyncio.wait_for(active_proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                active_proc.kill()
+                await active_proc.wait()
+        raise
     except Exception as e:
         return BuildResult(
             success=False,
             output="\n".join(log_lines[-output_lines:]) if output_lines else "",
             errors=[str(e)],
         )
-
-
-@mcp.tool(
-    "lean_file_contents",
-    annotations=ToolAnnotations(
-        title="File Contents (Deprecated)",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-@deprecated
-def file_contents(
-    ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    annotate_lines: Annotated[bool, Field(description="Add line numbers")] = True,
-) -> str:
-    """DEPRECATED. Get file contents with optional line numbers."""
-    # Infer project path but do not start a client
-    if file_path.endswith(".lean"):
-        infer_project_path(ctx, file_path)  # Silently fails for non-project files
-
-    try:
-        data = get_file_contents(file_path)
-    except FileNotFoundError:
-        return (
-            f"File `{file_path}` does not exist. Please check the path and try again."
-        )
-
-    if annotate_lines:
-        data = data.split("\n")
-        max_digits = len(str(len(data)))
-        annotated = ""
-        for i, line in enumerate(data):
-            annotated += f"{i + 1}{' ' * (max_digits - len(str(i + 1)))}: {line}\n"
-        return annotated
-    else:
-        return data
 
 
 @mcp.tool(
@@ -470,17 +645,20 @@ def file_contents(
 )
 def file_outline(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
+    max_declarations: Annotated[
+        Optional[int], Field(description="Max declarations to return", ge=1)
+    ] = None,
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path)
+    return generate_outline_data(client, rel_path, max_declarations)
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
@@ -561,7 +739,9 @@ def _process_diagnostics(
 )
 def diagnostic_messages(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     start_line: Annotated[
         Optional[int], Field(description="Filter from line", ge=1)
     ] = None,
@@ -571,13 +751,17 @@ def diagnostic_messages(
     declaration_name: Annotated[
         Optional[str], Field(description="Filter to declaration (slow)")
     ] = None,
-) -> DiagnosticsResult:
+    interactive: Annotated[
+        bool,
+        Field(
+            description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient. For 'Try This' suggestions, prefer lean_code_actions."
+        ),
+    ] = False,
+) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -592,6 +776,12 @@ def diagnostic_messages(
     # Convert 1-indexed to 0-indexed for leanclient
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
+
+    if interactive:
+        diagnostics = client.get_interactive_diagnostics(
+            rel_path, start_line=start_line_0, end_line=end_line_0
+        )
+        return InteractiveDiagnosticsResult(diagnostics=diagnostics)
 
     result = client.get_diagnostics(
         rel_path,
@@ -614,7 +804,9 @@ def diagnostic_messages(
 )
 def goal(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
         Optional[int],
@@ -628,9 +820,7 @@ def goal(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -674,7 +864,9 @@ def goal(
 )
 def term_goal(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
         Optional[int], Field(description="Column (defaults to end of line)", ge=1)
@@ -683,9 +875,7 @@ def term_goal(
     """Get the expected type at a position."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -697,7 +887,7 @@ def term_goal(
 
     line_context = lines[line - 1]
     if column is None:
-        column = len(line_context)
+        column = max(len(line_context), 1)
 
     term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
     check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
@@ -721,16 +911,16 @@ def term_goal(
 )
 def hover(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
 ) -> HoverInfo:
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -769,7 +959,9 @@ def hover(
 )
 def completions(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     max_completions: Annotated[int, Field(description="Max completions", ge=1)] = 32,
@@ -777,9 +969,7 @@ def completions(
     """Get IDE autocompletions. Use on INCOMPLETE code (after `.` or partial name)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -844,7 +1034,9 @@ def completions(
 )
 def declaration_file(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     symbol: Annotated[
         str, Field(description="Symbol (case sensitive, must be in file)")
     ],
@@ -852,9 +1044,7 @@ def declaration_file(
     """Get file where a symbol is declared. Symbol must be present in file first."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -901,7 +1091,8 @@ async def _multi_attempt_repl(
         return None
 
     try:
-        content = get_file_contents(file_path)
+        resolved_path = resolve_file_path(ctx, file_path)
+        content = get_file_contents(str(resolved_path))
         if content is None:
             return None
         lines = content.splitlines()
@@ -950,13 +1141,14 @@ def _multi_attempt_lsp(
     """Try tactics using LSP file modifications (fallback)."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
-    original_content = get_file_contents(file_path)
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
 
     try:
         results: List[AttemptResult] = []
@@ -973,6 +1165,7 @@ def _multi_attempt_lsp(
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
             goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
+            check_lsp_response(goal_result, "get_goal", allow_none=True)
             goals = extract_goals_list(goal_result)
             results.append(
                 AttemptResult(
@@ -991,6 +1184,16 @@ def _multi_attempt_lsp(
                 logger.warning(
                     "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
                 )
+            try:
+                # Force a disk resync so transient snippet edits do not leak
+                # into subsequent tool calls for already-open documents.
+                client.open_file(rel_path, force_reopen=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to force-reopen `%s` after multi_attempt: %s",
+                    rel_path,
+                    exc,
+                )
 
 
 @mcp.tool(
@@ -1004,7 +1207,9 @@ def _multi_attempt_lsp(
 )
 async def multi_attempt(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[
         List[str],
@@ -1089,6 +1294,96 @@ def run_code(
     return RunResult(success=not has_errors, diagnostics=diagnostics)
 
 
+@mcp.tool(
+    "lean_verify",
+    annotations=ToolAnnotations(
+        title="Verify Theorem",
+        readOnlyHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def verify_theorem(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    theorem_name: Annotated[
+        str, Field(description="Fully qualified name (e.g. `Namespace.theorem`)")
+    ],
+    scan_source: Annotated[
+        bool, Field(description="Scan source file for suspicious patterns")
+    ] = True,
+) -> VerifyResult:
+    """Check theorem axioms + optional source scan. Only scans the given file, not imports."""
+    from lean_lsp_mcp.verify import (
+        check_axiom_errors,
+        parse_axioms,
+        scan_warnings,
+    )
+
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    abs_path = Path(file_path)
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        original_content = get_file_contents(file_path)
+
+    snippet = f"\n#print axioms _root_.{theorem_name}\n"
+    snippet_lines = snippet.count("\n")
+    original_lines = original_content.split("\n")
+    appended_line = len(original_lines)  # 0-indexed line where snippet starts
+
+    try:
+        change = DocumentContentChange(
+            snippet,
+            [appended_line, 0],
+            [appended_line, 0],
+        )
+        client.update_file(rel_path, [change])
+        raw = client.get_diagnostics(
+            rel_path, start_line=appended_line, inactivity_timeout=120.0
+        )
+        check_lsp_response(raw, "get_diagnostics")
+
+        appended_diags = list(raw)
+
+        if err := check_axiom_errors(appended_diags):
+            raise LeanToolError(f"Axiom check failed: {err}")
+
+        axioms = parse_axioms(appended_diags)
+    finally:
+        try:
+            restore_change = DocumentContentChange(
+                "",
+                [appended_line, 0],
+                [appended_line + snippet_lines, 0],
+            )
+            client.update_file(rel_path, [restore_change])
+        except Exception as exc:
+            logger.warning("Failed to restore `%s` after verify: %s", rel_path, exc)
+
+    w: list[SourceWarning] = []
+    if scan_source:
+        if _RG_AVAILABLE:
+            w = [
+                SourceWarning(line=w["line"], pattern=w["pattern"])
+                for w in scan_warnings(abs_path)
+            ]
+        else:
+            w = [
+                SourceWarning(
+                    line=0, pattern="ripgrep (rg) not installed - warnings unavailable"
+                )
+            ]
+
+    return VerifyResult(axioms=axioms, warnings=w)
+
+
 class LocalSearchError(Exception):
     pass
 
@@ -1119,7 +1414,10 @@ async def local_search(
 
     if project_root:
         try:
-            resolved_root = Path(project_root).expanduser().resolve()
+            root_path = Path(project_root).expanduser()
+            if not root_path.is_absolute() and stored_root is not None:
+                root_path = stored_root / root_path
+            resolved_root = root_path.resolve()
         except OSError as exc:
             raise LocalSearchError(f"Invalid project root '{project_root}': {exc}")
         if not resolved_root.exists():
@@ -1330,10 +1628,12 @@ async def leanfinder(
         openWorldHint=True,
     ),
 )
-@rate_limited("lean_state_search", max_requests=3, per_seconds=30)
+@rate_limited("lean_state_search", max_requests=6, per_seconds=30)
 async def state_search(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
@@ -1341,9 +1641,7 @@ async def state_search(
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1381,10 +1679,12 @@ async def state_search(
         openWorldHint=True,
     ),
 )
-@rate_limited("hammer_premise", max_requests=3, per_seconds=30)
+@rate_limited("hammer_premise", max_requests=6, per_seconds=30)
 async def hammer_premise(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 32,
@@ -1395,9 +1695,7 @@ async def hammer_premise(
     """
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
-        raise LeanToolError(
-            "Invalid Lean file path: Unable to start LSP server or load file"
-        )
+        _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
@@ -1435,6 +1733,130 @@ async def hammer_premise(
 
 
 @mcp.tool(
+    "lean_code_actions",
+    annotations=ToolAnnotations(
+        title="Code Actions",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def code_actions(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+) -> CodeActionsResult:
+    """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Get diagnostics on line to discover code action ranges
+    diags = client.get_diagnostics(
+        rel_path, start_line=line - 1, end_line=line - 1, inactivity_timeout=15.0
+    )
+
+    # Query code actions for each diagnostic's range, dedup by title
+    seen: set[str] = set()
+    raw_actions: list[dict] = []
+    for diag in diags.diagnostics:
+        r = diag.get("fullRange", diag.get("range"))
+        if not r:
+            continue
+        s, e = r["start"], r["end"]
+        for action in client.get_code_actions(
+            rel_path, s["line"], s["character"], e["line"], e["character"]
+        ):
+            if action.get("title", "") not in seen:
+                seen.add(action.get("title", ""))
+                raw_actions.append(action)
+
+    # Resolve and convert
+    actions: list[CodeAction] = []
+    for raw in raw_actions:
+        resolved = raw if "edit" in raw else client.get_code_action_resolve(raw)
+        if isinstance(resolved, dict) and "error" in resolved:
+            continue
+        actions.append(
+            CodeAction(
+                title=raw.get("title", ""),
+                is_preferred=raw.get("isPreferred", False),
+                edits=[
+                    CodeActionEdit(
+                        new_text=edit["newText"],
+                        start_line=edit["range"]["start"]["line"] + 1,
+                        start_column=edit["range"]["start"]["character"] + 1,
+                        end_line=edit["range"]["end"]["line"] + 1,
+                        end_column=edit["range"]["end"]["character"] + 1,
+                    )
+                    for dc in resolved.get("edit", {}).get("documentChanges", [])
+                    for edit in dc.get("edits", [])
+                ],
+            )
+        )
+
+    return CodeActionsResult(actions=actions)
+
+
+@mcp.tool(
+    "lean_get_widgets",
+    annotations=ToolAnnotations(
+        title="Get Widgets",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widgets(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+) -> WidgetsResult:
+    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    widgets = client.get_widgets(rel_path, line - 1, column - 1)
+    return WidgetsResult(widgets=widgets)
+
+
+@mcp.tool(
+    "lean_get_widget_source",
+    annotations=ToolAnnotations(
+        title="Widget Source",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_widget_source(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    javascript_hash: Annotated[
+        str, Field(description="javascriptHash from a widget instance")
+    ],
+) -> WidgetSourceResult:
+    """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    source = client.get_widget_source(
+        rel_path, 0, 0, {"javascriptHash": javascript_hash}
+    )
+    return WidgetSourceResult(source=source)
+
+
+@mcp.tool(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",
@@ -1445,32 +1867,32 @@ async def hammer_premise(
 )
 async def profile_proof(
     ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    file_path: Annotated[
+        str, Field(description="Absolute or project-root-relative path to Lean file")
+    ],
     line: Annotated[
         int, Field(description="Line where theorem starts (1-indexed)", ge=1)
     ],
     top_n: Annotated[
         int, Field(description="Number of slowest lines to return", ge=1)
     ] = 5,
-    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 60.0,
+    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 30.0,
 ) -> ProofProfileResult:
-    """Run `lean --profile` on a theorem. Returns per-line timing and categories."""
+    """Run `lean --profile` on a theorem. Returns per-line timing and categories. SLOW - avoid on theorems that already hit heartbeat limits."""
     from lean_lsp_mcp.profile_utils import profile_theorem
+
+    file_path_obj = resolve_file_path(ctx, file_path)
 
     # Get project path
     lifespan = ctx.request_context.lifespan_context
     project_path = lifespan.lean_project_path
 
     if not project_path:
-        infer_project_path(ctx, file_path)
+        infer_project_path(str(file_path_obj), ctx=ctx)
         project_path = lifespan.lean_project_path
 
     if not project_path:
         raise LeanToolError("Lean project not found")
-
-    file_path_obj = Path(file_path)
-    if not file_path_obj.exists():
-        raise LeanToolError(f"File not found: {file_path}")
 
     try:
         return await profile_theorem(
@@ -1485,4 +1907,6 @@ async def profile_proof(
 
 
 if __name__ == "__main__":
+    apply_tool_configuration(mcp)
+    os.environ.setdefault("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
     mcp.run()
