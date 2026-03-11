@@ -695,7 +695,6 @@ Run with a mounted project root (read-only source + writable Lake cache):
 docker run --rm -i \
   -v "$PWD":/workspace:ro \
   -v lean-lsp-mcp-lake-cache:/workspace/.lake \
-  -e LEAN_PROJECT_PATH=/workspace \
   lean-lsp-mcp:containerized
 ```
 
