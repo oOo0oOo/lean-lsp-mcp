@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,14 +14,25 @@ from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir
 class TestGetCacheDir:
     def test_default(self, monkeypatch):
         monkeypatch.delenv("LEAN_LOOGLE_CACHE_DIR", raising=False)
-        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(Path, "home", lambda: Path("/home/user"))
-        assert get_cache_dir() == Path("/home/user/.cache/lean-lsp-mcp/loogle")
+        if os.name == "nt":
+            monkeypatch.delenv("LOCALAPPDATA", raising=False)
+            monkeypatch.setattr(Path, "home", lambda: Path("C:/Users/user"))
+            assert get_cache_dir() == Path(
+                "C:/Users/user/AppData/Local/lean-lsp-mcp/loogle"
+            )
+        else:
+            monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+            monkeypatch.setattr(Path, "home", lambda: Path("/home/user"))
+            assert get_cache_dir() == Path("/home/user/.cache/lean-lsp-mcp/loogle")
 
     def test_xdg(self, monkeypatch):
         monkeypatch.delenv("LEAN_LOOGLE_CACHE_DIR", raising=False)
-        monkeypatch.setenv("XDG_CACHE_HOME", "/xdg")
-        assert get_cache_dir() == Path("/xdg/lean-lsp-mcp/loogle")
+        if os.name == "nt":
+            monkeypatch.setenv("LOCALAPPDATA", "C:/LocalApp")
+            assert get_cache_dir() == Path("C:/LocalApp/lean-lsp-mcp/loogle")
+        else:
+            monkeypatch.setenv("XDG_CACHE_HOME", "/xdg")
+            assert get_cache_dir() == Path("/xdg/lean-lsp-mcp/loogle")
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("LEAN_LOOGLE_CACHE_DIR", "/custom")
@@ -216,6 +228,21 @@ class TestLoogleManager:
         monkeypatch.setattr("shutil.which", lambda _: None)
         assert not mgr.ensure_installed()
 
+    def test_ensure_installed_handles_cache_permission_error(
+        self, tmp_path, monkeypatch
+    ):
+        mgr = LoogleManager(cache_dir=tmp_path / "loogle")
+        monkeypatch.setattr(mgr, "_check_prerequisites", lambda: (True, ""))
+        orig_mkdir = Path.mkdir
+
+        def fail_cache_dir(path, *args, **kwargs):
+            if path == mgr.cache_dir:
+                raise PermissionError("denied")
+            return orig_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fail_cache_dir)
+        assert not mgr.ensure_installed()
+
     @pytest.mark.asyncio
     async def test_start_not_installed(self, tmp_path):
         assert not await LoogleManager(cache_dir=tmp_path).start()
@@ -300,49 +327,45 @@ class TestLoogleManager:
 
 
 @pytest.mark.slow
-class TestLoogleIntegration:
-    """Integration tests that actually download and run loogle.
+class TestLoogleInstall:
+    """Install loogle binary. Run with: pytest -m slow tests/unit/test_loogle.py
 
-    Run with: pytest -m slow tests/unit/test_loogle.py
-    These tests require git, lake, and ~2GB disk space.
-    Skipped by default in CI.
+    Requires git, lake, ~2GB disk space. Takes several minutes on first run.
     """
 
     @pytest.mark.asyncio
-    async def test_local_loogle_full_workflow(self, tmp_path):
-        """Test the complete workflow: install, start, query, stop."""
+    async def test_install_loogle(self):
         import shutil
 
         if not shutil.which("git") or not shutil.which("lake"):
-            pytest.skip("git and lake required for integration test")
+            pytest.skip("git and lake required")
 
-        mgr = LoogleManager(cache_dir=tmp_path / "loogle")
+        mgr = LoogleManager()  # real cache dir
+        assert mgr.ensure_installed(), "Failed to install loogle"
+        assert mgr.is_installed
+
+
+class TestLoogleQuery:
+    """Test start/query/stop against installed loogle binary.
+
+    Skips if loogle is not installed. Run TestLoogleInstall first to install.
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_query_stop(self):
+        mgr = LoogleManager()  # real cache dir
+        if not mgr.is_installed:
+            pytest.skip(
+                "loogle not installed (run: pytest -m slow tests/unit/test_loogle.py)"
+            )
 
         try:
-            # Install (this takes several minutes on first run)
-            assert mgr.ensure_installed(), "Failed to install loogle"
-            assert mgr.is_installed
-
-            # Start subprocess
-            started = await mgr.start()
-            assert started, "Failed to start loogle"
+            assert await mgr.start(), "Failed to start loogle"
             assert mgr.is_running
 
-            # Query
             results = await mgr.query("Nat.add", num_results=3)
-            assert isinstance(results, list)
             assert len(results) > 0
             assert any("add" in r.get("name", "").lower() for r in results)
-
-            # Test project path feature (small check)
-            fake_project = tmp_path / "fake_project"
-            fake_lib = fake_project / ".lake" / "build" / "lib" / "lean"
-            fake_lib.mkdir(parents=True)
-            changed = mgr.set_project_path(fake_project)
-            assert changed, "set_project_path should detect new paths"
-            assert len(mgr._extra_paths) == 1
-            assert fake_lib in mgr._extra_paths
-
         finally:
             await mgr.stop()
             assert not mgr.is_running

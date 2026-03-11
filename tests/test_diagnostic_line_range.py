@@ -14,7 +14,11 @@ from tests.helpers.mcp_client import MCPClient, MCPToolError, result_text
 def parse_diagnostics_result(result) -> list[dict]:
     """Parse diagnostics result, handling both structured and text formats."""
     if result.structuredContent is not None:
-        return result.structuredContent.get("items", [])
+        sc = result.structuredContent
+        # FastMCP may wrap under a 'result' key
+        if "result" in sc and isinstance(sc["result"], dict):
+            sc = sc["result"]
+        return sc.get("items", [])
     # Fallback to parsing text output
     text = result_text(result).strip()
     if not text or text == "[]":
