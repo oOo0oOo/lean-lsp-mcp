@@ -1,5 +1,6 @@
 import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -91,3 +92,63 @@ def test_tempfile_for_logging_handles_unicode() -> None:
         f"Expected: {repr(log_content)}, "
         f"Got: {repr(content)}"
     )
+
+
+class TestReadTextEncoding:
+    """Test that read_text() calls use explicit encoding (issue #162).
+
+    On Windows with cp932 (Shift-JIS) default encoding, Japanese characters
+    in Lean files cause UnicodeDecodeError without explicit encoding='utf-8'.
+    """
+
+    JAPANESE_LEAN = "-- 日本語コメント\ntheorem test : ℕ → ℕ := id\n"
+
+    def test_resolve_namespaces_reads_utf8(self, tmp_path: Path) -> None:
+        """_resolve_namespaces should read files with explicit UTF-8."""
+        from lean_lsp_mcp.search_utils import _resolve_namespaces
+
+        p = tmp_path / "Test.lean"
+        p.write_text(
+            "namespace Foo\n-- 日本語\ndef bar := 1\nend Foo\n",
+            encoding="utf-8",
+        )
+
+        # Simulate cp932 default — read_text() without encoding would fail
+        with patch("locale.getpreferredencoding", return_value="cp932"):
+            result = _resolve_namespaces(p, {3})
+
+        assert result == {3: "Foo"}
+
+    def test_subprocess_text_encoding_ripgrep(self) -> None:
+        """_create_ripgrep_process passes encoding='utf-8'."""
+        from lean_lsp_mcp.search_utils import _create_ripgrep_process
+
+        import shutil
+
+        if not shutil.which("rg"):
+            pytest.skip("rg not installed")
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "Test.lean"
+            p.write_text(self.JAPANESE_LEAN, encoding="utf-8")
+
+            proc = _create_ripgrep_process(["rg", "--json", "日本語", str(p)], cwd=td)
+            stdout, _ = proc.communicate(timeout=5)
+            # stdout is str (text mode) and should contain the match
+            assert "日本語" in stdout
+
+    def test_subprocess_text_encoding_verify(self, tmp_path: Path) -> None:
+        """scan_warnings handles Japanese characters in files."""
+        from lean_lsp_mcp.verify import scan_warnings
+
+        import shutil
+
+        if not shutil.which("rg"):
+            pytest.skip("rg not installed")
+
+        p = tmp_path / "Test.lean"
+        p.write_text("-- 日本語\nunsafe def x := 1\n", encoding="utf-8")
+
+        # Should not raise UnicodeDecodeError
+        warnings = scan_warnings(p)
+        assert any(w["pattern"] == "unsafe" for w in warnings)

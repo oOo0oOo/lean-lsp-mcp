@@ -120,6 +120,7 @@ class LoogleManager:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout,
             cwd=cwd or self.repo_dir,
             env=env,
@@ -176,7 +177,9 @@ class LoogleManager:
 
     def _get_mathlib_version(self) -> str:
         try:
-            manifest = json.loads((self.repo_dir / "lake-manifest.json").read_text())
+            manifest = json.loads(
+                (self.repo_dir / "lake-manifest.json").read_text(encoding="utf-8")
+            )
             for pkg in manifest.get("packages", []):
                 if pkg.get("name") == "mathlib":
                     return pkg.get("rev", "unknown")[:12]
@@ -187,7 +190,9 @@ class LoogleManager:
     def _get_toolchain_version(self) -> str | None:
         """Get the Lean toolchain version from lean-toolchain file."""
         try:
-            return (self.repo_dir / "lean-toolchain").read_text().strip()
+            return (
+                (self.repo_dir / "lean-toolchain").read_text(encoding="utf-8").strip()
+            )
         except Exception:
             return None
 
@@ -362,7 +367,7 @@ class LoogleManager:
                 cwd=self.repo_dir,
             )
             line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
-            decoded = line.decode()
+            decoded = line.decode("utf-8", errors="replace")
             if self.READY_SIGNAL in decoded:
                 self._ready = True
                 logger.info("Loogle ready")
@@ -373,7 +378,9 @@ class LoogleManager:
                     self.process.stderr.read(), timeout=1
                 )
                 if stderr_data:
-                    logger.error(f"Loogle stderr: {stderr_data.decode().strip()}")
+                    logger.error(
+                        f"Loogle stderr: {stderr_data.decode('utf-8', errors='replace').strip()}"
+                    )
             except asyncio.TimeoutError:
                 pass
             logger.error(f"Loogle failed to start. stdout: {decoded.strip()}")
@@ -407,7 +414,7 @@ class LoogleManager:
                     line = await asyncio.wait_for(
                         self.process.stdout.readline(), timeout=30
                     )
-                    response = json.loads(line.decode())
+                    response = json.loads(line.decode("utf-8", errors="replace"))
                     if err := response.get("error"):
                         logger.warning(f"Query error: {err}")
                         return []
