@@ -683,13 +683,14 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
 
 
 def _process_diagnostics(
-    diagnostics: List[Dict], build_success: bool
+    diagnostics: List[Dict], build_success: bool, timed_out: bool = False
 ) -> DiagnosticsResult:
     """Process diagnostics, extracting dependency paths from build stderr.
 
     Args:
         diagnostics: List of diagnostic dicts from leanclient
         build_success: Whether the build succeeded (from leanclient.DiagnosticsResult.success)
+        timed_out: Whether the wait timed out (results may be partial)
     """
     items = []
     failed_deps: List[str] = []
@@ -723,6 +724,7 @@ def _process_diagnostics(
 
     return DiagnosticsResult(
         success=build_success,
+        timed_out=timed_out,
         items=items,
         failed_dependencies=failed_deps,
     )
@@ -790,7 +792,9 @@ def diagnostic_messages(
         inactivity_timeout=15.0,
     )
 
-    return _process_diagnostics(result.diagnostics, result.success)
+    return _process_diagnostics(
+        result.diagnostics, result.success, getattr(result, "timed_out", False)
+    )
 
 
 @mcp.tool(
@@ -1172,6 +1176,7 @@ def _multi_attempt_lsp(
                     snippet=snippet_str,
                     goals=goals,
                     diagnostics=_to_diagnostic_messages(filtered_diag),
+                    timed_out=getattr(diag, "timed_out", False),
                 )
             )
 
@@ -1291,7 +1296,11 @@ def run_code(
     diagnostics = _to_diagnostic_messages(raw_diagnostics)
     has_errors = any(d.severity == "error" for d in diagnostics)
 
-    return RunResult(success=not has_errors, diagnostics=diagnostics)
+    return RunResult(
+        success=not has_errors,
+        timed_out=getattr(raw_diagnostics, "timed_out", False),
+        diagnostics=diagnostics,
+    )
 
 
 @mcp.tool(
