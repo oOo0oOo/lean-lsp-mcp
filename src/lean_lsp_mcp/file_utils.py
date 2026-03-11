@@ -1,11 +1,5 @@
-import os
 from pathlib import Path
 from typing import Optional
-
-
-def _to_posix(p: str) -> str:
-    """Normalize path separators to forward slashes on Windows."""
-    return p.replace("\\", "/") if os.name == "nt" else p
 
 
 def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[str]:
@@ -16,28 +10,28 @@ def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[
         file_path (str): File path.
 
     Returns:
-        str: Relative file path (always forward slashes).
+        str: Relative file path using OS-native separators (matches leanclient internals).
     """
     file_path_obj = Path(file_path)
 
     # Absolute path under project
     if file_path_obj.is_absolute() and file_path_obj.exists():
         try:
-            return _to_posix(str(file_path_obj.relative_to(lean_project_path)))
+            return str(file_path_obj.relative_to(lean_project_path))
         except ValueError:
             return None
 
     # Relative to project path
     path = lean_project_path / file_path
     if path.exists():
-        return _to_posix(str(path.relative_to(lean_project_path)))
+        return str(path.relative_to(lean_project_path))
 
     # Relative to CWD, but only if inside project root
     cwd = Path.cwd()
     path = cwd / file_path
     if path.exists():
         try:
-            return _to_posix(str(path.resolve().relative_to(lean_project_path)))
+            return str(path.resolve().relative_to(lean_project_path))
         except ValueError:
             return None
 
