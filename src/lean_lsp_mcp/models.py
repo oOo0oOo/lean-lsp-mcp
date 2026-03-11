@@ -247,6 +247,49 @@ class WidgetSourceResult(BaseModel):
     source: dict = Field(description="Widget source data including JavaScript module")
 
 
+class ReferenceLocation(BaseModel):
+    """A single reference location."""
+
+    file_path: str = Field(description="Absolute file path")
+    line: int = Field(description="Line (1-indexed)")
+    column: int = Field(description="Column (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    end_column: int = Field(description="End column (1-indexed)")
+
+
+class ReferencesResult(BaseModel):
+    """Wrapper for find references results."""
+
+    items: List[ReferenceLocation] = Field(
+        default_factory=list, description="List of reference locations"
+    )
+
+
+class RenameEdit(BaseModel):
+    """A single text edit applied during rename."""
+
+    file_path: str = Field(description="Absolute file path")
+    line: int = Field(description="Start line (1-indexed)")
+    column: int = Field(description="Start column (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    end_column: int = Field(description="End column (1-indexed)")
+    new_text: str = Field(description="Replacement text")
+
+
+class RenameResult(BaseModel):
+    """Result of a rename operation."""
+
+    old_name: str = Field(description="Original symbol name")
+    new_name: str = Field(description="New symbol name")
+    edits: List[RenameEdit] = Field(
+        default_factory=list, description="List of edits applied"
+    )
+    files_changed: List[str] = Field(
+        default_factory=list, description="List of files modified on disk"
+    )
+
+
+
 class LineProfile(BaseModel):
     """Timing for a single source line."""
 
