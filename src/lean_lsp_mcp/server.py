@@ -176,51 +176,33 @@ class BuildCoordinator:
         if self.mode == "allow":
             return await build_factory()
 
-        join_latest = False
-        while True:
-            task = await self._select_task(build_factory, start_new=not join_latest)
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.cancelled():
-                    raise
-                if await self._was_superseded(task):
-                    if self.mode == "cancel":
-                        return BuildResult(
-                            success=False,
-                            output="",
-                            errors=["Build superseded by newer request."],
-                        )
-                    join_latest = True
-                    continue
+        async with self._lock:
+            if self._current_task and not self._current_task.done():
+                self._current_task.cancel()
+            self._current_task = asyncio.create_task(build_factory())
+            task = self._current_task
+
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
                 raise
-            except Exception as exc:
-                return BuildResult(success=False, output="", errors=[str(exc)])
-
-    async def _select_task(
-        self,
-        build_factory: Callable[[], Awaitable[BuildResult]],
-        *,
-        start_new: bool,
-    ) -> asyncio.Task[BuildResult]:
-        async with self._lock:
-            if self._current_task is None:
-                self._current_task = asyncio.create_task(build_factory())
-                return self._current_task
-
-            if start_new and self.mode in {"cancel", "share"}:
-                if not self._current_task.done():
-                    self._current_task.cancel()
-                self._current_task = asyncio.create_task(build_factory())
-                return self._current_task
-
-            if self._current_task.done() and start_new:
-                self._current_task = asyncio.create_task(build_factory())
-            return self._current_task
-
-    async def _was_superseded(self, task: asyncio.Task[BuildResult]) -> bool:
-        async with self._lock:
-            return self._current_task is not None and self._current_task is not task
+            # Task was superseded by a newer build
+            if self.mode == "cancel":
+                return BuildResult(
+                    success=False,
+                    output="",
+                    errors=["Build superseded by newer request."],
+                )
+            # share: wait for the latest build (follow the chain if it also got superseded)
+            while True:
+                latest = self._current_task
+                try:
+                    return await latest
+                except asyncio.CancelledError:
+                    if self._current_task is latest:
+                        raise
+                    continue
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +469,13 @@ async def _run_build(
 ) -> BuildResult:
     log_lines: List[str] = []
     errors: List[str] = []
-    process: asyncio.subprocess.Process | None = None
+    active_proc: asyncio.subprocess.Process | None = None
+
+    async def _run_proc(*args: str, **kwargs) -> asyncio.subprocess.Process:
+        nonlocal active_proc
+        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+        active_proc = proc
+        return proc
 
     try:
         client: LeanLSPClient = ctx.request_context.lifespan_context.client
@@ -502,21 +490,19 @@ async def _run_build(
             await _safe_report_progress(
                 ctx, progress=1, total=16, message="Running `lake clean`"
             )
-            clean_proc = await asyncio.create_subprocess_exec(
-                "lake", "clean", cwd=lean_project_path_obj
-            )
+            clean_proc = await _run_proc("lake", "clean", cwd=lean_project_path_obj)
             await clean_proc.wait()
 
         await _safe_report_progress(
             ctx, progress=2, total=16, message="Running `lake exe cache get`"
         )
-        cache_proc = await asyncio.create_subprocess_exec(
+        cache_proc = await _run_proc(
             "lake", "exe", "cache", "get", cwd=lean_project_path_obj
         )
         await cache_proc.wait()
 
         # Run build with progress reporting
-        process = await asyncio.create_subprocess_exec(
+        process = await _run_proc(
             "lake",
             "build",
             "--verbose",
@@ -572,13 +558,13 @@ async def _run_build(
         )
 
     except asyncio.CancelledError:
-        if process and process.returncode is None:
-            process.terminate()
+        if active_proc and active_proc.returncode is None:
+            active_proc.terminate()
             try:
-                await asyncio.wait_for(process.wait(), timeout=5)
+                await asyncio.wait_for(active_proc.wait(), timeout=5)
             except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+                active_proc.kill()
+                await active_proc.wait()
         raise
     except Exception as e:
         return BuildResult(
