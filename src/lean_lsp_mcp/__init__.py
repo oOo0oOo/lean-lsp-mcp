@@ -95,6 +95,11 @@ def main():
         help="JSON object mapping tool names to replacement descriptions.",
     )
     parser.add_argument(
+        "--instructions",
+        type=str,
+        help="Override the server instructions sent to the client.",
+    )
+    parser.add_argument(
         "--loogle-local",
         action="store_true",
         help="Enable local loogle (auto-installs on first run, ~5-10 min). "
@@ -127,6 +132,8 @@ def main():
         os.environ["LEAN_MCP_DISABLED_TOOLS"] = args.disable_tools
     if args.tool_descriptions:
         os.environ["LEAN_MCP_TOOL_DESCRIPTIONS"] = args.tool_descriptions
+    if args.instructions:
+        os.environ["LEAN_MCP_INSTRUCTIONS"] = args.instructions
     if args.loogle_local:
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:

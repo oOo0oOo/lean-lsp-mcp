@@ -11,6 +11,7 @@ def test_main_sets_security_env_flags(monkeypatch):
         "LEAN_PROJECT_PATH",
         "LEAN_MCP_DISABLED_TOOLS",
         "LEAN_MCP_TOOL_DESCRIPTIONS",
+        "LEAN_MCP_INSTRUCTIONS",
     ]:
         # Track these keys through monkeypatch so main() assignments are restored.
         monkeypatch.setenv(key, "__original__")
@@ -33,6 +34,8 @@ def test_main_sets_security_env_flags(monkeypatch):
             "lean_run_code,lean_build",
             "--tool-descriptions",
             '{"lean_goal": "custom description"}',
+            "--instructions",
+            "You are a Lean expert.",
         ],
     )
     monkeypatch.setattr(lean_lsp_mcp.mcp, "run", fake_run)
@@ -52,3 +55,4 @@ def test_main_sets_security_env_flags(monkeypatch):
         lean_lsp_mcp.os.environ["LEAN_MCP_TOOL_DESCRIPTIONS"]
         == '{"lean_goal": "custom description"}'
     )
+    assert lean_lsp_mcp.os.environ["LEAN_MCP_INSTRUCTIONS"] == "You are a Lean expert."
