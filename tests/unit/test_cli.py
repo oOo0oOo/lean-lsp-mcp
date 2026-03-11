@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import lean_lsp_mcp
 
@@ -26,7 +27,7 @@ def test_main_sets_security_env_flags(monkeypatch):
             "lean-lsp-mcp",
             "--transport",
             "stdio",
-            "--project-root",
+            "--lean-project-path",
             "/tmp/project",
             "--disable-tools",
             "lean_run_code,lean_build",
@@ -35,6 +36,10 @@ def test_main_sets_security_env_flags(monkeypatch):
         ],
     )
     monkeypatch.setattr(lean_lsp_mcp.mcp, "run", fake_run)
+    # infer_project_path walks up looking for lean-toolchain; stub it out.
+    monkeypatch.setattr(
+        lean_lsp_mcp, "infer_project_path", lambda p, **kw: Path("/tmp/project")
+    )
 
     lean_lsp_mcp.main()
 

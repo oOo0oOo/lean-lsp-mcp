@@ -33,19 +33,30 @@ def startup_client(ctx: Context):
             if client.project_path == lean_project_path:
                 return  # Client already set up correctly - reuse it!
             # Different project path - close old client
-            client.close()
+            try:
+                client.close()
+            except Exception:
+                logger.exception("Lean client close failed")
 
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
         prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
-        with OutputCapture() as output:
-            client = LeanLSPClient(
-                lean_project_path, initial_build=False, prevent_cache_get=prevent_cache
-            )
-            logger.info(f"Connected to Lean language server at {lean_project_path}")
-        build_output = output.get_output()
-        if build_output:
-            logger.debug(f"Build output: {build_output}")
+        try:
+            with OutputCapture() as output:
+                client = LeanLSPClient(
+                    lean_project_path,
+                    initial_build=False,
+                    prevent_cache_get=prevent_cache,
+                )
+                logger.info(f"Connected to Lean language server at {lean_project_path}")
+            build_output = output.get_output()
+            if build_output:
+                logger.debug(f"Build output: {build_output}")
+        except Exception as e:
+            logger.exception("Failed to start Lean LSP client")
+            raise ValueError(
+                f"Failed to start Lean language server at '{lean_project_path}': {e}"
+            ) from e
         ctx.request_context.lifespan_context.client = client
 
 
@@ -87,26 +98,28 @@ def valid_lean_project_path(path: Path | str) -> bool:
     return (path_obj / "lean-toolchain").is_file()
 
 
-def infer_project_path(ctx: Context, file_path: str) -> Path | None:
+def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | None:
     """Infer and cache the Lean project path for a file WITHOUT starting the client.
 
     Walks up the directory tree to find a lean-toolchain file, caches the result.
     Sets ctx.request_context.lifespan_context.lean_project_path if found.
+    If ctx is None, only returns the resolved project path.
 
-    Side effects when path changes:
+    Side effects when path changes when ctx is not None:
     - Next LSP tool will restart the client for the new project
     - File content hashes will be cleared
 
     Args:
-        ctx (Context): Context object
         file_path (str): Absolute or relative path to a Lean file
+        ctx (Context): Context object, or None to only infer and return.
 
     Returns:
         Path | None: The resolved project path if found, None otherwise
     """
-    lifespan = ctx.request_context.lifespan_context
-    if not hasattr(lifespan, "project_cache"):
-        lifespan.project_cache = {}
+    if ctx:
+        lifespan = ctx.request_context.lifespan_context
+        if not hasattr(lifespan, "project_cache"):
+            lifespan.project_cache = {}
 
     abs_file_path = str(resolve_file_path(ctx, file_path, require_exists=False))
     file_dir = os.path.dirname(abs_file_path)
@@ -117,33 +130,37 @@ def infer_project_path(ctx: Context, file_path: str) -> Path | None:
             return None
 
         project_path = project_path.resolve()
-        lifespan.lean_project_path = project_path
+        if ctx:
+            lifespan.lean_project_path = project_path
 
-        # Update all relevant directories in cache
-        for directory in set(cache_dirs + [str(project_path)]):
-            if directory:
-                lifespan.project_cache[directory] = project_path
+            # Update all relevant directories in cache
+            for directory in set(cache_dirs + [str(project_path)]):
+                if directory:
+                    lifespan.project_cache[directory] = project_path
 
         return project_path
 
     # Fast path: current project already valid for this file
-    if lifespan.lean_project_path and set_project_path(
-        lifespan.lean_project_path, [file_dir]
+    if (
+        ctx
+        and lifespan.lean_project_path
+        and set_project_path(lifespan.lean_project_path, [file_dir])
     ):
         return lifespan.lean_project_path
 
     # Walk up directory tree using cache and lean-toolchain detection
     current_dir = file_dir
     while current_dir and current_dir != os.path.dirname(current_dir):
-        cached_root = lifespan.project_cache.get(current_dir)
+        if ctx:
+            cached_root = lifespan.project_cache.get(current_dir)
 
-        if cached_root:
-            if result := set_project_path(Path(cached_root), [current_dir]):
-                return result
-        elif valid_lean_project_path(current_dir):
+            if cached_root:
+                if result := set_project_path(Path(cached_root), [current_dir]):
+                    return result
+        if valid_lean_project_path(current_dir):
             if result := set_project_path(Path(current_dir), [current_dir]):
                 return result
-        else:
+        elif ctx:
             lifespan.project_cache[current_dir] = ""  # Mark as checked
 
         current_dir = os.path.dirname(current_dir)
@@ -158,7 +175,7 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     except (FileNotFoundError, OSError):
         return None
 
-    project_path = infer_project_path(ctx, resolved_file)
+    project_path = infer_project_path(resolved_file, ctx=ctx)
     if project_path is None:
         return None
 

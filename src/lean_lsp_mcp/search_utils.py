@@ -34,13 +34,19 @@ def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen
     Separated for test monkeypatching and to allow early termination once we
     have enough matches.
     """
-    return subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-    )
+    try:
+        return subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+        )
+    except FileNotFoundError:
+        _ok, msg = check_ripgrep_status()
+        if not _ok:
+            raise FileNotFoundError(msg) from None
+        raise
 
 
 def check_ripgrep_status() -> tuple[bool, str]:
@@ -63,6 +69,82 @@ def check_ripgrep_status() -> tuple[bool, str]:
     ]
 
     return False, "\n".join(lines)
+
+
+def _local_search_sort_key(
+    match: dict[str, str], normalized_query: str
+) -> tuple[int, int, int, str, str]:
+    """Sort local search results by relevance and stability.
+
+    Priorities:
+    1. Exact declaration-name match over prefixes/suffixes.
+    2. Project declarations over `.lake/packages` dependencies.
+    3. Shorter base names, then lexical fallback for deterministic order.
+    """
+    name = match["name"]
+    basename = name.rsplit(".", 1)[-1]
+    name_fold = name.casefold()
+    base_fold = basename.casefold()
+
+    if "." in normalized_query:
+        if name_fold == normalized_query:
+            relevance_rank = 0
+        elif name_fold.startswith(normalized_query):
+            relevance_rank = 1
+        elif normalized_query in name_fold:
+            relevance_rank = 2
+        elif base_fold == normalized_query:
+            relevance_rank = 3
+        elif base_fold.startswith(normalized_query):
+            relevance_rank = 4
+        elif normalized_query in base_fold:
+            relevance_rank = 5
+        else:
+            relevance_rank = 6
+    else:
+        if name_fold == normalized_query or base_fold == normalized_query:
+            relevance_rank = 0
+        elif base_fold.startswith(normalized_query):
+            relevance_rank = 1
+        elif normalized_query in base_fold:
+            relevance_rank = 2
+        elif name_fold.startswith(normalized_query):
+            relevance_rank = 3
+        elif normalized_query in name_fold:
+            relevance_rank = 4
+        else:
+            relevance_rank = 5
+
+    package_penalty = 1 if match["file"].startswith(".lake/packages/") else 0
+    return (relevance_rank, package_penalty, len(basename), basename, name)
+
+
+def _resolve_namespaces(file_path: Path, line_numbers: set[int]) -> dict[int, str]:
+    """Return the enclosing namespace prefix for each 1-indexed *line_number*."""
+    if not line_numbers:
+        return {}
+    try:
+        lines = file_path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+    scope_stack: list[str | None] = []  # None = section/mutual (not part of FQN)
+    result: dict[int, str] = {}
+
+    for i, raw in enumerate(lines[: max(line_numbers)], 1):
+        stripped = raw.strip()
+        if m := re.match(r"^namespace\s+([\w.']+)", stripped):
+            scope_stack.append(m.group(1))
+        elif re.match(r"^(?:section|mutual)\b", stripped):
+            scope_stack.append(None)
+        elif re.match(r"^end\b", stripped):
+            if scope_stack:
+                scope_stack.pop()
+
+        if i in line_numbers:
+            result[i] = ".".join(s for s in scope_stack if s is not None)
+
+    return result
 
 
 def lean_local_search(
@@ -97,12 +179,14 @@ def lean_local_search(
         str(root),
     ]
 
-    if lean_src := _get_lean_src_search_path():
+    if lean_src := _get_lean_src_search_path(root):
         command.append(lean_src)
 
     process = _create_ripgrep_process(command, cwd=str(root))
 
     matches: list[dict[str, str]] = []
+    match_locations: list[tuple[Path, int]] = []
+    max_candidates = min(max(limit * 8, limit), 2048)
     stderr_text = ""
     terminated_early = False
     stderr_chunks: list[str] = []
@@ -147,19 +231,21 @@ def lean_local_search(
                 continue
 
             decl_kind, decl_name = parts[0], parts[1].rstrip(":")
+            line_number = data.get("line_number", 0)
             file_path = Path(data["path"]["text"])
             abs_path = (
                 file_path if file_path.is_absolute() else (root / file_path).resolve()
             )
 
             try:
-                display_path = str(abs_path.relative_to(root))
+                display_path = abs_path.relative_to(root).as_posix()
             except ValueError:
-                display_path = str(file_path)
+                display_path = file_path.as_posix()
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
+            match_locations.append((abs_path, line_number))
 
-            if len(matches) >= limit:
+            if len(matches) >= max_candidates:
                 terminated_early = True
                 try:
                     process.terminate()
@@ -212,15 +298,46 @@ def lean_local_search(
             error_msg += f"\n{stderr_text}"
         raise RuntimeError(error_msg)
 
-    return matches
+    # Resolve enclosing namespaces and qualify declaration names.
+    file_lines: dict[Path, set[int]] = {}
+    for abs_path, line_num in match_locations:
+        file_lines.setdefault(abs_path, set()).add(line_num)
+    ns_cache: dict[Path, dict[int, str]] = {
+        fp: _resolve_namespaces(fp, lns) for fp, lns in file_lines.items()
+    }
+    for match, (abs_path, line_num) in zip(matches, match_locations):
+        prefix = ns_cache.get(abs_path, {}).get(line_num, "")
+        if prefix:
+            match["name"] = f"{prefix}.{match['name']}"
+
+    normalized_query = query.casefold()
+    matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for match in matches:
+        key = (match["name"], match["kind"], match["file"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(match)
+        if len(deduped) >= limit:
+            break
+
+    return deduped
 
 
-@lru_cache(maxsize=1)
-def _get_lean_src_search_path() -> str | None:
-    """Return the Lean stdlib directory, if available (cache once)."""
+@lru_cache(maxsize=4)
+def _get_lean_src_search_path(project_root: Path | None = None) -> str | None:
+    """Return the Lean stdlib directory, if available.
+
+    Runs ``lean --print-prefix`` from *project_root* so that elan resolves the
+    toolchain from the project's ``lean-toolchain`` file.
+    """
+    cwd = str(project_root) if project_root else None
     try:
         completed = subprocess.run(
-            ["lean", "--print-prefix"], capture_output=True, text=True
+            ["lean", "--print-prefix"], capture_output=True, text=True, cwd=cwd
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None

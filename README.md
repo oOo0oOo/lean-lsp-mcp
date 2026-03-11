@@ -31,7 +31,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), a Python package manager.
 2. Make sure your Lean project builds quickly by running `lake build` manually.
 3. Configure your IDE/Setup
-4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) to reduce hallucinations using local search.
+4. (Optional, highly recommended) Install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) for local search and source scanning (`lean_verify` warnings).
 
 ### 1. Install uv
 
@@ -131,13 +131,13 @@ claude mcp add lean-lsp -s project uvx lean-lsp-mcp
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
 </details>
 
-#### Claude Skill: Lean4 Theorem Proving
-
-If you are using [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) or [Claude Code](https://claude.ai/code), you can also install the [Lean4 Theorem Proving Skill](https://github.com/cameronfreer/lean4-skills/tree/main/plugins/lean4-theorem-proving). This skill provides additional prompts and templates for interacting with Lean4 projects and includes a section on interacting with the `lean-lsp-mcp` server.
-
 ### 4. Install ripgrep (optional but recommended)
 
 For the local search tool `lean_local_search`, install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
+
+### 5. Install the Lean 4 skill (optional but recommended)
+
+With any agentic coding platform such as Claude Code or Codex, you can install the [Agentic Coding Skill: Lean 4 Theorem Proving](https://github.com/cameronfreer/lean4-skills/). This skill provides additional prompts and templates for interacting with Lean 4 projects, including guidance on using `lean-lsp-mcp`.
 
 ## MCP Tools
 
@@ -148,13 +148,9 @@ For the local search tool `lean_local_search`, install [ripgrep](https://github.
 
 Get a concise outline of a Lean file showing imports and declarations with type signatures (theorems, definitions, classes, structures).
 
-#### lean_file_contents (DEPRECATED)
-
-Get the contents of a Lean file, optionally with line number annotations.
-
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
 
 <details>
 <summary>Example output</summary>
@@ -278,6 +274,66 @@ h_neq : ¬P.card = 2 ^ (Fintype.card S - 1)
 ```
 </details>
 
+#### lean_code_actions
+
+Get LSP code actions for a line. Returns resolved edits for "Try This" suggestions (`simp?`, `exact?`, `apply?`) and other quick fixes. The agent applies the edits using its own editing tools.
+
+<details>
+<summary>Example output (line with <code>simp?</code>)</summary>
+
+```json
+{
+  "actions": [
+    {
+      "title": "Try this: simp only [zero_add]",
+      "is_preferred": false,
+      "edits": [
+        {
+          "new_text": "simp only [zero_add]",
+          "start_line": 3,
+          "start_column": 37,
+          "end_line": 3,
+          "end_column": 42
+        }
+      ]
+    }
+  ]
+}
+```
+</details>
+
+#### lean_get_widgets
+
+Get panel widgets at a position (proof visualizations, `#html`, custom widgets). Returns raw widget data - may be verbose.
+
+<details>
+<summary>Example output (<code>#html</code> widget)</summary>
+
+```json
+{
+  "widgets": [
+    {
+      "id": "ProofWidgets.HtmlDisplayPanel",
+      "javascriptHash": "15661785739548337049",
+      "props": {
+        "html": {
+          "element": ["b", [], [{"text": "Hello widget"}]]
+        }
+      },
+      "range": {
+        "start": {"line": 4, "character": 0},
+        "end": {"line": 4, "character": 50}
+      }
+    }
+  ]
+}
+```
+</details>
+
+#### lean_get_widget_source
+
+Get the JavaScript source code of a widget by its `javascriptHash` (from `lean_get_widgets` or `lean_diagnostic_messages` with `interactive=True`). Useful for understanding custom widget rendering logic. Returns full JS module - may be verbose.
+
 #### lean_profile_proof
 
 Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated copy of the theorem and returns per-line timing data.
@@ -295,6 +351,23 @@ Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated
     "simp": 35.1,
     "typeclass inference": 4.2
   }
+}
+```
+</details>
+
+#### lean_verify
+
+Check theorem soundness: returns axioms used + optional source pattern scan for `unsafe`, `set_option debug.*`, `@[implemented_by]`, etc. Standard axioms are `propext`, `Classical.choice`, `Quot.sound` - anything else (e.g. `sorryAx`) indicates an unsound proof. Source warnings require [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
+
+<details>
+<summary>Example output (theorem using sorry)</summary>
+
+```json
+{
+  "axioms": ["propext", "sorryAx"],
+  "warnings": [
+    {"line": 5, "pattern": "set_option debug.skipKernelTC"}
+  ]
 }
 ```
 </details>
@@ -350,6 +423,7 @@ Search for Lean definitions and theorems using [loogle.lean-lang.org](https://lo
 - Supports queries by constant, lemma name, subexpression, type, or conclusion.
 - Example: `Real.sin`, `"differ"`, `_ * (_ ^ _)`, `(?a -> ?b) -> List ?a -> List ?b`, `|- tsum _ = _ * tsum _`
 - **Local mode available**: Use `--loogle-local` to run loogle locally (avoids rate limits, see [Local Loogle](#local-loogle) section)
+- **Self-hosted**: Set `LOOGLE_URL` to point at a self-hosted instance. Set `LOOGLE_HEADERS` to a JSON object for extra headers (e.g. `'{"X-API-Key": "..."}'`).
 
 <details>
 <summary>Example output (`Real.sin`)</summary>
@@ -486,10 +560,13 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
+- `LOOGLE_URL`: URL for a self-hosted Loogle instance (default: `https://loogle.lean-lang.org`).
+- `LOOGLE_HEADERS`: JSON object of extra HTTP headers for Loogle requests (e.g. `'{"X-API-Key": "..."}'`).
 
 You can also often set these environment variables in your MCP client configuration:
 <details>
@@ -625,6 +702,8 @@ uv run pytest tests
 
 - Ax-Prover: A Deep Reasoning Agentic Framework for Theorem Proving in Mathematics and Quantum Physics [arxiv](https://arxiv.org/abs/2510.12787)
 - Numina-Lean-Agent: An Open and General Agentic Reasoning System for Formal Mathematics [arxiv](https://arxiv.org/abs/2601.14027) [github](https://github.com/project-numina/numina-lean-agent)
+- MerLean: An Agentic Framework for Autoformalization in Quantum Computation [arxiv](https://arxiv.org/pdf/2602.16554)
+- M2F: Automated Formalization of Mathematical Literature at Scale [arxiv](https://arxiv.org/pdf/2602.17016)
 - A Group-Theoretic Approach to Shannon Capacity of Graphs and a Limit Theorem from Lattice Packings [github](https://github.com/jzuiddam/GroupTheoreticShannonCapacity/)
 
 ## Talks

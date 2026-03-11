@@ -1,7 +1,61 @@
 import argparse
 import os
+import sys
+from contextlib import suppress
 
+import anyio
+from lean_lsp_mcp.client_utils import infer_project_path
 from lean_lsp_mcp.server import apply_tool_configuration, mcp
+
+_TRANSPORT_CLOSE_HINTS = (
+    "transport closed",
+    "connection closed",
+    "broken pipe",
+)
+
+_TRANSPORT_CLOSE_EXCEPTIONS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    EOFError,
+    anyio.BrokenResourceError,
+    anyio.ClosedResourceError,
+    anyio.EndOfStream,
+)
+
+
+def _is_transport_closed_error(exc: BaseException) -> bool:
+    """Walk exception tree (groups, __cause__, __context__) for transport errors."""
+    stack: list[BaseException] = [exc]
+    seen: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+
+        if isinstance(current, _TRANSPORT_CLOSE_EXCEPTIONS):
+            return True
+        if any(h in str(current).lower() for h in _TRANSPORT_CLOSE_HINTS):
+            return True
+
+        # Traverse ExceptionGroup-like .exceptions and chained causes
+        nested = getattr(current, "exceptions", None)
+        if isinstance(nested, (tuple, list)):
+            stack.extend(e for e in nested if isinstance(e, BaseException))
+        for linked in (current.__cause__, current.__context__):
+            if isinstance(linked, BaseException):
+                stack.append(linked)
+
+    return False
+
+
+def _silence_stdout() -> None:
+    with suppress(Exception):
+        sys.stdout.flush()
+
+    with suppress(Exception):
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
 
 
 def main():
@@ -26,9 +80,9 @@ def main():
         help="Host port for transport",
     )
     parser.add_argument(
-        "--project-root",
+        "--lean-project-path",
         type=str,
-        help="Set LEAN_PROJECT_PATH explicitly (used for relative file paths).",
+        help=("Path to a Lean project root or to a file/dir inside it."),
     )
     parser.add_argument(
         "--disable-tools",
@@ -64,8 +118,11 @@ def main():
     args = parser.parse_args()
 
     # Set env vars from CLI args (CLI takes precedence over env vars)
-    if args.project_root:
-        os.environ["LEAN_PROJECT_PATH"] = args.project_root
+    if args.lean_project_path:
+        project_path = infer_project_path(args.lean_project_path)
+        if project_path is None:
+            parser.error(f"No lean-toolchain found for: {args.lean_project_path}")
+        os.environ["LEAN_PROJECT_PATH"] = str(project_path)
     if args.disable_tools:
         os.environ["LEAN_MCP_DISABLED_TOOLS"] = args.disable_tools
     if args.tool_descriptions:
@@ -78,8 +135,18 @@ def main():
         os.environ["LEAN_REPL"] = "true"
     if args.repl_timeout:
         os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
+    os.environ["LEAN_LSP_MCP_ACTIVE_TRANSPORT"] = args.transport
 
     apply_tool_configuration(mcp)
     mcp.settings.host = args.host
     mcp.settings.port = args.port
-    mcp.run(transport=args.transport)
+    try:
+        mcp.run(transport=args.transport)
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        if args.transport == "stdio" and _is_transport_closed_error(exc):
+            _silence_stdout()
+            return 0
+        raise
+    return 0
