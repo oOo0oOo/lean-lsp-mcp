@@ -252,7 +252,6 @@ class ReferenceLocation(BaseModel):
 class ReferencesResult(BaseModel):
     """Wrapper for find references results."""
 
-    symbol: str = Field(description="The symbol that was searched for")
     items: List[ReferenceLocation] = Field(
         default_factory=list, description="List of reference locations"
     )

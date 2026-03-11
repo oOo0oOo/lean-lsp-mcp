@@ -1097,11 +1097,8 @@ def references(
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column at START of identifier (1-indexed)", ge=1)],
-    include_declaration: Annotated[
-        bool, Field(description="Include the declaration itself in results")
-    ] = True,
 ) -> ReferencesResult:
-    """Find all references to a symbol. Position cursor at the symbol."""
+    """Find all references to a symbol (including the declaration). Position cursor at the symbol."""
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise LeanToolError(
@@ -1111,19 +1108,9 @@ def references(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
 
-    # Ensure file is elaborated before querying references
-    client.get_diagnostics(rel_path)
-
-    # Get the symbol name via hover for the result
-    file_content = client.get_file_content(rel_path)
-    hover_info = client.get_hover(rel_path, line - 1, column - 1)
-    symbol = ""
-    if hover_info and hover_info.get("range"):
-        symbol = extract_range(file_content, hover_info["range"]) or ""
-
     try:
         raw_refs = client.get_references(
-            rel_path, line - 1, column - 1, include_declaration=include_declaration
+            rel_path, line - 1, column - 1, include_declaration=True
         )
     except Exception as e:
         raise LeanToolError(f"Failed to get references: {e}")
@@ -1146,7 +1133,7 @@ def references(
             )
         )
 
-    return ReferencesResult(symbol=symbol, items=items)
+    return ReferencesResult(items=items)
 
 
 @mcp.tool(

@@ -44,35 +44,13 @@ async def test_find_references(
                 "file_path": str(refactor_file),
                 "line": 3,
                 "column": 5,
-                "include_declaration": True,
             },
         )
         refs_text = result_text(refs)
 
         # Should find the definition + at least 2 usages
-        assert "myHelper" in refs_text
         # At least 3 references: def, usesHelper, helperIsFortyTwo
         assert refs_text.count("line") >= 3
-
-
-@pytest.mark.asyncio
-async def test_find_references_no_declaration(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    refactor_file: Path,
-) -> None:
-    async with mcp_client_factory() as client:
-        refs = await client.call_tool(
-            "lean_references",
-            {
-                "file_path": str(refactor_file),
-                "line": 3,
-                "column": 5,
-                "include_declaration": False,
-            },
-        )
-        refs_text = result_text(refs)
-        # With include_declaration=False, should have fewer results
-        assert "myHelper" in refs_text
 
 
 @pytest.mark.asyncio
