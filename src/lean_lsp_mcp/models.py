@@ -1,8 +1,16 @@
 """Pydantic models for MCP tool structured outputs."""
 
+from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
+
+
+class DiagnosticSeverity(str, Enum):
+    error = "error"
+    warning = "warning"
+    info = "info"
+    hint = "hint"
 
 
 class LocalSearchResult(BaseModel):
