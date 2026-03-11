@@ -7,8 +7,3 @@ __pycache__
 build
 dist
 *.egg-info
-lean-mcp
-lean-training-data
-kimina-lean-server
-center_expansion.png
-game_seq_expansion.png
