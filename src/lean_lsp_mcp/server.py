@@ -61,6 +61,10 @@ from lean_lsp_mcp.models import (
     PremiseResult,
     PremiseResults,
     ProofProfileResult,
+    ReferenceLocation,
+    ReferencesResult,
+    RenameEdit,
+    RenameResult,
     RunResult,
     WidgetSourceResult,
     WidgetsResult,
@@ -1077,6 +1081,228 @@ def declaration_file(
     file_content = get_file_contents(abs_path)
 
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
+
+
+@mcp.tool(
+    "lean_references",
+    annotations=ToolAnnotations(
+        title="Find References",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def references(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column at START of identifier (1-indexed)", ge=1)],
+    include_declaration: Annotated[
+        bool, Field(description="Include the declaration itself in results")
+    ] = True,
+) -> ReferencesResult:
+    """Find all references to a symbol. Position cursor at the symbol."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Ensure file is elaborated before querying references
+    client.get_diagnostics(rel_path)
+
+    # Get the symbol name via hover for the result
+    file_content = client.get_file_content(rel_path)
+    hover_info = client.get_hover(rel_path, line - 1, column - 1)
+    symbol = ""
+    if hover_info and hover_info.get("range"):
+        symbol = extract_range(file_content, hover_info["range"]) or ""
+
+    try:
+        raw_refs = client.get_references(
+            rel_path, line - 1, column - 1, include_declaration=include_declaration
+        )
+    except Exception as e:
+        raise LeanToolError(f"Failed to get references: {e}")
+
+    if raw_refs is None:
+        raw_refs = []
+
+    items: List[ReferenceLocation] = []
+    for ref in raw_refs:
+        uri = ref.get("uri", "")
+        r = ref.get("range", {})
+        abs_path = str(client._uri_to_abs(uri)) if uri else ""
+        items.append(
+            ReferenceLocation(
+                file_path=abs_path,
+                line=r.get("start", {}).get("line", 0) + 1,
+                column=r.get("start", {}).get("character", 0) + 1,
+                end_line=r.get("end", {}).get("line", 0) + 1,
+                end_column=r.get("end", {}).get("character", 0) + 1,
+            )
+        )
+
+    return ReferencesResult(symbol=symbol, items=items)
+
+
+@mcp.tool(
+    "lean_rename",
+    annotations=ToolAnnotations(
+        title="Rename Symbol",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+def rename_symbol(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[int, Field(description="Column at START of identifier (1-indexed)", ge=1)],
+    new_name: Annotated[str, Field(description="New name for the symbol")],
+) -> RenameResult:
+    """Rename a symbol and apply edits to files on disk."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    # Ensure file is elaborated before rename
+    client.get_diagnostics(rel_path)
+
+    # Get the old symbol name via hover
+    file_content = client.get_file_content(rel_path)
+    hover_info = client.get_hover(rel_path, line - 1, column - 1)
+    old_name = ""
+    if hover_info and hover_info.get("range"):
+        old_name = extract_range(file_content, hover_info["range"]) or ""
+
+    if not old_name:
+        raise LeanToolError(
+            f"No symbol found at line {line}, column {column}. "
+            "Position cursor at the start of the identifier."
+        )
+
+    # Send textDocument/rename via the low-level API
+    with client._opened_files_lock:
+        state = client.opened_files[rel_path]
+        uri = state.uri
+        version = state.version
+
+    params = {
+        "textDocument": {"uri": uri, "version": version},
+        "position": {"line": line - 1, "character": column - 1},
+        "newName": new_name,
+    }
+    result = client._send_request_sync("textDocument/rename", params, timeout=30.0)
+
+    if result is None:
+        raise LeanToolError("LSP returned no result for rename request")
+    if "error" in result:
+        msg = result["error"].get("message", "unknown error")
+        raise LeanToolError(f"Rename failed: {msg}")
+
+    # Parse WorkspaceEdit and apply edits to files on disk
+    edits: List[RenameEdit] = []
+    files_changed: set[str] = set()
+
+    # Handle both "changes" and "documentChanges" formats
+    document_changes = result.get("documentChanges", [])
+    changes = result.get("changes", {})
+
+    if document_changes:
+        for doc_change in document_changes:
+            doc_uri = doc_change.get("textDocument", {}).get("uri", "")
+            abs_path = str(client._uri_to_abs(doc_uri))
+            for edit in doc_change.get("edits", []):
+                r = edit.get("range", {})
+                edits.append(
+                    RenameEdit(
+                        file_path=abs_path,
+                        line=r.get("start", {}).get("line", 0) + 1,
+                        column=r.get("start", {}).get("character", 0) + 1,
+                        end_line=r.get("end", {}).get("line", 0) + 1,
+                        end_column=r.get("end", {}).get("character", 0) + 1,
+                        new_text=edit.get("newText", new_name),
+                    )
+                )
+                files_changed.add(abs_path)
+    elif changes:
+        for change_uri, change_edits in changes.items():
+            abs_path = str(client._uri_to_abs(change_uri))
+            for edit in change_edits:
+                r = edit.get("range", {})
+                edits.append(
+                    RenameEdit(
+                        file_path=abs_path,
+                        line=r.get("start", {}).get("line", 0) + 1,
+                        column=r.get("start", {}).get("character", 0) + 1,
+                        end_line=r.get("end", {}).get("line", 0) + 1,
+                        end_column=r.get("end", {}).get("character", 0) + 1,
+                        new_text=edit.get("newText", new_name),
+                    )
+                )
+                files_changed.add(abs_path)
+
+    if not edits:
+        raise LeanToolError(
+            f"Rename returned no edits. The Lean LSP may not support renaming this symbol."
+        )
+
+    # Apply edits to files on disk, grouped by file, applied in reverse order
+    edits_by_file: Dict[str, List[RenameEdit]] = {}
+    for edit in edits:
+        edits_by_file.setdefault(edit.file_path, []).append(edit)
+
+    for fpath, file_edits in edits_by_file.items():
+        try:
+            content = Path(fpath).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            logger.warning("Rename target file not found: %s", fpath)
+            continue
+
+        lines = content.splitlines(keepends=True)
+
+        # Sort edits in reverse order so earlier edits don't shift positions
+        file_edits.sort(
+            key=lambda e: (e.line, e.column), reverse=True
+        )
+
+        for edit in file_edits:
+            start_line_idx = edit.line - 1
+            start_col = edit.column - 1
+            end_line_idx = edit.end_line - 1
+            end_col = edit.end_column - 1
+
+            if start_line_idx == end_line_idx:
+                line_text = lines[start_line_idx]
+                lines[start_line_idx] = (
+                    line_text[:start_col] + edit.new_text + line_text[end_col:]
+                )
+            else:
+                # Multi-line edit
+                first_line = lines[start_line_idx][:start_col]
+                last_line = lines[end_line_idx][end_col:]
+                lines[start_line_idx] = first_line + edit.new_text + last_line
+                del lines[start_line_idx + 1 : end_line_idx + 1]
+
+        Path(fpath).write_text("".join(lines), encoding="utf-8")
+
+    return RenameResult(
+        old_name=old_name,
+        new_name=new_name,
+        edits=edits,
+        files_changed=sorted(files_changed),
+    )
 
 
 async def _multi_attempt_repl(
