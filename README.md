@@ -239,10 +239,16 @@ l1c1-l1c6, severity: 3
 
 #### lean_multi_attempt
 
-Attempt multiple tactics on a line and return goal state and diagnostics for each.
+Attempt multiple tactics at a proof position and return goal state and diagnostics for each.
 Useful to screen different proof attempts before committing to one.
 
-When `LEAN_REPL=true`, uses the REPL tactic mode for up to 5x faster execution (see [Environment Variables](#environment-variables)).
+Accepts:
+- `line` to target a tactic line
+- optional `column` to target an exact source position, similar to `lean_goal`
+
+Execution mode:
+- When `LEAN_REPL=true` and `column` is omitted, uses the REPL tactic mode for up to 5x faster execution (see [Environment Variables](#environment-variables)).
+- When `column` is provided, uses the LSP path so the attempt is evaluated at the exact source position.
 
 <details>
 <summary>Example output (attempting `rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]` and `by_contra h_neq`)</summary>
@@ -555,7 +561,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
 - `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
 - `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
-- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` (~5x faster, see [REPL Setup](#repl-setup)).
+- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` for line-based attempts (~5x faster, see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
@@ -624,7 +630,7 @@ Clients should then include the token in the `Authorization` header.
 
 ### REPL Setup
 
-Enable fast REPL-based `lean_multi_attempt` (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode.
+Enable fast REPL-based `lean_multi_attempt` for line-based attempts (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode. Exact `column`-based attempts still use the LSP path.
 
 **1. Add REPL to your Lean project's `lakefile.toml`:**
 

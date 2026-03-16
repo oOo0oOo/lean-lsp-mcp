@@ -861,6 +861,26 @@ def goal(
         )
 
 
+def _get_line_context(lines: List[str], line: int) -> str:
+    """Return the requested line or raise a user-facing range error."""
+    if line < 1 or line > len(lines):
+        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
+    return lines[line - 1]
+
+
+def _resolve_multi_attempt_column(line_context: str, column: Optional[int]) -> int:
+    """Resolve a 0-indexed tactic insertion column for multi-attempt edits."""
+    if column is None:
+        return next((i for i, c in enumerate(line_context) if not c.isspace()), 0)
+
+    if column > len(line_context) + 1:
+        raise LeanToolError(
+            f"Column {column} out of range for line of length {len(line_context)}"
+        )
+
+    return column - 1
+
+
 @mcp.tool(
     "lean_term_goal",
     annotations=ToolAnnotations(
@@ -1091,11 +1111,14 @@ async def _multi_attempt_repl(
     ctx: Context,
     file_path: str,
     line: int,
+    column: Optional[int],
     snippets: List[str],
 ) -> MultiAttemptResult | None:
     """Try tactics using REPL (fast path)."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
-    if not app_ctx.repl_enabled or not app_ctx.repl:
+    # Column-aware attempts need the LSP path because the REPL implementation
+    # only reconstructs proof state from the start of the target line.
+    if column is not None or not app_ctx.repl_enabled or not app_ctx.repl:
         return None
 
     try:
@@ -1144,6 +1167,7 @@ def _multi_attempt_lsp(
     ctx: Context,
     file_path: str,
     line: int,
+    column: Optional[int],
     snippets: List[str],
 ) -> MultiAttemptResult:
     """Try tactics using LSP file modifications (fallback)."""
@@ -1158,6 +1182,10 @@ def _multi_attempt_lsp(
     except Exception:
         original_content = get_file_contents(file_path)
 
+    lines = original_content.splitlines() if original_content is not None else []
+    line_context = _get_line_context(lines, line)
+    target_column = _resolve_multi_attempt_column(line_context, column)
+
     try:
         results: List[AttemptResult] = []
         for snippet in snippets:
@@ -1165,14 +1193,16 @@ def _multi_attempt_lsp(
             payload = f"{snippet_str}\n"
             change = DocumentContentChange(
                 payload,
-                [line - 1, 0],
+                [line - 1, target_column],
                 [line, 0],
             )
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
-            goal_result = client.get_goal(rel_path, line - 1, len(snippet_str))
+            goal_result = client.get_goal(
+                rel_path, line - 1, target_column + len(snippet_str)
+            )
             check_lsp_response(goal_result, "get_goal", allow_none=True)
             goals = extract_goals_list(goal_result)
             results.append(
@@ -1223,15 +1253,19 @@ async def multi_attempt(
         List[str],
         Field(description="Tactics to try (3+ recommended)"),
     ],
+    column: Annotated[
+        Optional[int],
+        Field(description="Column (1-indexed). Omit to target the tactic line", ge=1),
+    ] = None,
 ) -> MultiAttemptResult:
     """Try multiple tactics without modifying file. Returns goal state for each."""
     # Priority 1: REPL
-    result = await _multi_attempt_repl(ctx, file_path, line, snippets)
+    result = await _multi_attempt_repl(ctx, file_path, line, column, snippets)
     if result is not None:
         return result
 
     # Priority 2: LSP approach (fallback)
-    return _multi_attempt_lsp(ctx, file_path, line, snippets)
+    return _multi_attempt_lsp(ctx, file_path, line, column, snippets)
 
 
 @mcp.tool(
