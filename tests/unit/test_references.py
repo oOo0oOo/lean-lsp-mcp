@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.models import ReferenceLocation, ReferencesResult
+from lean_lsp_mcp.models import ReferencesResult
 
 
 def _make_ctx(client: MagicMock) -> types.SimpleNamespace:
