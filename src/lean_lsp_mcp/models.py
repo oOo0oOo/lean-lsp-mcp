@@ -257,8 +257,6 @@ class ReferencesResult(BaseModel):
     )
 
 
-
-
 class LineProfile(BaseModel):
     """Timing for a single source line."""
 

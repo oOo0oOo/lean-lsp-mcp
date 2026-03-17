@@ -51,5 +51,3 @@ async def test_find_references(
         # Should find the definition + at least 2 usages
         # At least 3 references: def, usesHelper, helperIsFortyTwo
         assert refs_text.count("line") >= 3
-
-

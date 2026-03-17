@@ -23,7 +23,9 @@ def _make_ctx(client: MagicMock) -> types.SimpleNamespace:
     return types.SimpleNamespace(request_context=request_context)
 
 
-def _make_raw_ref(uri: str, start_line: int, start_char: int, end_line: int, end_char: int) -> dict:
+def _make_raw_ref(
+    uri: str, start_line: int, start_char: int, end_line: int, end_char: int
+) -> dict:
     return {
         "uri": uri,
         "range": {
@@ -53,7 +55,9 @@ def test_references_parses_lsp_response(mock_setup: MagicMock) -> None:
     assert result.items[0].column == 5
     assert result.items[0].end_line == 3
     assert result.items[0].end_column == 13
-    client.get_references.assert_called_once_with("Test.lean", 2, 4, include_declaration=True)
+    client.get_references.assert_called_once_with(
+        "Test.lean", 2, 4, include_declaration=True
+    )
 
 
 @patch("lean_lsp_mcp.server.setup_client_for_file", return_value="Test.lean")

@@ -1094,7 +1094,9 @@ def references(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[int, Field(description="Column at START of identifier (1-indexed)", ge=1)],
+    column: Annotated[
+        int, Field(description="Column at START of identifier (1-indexed)", ge=1)
+    ],
 ) -> ReferencesResult:
     """Find all references to a symbol (including the declaration). Position cursor at the symbol."""
     rel_path = setup_client_for_file(ctx, file_path)
