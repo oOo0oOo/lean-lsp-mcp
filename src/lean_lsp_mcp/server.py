@@ -62,6 +62,8 @@ from lean_lsp_mcp.models import (
     PremiseResult,
     PremiseResults,
     ProofProfileResult,
+    ReferenceLocation,
+    ReferencesResult,
     RunResult,
     WidgetSourceResult,
     WidgetsResult,
@@ -1160,6 +1162,61 @@ def declaration_file(
     file_content = get_file_contents(abs_path)
 
     return DeclarationInfo(file_path=str(abs_path), content=file_content)
+
+
+@mcp.tool(
+    "lean_references",
+    annotations=ToolAnnotations(
+        title="Find References",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def references(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
+    column: Annotated[
+        int, Field(description="Column at START of identifier (1-indexed)", ge=1)
+    ],
+) -> ReferencesResult:
+    """Find all references to a symbol (including the declaration). Position cursor at the symbol."""
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        raise LeanToolError(
+            "Invalid Lean file path: Unable to start LSP server or load file"
+        )
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+
+    try:
+        raw_refs = client.get_references(
+            rel_path, line - 1, column - 1, include_declaration=True
+        )
+    except Exception as e:
+        raise LeanToolError(f"Failed to get references: {e}")
+
+    if raw_refs is None:
+        raw_refs = []
+
+    items: List[ReferenceLocation] = []
+    for ref in raw_refs:
+        uri = ref.get("uri", "")
+        r = ref.get("range", {})
+        abs_path = str(client._uri_to_abs(uri)) if uri else ""
+        items.append(
+            ReferenceLocation(
+                file_path=abs_path,
+                line=r.get("start", {}).get("line", 0) + 1,
+                column=r.get("start", {}).get("character", 0) + 1,
+                end_line=r.get("end", {}).get("line", 0) + 1,
+                end_column=r.get("end", {}).get("character", 0) + 1,
+            )
+        )
+
+    return ReferencesResult(items=items)
 
 
 async def _multi_attempt_repl(
