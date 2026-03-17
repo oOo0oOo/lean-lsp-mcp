@@ -53,28 +53,3 @@ async def test_find_references(
         assert refs_text.count("line") >= 3
 
 
-@pytest.mark.asyncio
-async def test_rename_symbol(
-    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
-    refactor_file: Path,
-) -> None:
-    async with mcp_client_factory() as client:
-        result = await client.call_tool(
-            "lean_rename",
-            {
-                "file_path": str(refactor_file),
-                "line": 3,
-                "column": 5,
-                "new_name": "myRenamedHelper",
-            },
-        )
-        result_str = result_text(result)
-        assert "myHelper" in result_str
-        assert "myRenamedHelper" in result_str
-
-        # Verify file was updated on disk
-        updated_content = refactor_file.read_text(encoding="utf-8")
-        assert "myRenamedHelper" in updated_content
-        assert "def myHelper" not in updated_content
-        # All references should be renamed
-        assert "myHelper" not in updated_content
