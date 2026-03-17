@@ -221,6 +221,10 @@ of the `#print axioms my_thm` command, the axiom used by the implementation of `
 
 Get the file contents where a symbol or term is declared.
 
+#### lean_references
+
+Find all references to a symbol at a given position (line & column), including its declaration.
+
 #### lean_completions
 
 Code auto-completion: Find available identifiers or import suggestions at a specific position (line & column) in a Lean file.
