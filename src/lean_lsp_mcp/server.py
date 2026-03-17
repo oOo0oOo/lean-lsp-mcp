@@ -1190,6 +1190,8 @@ def references(
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
+    # Ensure file is elaborated before querying references
+    client.get_diagnostics(rel_path)
 
     try:
         raw_refs = client.get_references(
