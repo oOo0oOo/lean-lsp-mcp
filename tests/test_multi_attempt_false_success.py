@@ -96,12 +96,8 @@ def repl_mcp_client_factory(
     return factory
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="REPL multi_attempt can report false success for let-bound locals",
-)
 @pytest.mark.asyncio
-async def test_multi_attempt_repl_does_not_report_false_success(
+async def test_multi_attempt_does_not_report_false_success_for_multiline_snippet(
     repl_mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     multi_attempt_false_success_file: Path,
 ) -> None:
@@ -113,9 +109,7 @@ async def test_multi_attempt_repl_does_not_report_false_success(
                 "severity": "error",
             },
         )
-        diagnostic_messages = [
-            item["message"] for item in result_json(diagnostics)["result"]["items"]
-        ]
+        diagnostic_messages = [item["message"] for item in result_json(diagnostics)["items"]]
         assert any("omega could not prove the goal" in msg for msg in diagnostic_messages)
 
         result = await client.call_tool(

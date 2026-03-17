@@ -881,6 +881,58 @@ def _resolve_multi_attempt_column(line_context: str, column: Optional[int]) -> i
     return column - 1
 
 
+def _filter_diagnostics_by_line_range(
+    diagnostics: List[Dict], start_line: int, end_line: int
+) -> List[Dict]:
+    """Return diagnostics that intersect the requested 0-indexed line range."""
+    matches: List[Dict] = []
+    for diagnostic in diagnostics:
+        diagnostic_range = diagnostic.get("range") or diagnostic.get("fullRange")
+        if not diagnostic_range:
+            continue
+
+        start = diagnostic_range.get("start", {})
+        end = diagnostic_range.get("end", {})
+        diagnostic_start = start.get("line")
+        diagnostic_end = end.get("line")
+
+        if diagnostic_start is None or diagnostic_end is None:
+            continue
+        if diagnostic_end < start_line or diagnostic_start > end_line:
+            continue
+
+        matches.append(diagnostic)
+
+    return matches
+
+
+def _prepare_multi_attempt_edit(
+    line_context: str, target_column: int, snippet: str, total_lines: int, line: int
+) -> tuple[str, DocumentContentChange, int, int]:
+    """Build the temporary edit and return its goal cursor location."""
+    snippet_str = snippet.rstrip("\n")
+    snippet_lines = snippet_str.split("\n") if snippet_str else [""]
+    indent = line_context[:target_column]
+    payload_lines = [snippet_lines[0], *[f"{indent}{part}" for part in snippet_lines[1:]]]
+    payload = "\n".join(payload_lines) + "\n"
+
+    replaced_line_count = max(len(snippet_lines), 1)
+    end_line = min(line - 1 + replaced_line_count, total_lines)
+    change = DocumentContentChange(
+        payload,
+        [line - 1, target_column],
+        [end_line, 0],
+    )
+
+    goal_line = line - 1 + len(payload_lines) - 1
+    if len(payload_lines) == 1:
+        goal_column = target_column + len(payload_lines[0])
+    else:
+        goal_column = len(payload_lines[-1])
+
+    return snippet_str, change, goal_line, goal_column
+
+
 @mcp.tool(
     "lean_term_goal",
     annotations=ToolAnnotations(
@@ -1111,14 +1163,23 @@ async def _multi_attempt_repl(
     ctx: Context,
     file_path: str,
     line: int,
-    column: Optional[int],
-    snippets: List[str],
+    column: Optional[int] = None,
+    snippets: Optional[List[str]] = None,
 ) -> MultiAttemptResult | None:
     """Try tactics using REPL (fast path)."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
+    if snippets is None:
+        snippets = []
     # Column-aware attempts need the LSP path because the REPL implementation
     # only reconstructs proof state from the start of the target line.
-    if column is not None or not app_ctx.repl_enabled or not app_ctx.repl:
+    # Multiline snippets also need the LSP path so diagnostics/goals can be
+    # reported at the real end position of the inserted tactic block.
+    if (
+        column is not None
+        or any("\n" in snippet for snippet in snippets)
+        or not app_ctx.repl_enabled
+        or not app_ctx.repl
+    ):
         return None
 
     try:
@@ -1167,10 +1228,12 @@ def _multi_attempt_lsp(
     ctx: Context,
     file_path: str,
     line: int,
-    column: Optional[int],
-    snippets: List[str],
+    column: Optional[int] = None,
+    snippets: Optional[List[str]] = None,
 ) -> MultiAttemptResult:
     """Try tactics using LSP file modifications (fallback)."""
+    if snippets is None:
+        snippets = []
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         _raise_invalid_path(file_path)
@@ -1189,20 +1252,14 @@ def _multi_attempt_lsp(
     try:
         results: List[AttemptResult] = []
         for snippet in snippets:
-            snippet_str = snippet.rstrip("\n")
-            payload = f"{snippet_str}\n"
-            change = DocumentContentChange(
-                payload,
-                [line - 1, target_column],
-                [line, 0],
+            snippet_str, change, goal_line, goal_column = _prepare_multi_attempt_edit(
+                line_context, target_column, snippet, len(lines), line
             )
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
             check_lsp_response(diag, "get_diagnostics")
-            filtered_diag = filter_diagnostics_by_position(diag, line - 1, None)
-            goal_result = client.get_goal(
-                rel_path, line - 1, target_column + len(snippet_str)
-            )
+            filtered_diag = _filter_diagnostics_by_line_range(diag, line - 1, goal_line)
+            goal_result = client.get_goal(rel_path, goal_line, goal_column)
             check_lsp_response(goal_result, "get_goal", allow_none=True)
             goals = extract_goals_list(goal_result)
             results.append(
