@@ -361,6 +361,10 @@ Profile a theorem to identify slow tactics. Runs `lean --profile` on an isolated
 ```
 </details>
 
+#### lean_references
+
+Find all references to a symbol at a given position, including the declaration itself. Position the cursor at the start of the identifier. Returns file paths with 1-indexed line/column ranges.
+
 #### lean_verify
 
 Check theorem soundness: returns axioms used + optional source pattern scan for `unsafe`, `set_option debug.*`, `@[implemented_by]`, etc. Standard axioms are `propext`, `Classical.choice`, `Quot.sound` - anything else (e.g. `sorryAx`) indicates an unsound proof. Source warnings require [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`).
