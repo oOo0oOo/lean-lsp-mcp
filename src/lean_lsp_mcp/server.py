@@ -913,7 +913,10 @@ def _prepare_multi_attempt_edit(
     snippet_str = snippet.rstrip("\n")
     snippet_lines = snippet_str.split("\n") if snippet_str else [""]
     indent = line_context[:target_column]
-    payload_lines = [snippet_lines[0], *[f"{indent}{part}" for part in snippet_lines[1:]]]
+    payload_lines = [
+        snippet_lines[0],
+        *[f"{indent}{part}" for part in snippet_lines[1:]],
+    ]
     payload = "\n".join(payload_lines) + "\n"
 
     replaced_line_count = max(len(snippet_lines), 1)

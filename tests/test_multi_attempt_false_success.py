@@ -64,7 +64,9 @@ def repl_mcp_client_factory(
         lake_bin = repo_root / ".devenv" / "profile" / "bin" / "lake"
         lake_cmd = str(lake_bin) if lake_bin.exists() else "lake"
         try:
-            subprocess.run([lake_cmd, "build", "repl"], cwd=test_project_path, check=True)
+            subprocess.run(
+                [lake_cmd, "build", "repl"], cwd=test_project_path, check=True
+            )
         except (FileNotFoundError, subprocess.CalledProcessError):
             pytest.skip("REPL binary not found")
         repl_bin = find_repl_bin()
@@ -109,8 +111,12 @@ async def test_multi_attempt_does_not_report_false_success_for_multiline_snippet
                 "severity": "error",
             },
         )
-        diagnostic_messages = [item["message"] for item in result_json(diagnostics)["items"]]
-        assert any("omega could not prove the goal" in msg for msg in diagnostic_messages)
+        diagnostic_messages = [
+            item["message"] for item in result_json(diagnostics)["items"]
+        ]
+        assert any(
+            "omega could not prove the goal" in msg for msg in diagnostic_messages
+        )
 
         result = await client.call_tool(
             "lean_multi_attempt",
