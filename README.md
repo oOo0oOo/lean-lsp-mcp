@@ -137,7 +137,7 @@ You can find more details about MCP server configuration for Claude Code [here](
 
 1. Edit `~/.vibe/config.toml`.
 
-2. Past the following into the file (e.g. at the end):
+2. Paste the following into the file (e.g. at the end):
 ```toml
 [[mcp_servers]]
 name = "lean-lsp"
