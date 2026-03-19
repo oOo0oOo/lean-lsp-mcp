@@ -131,6 +131,23 @@ claude mcp add lean-lsp -s project uvx lean-lsp-mcp
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
 </details>
 
+<details>
+<summary><b>Mistral Vibe (Click to expand)</b></summary>
+(These instructions cover Mac/Linux.)
+
+1. Edit `~/.vibe/config.toml`.
+
+2. Paste the following into the file (e.g. at the end):
+```toml
+[[mcp_servers]]
+name = "lean-lsp"
+transport = "stdio"
+command = "uvx"
+args = ["lean-lsp-mcp"]
+```
+If there are no existing MCP servers, you may have to remove `mcp_servers = []`.
+</details>
+
 ### 4. Install ripgrep (optional but recommended)
 
 For the local search tool `lean_local_search`, install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
