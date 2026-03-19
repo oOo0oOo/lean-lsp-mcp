@@ -1,10 +1,14 @@
+from __future__ import annotations
+
+import asyncio
 import os
+import time
 from pathlib import Path
 from threading import Lock
 
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
-from leanclient import LeanLSPClient
+from leanclient import LeanLSPClient as BaseLeanLSPClient
 
 from lean_lsp_mcp.file_utils import get_relative_file_path
 from lean_lsp_mcp.utils import OutputCapture
@@ -12,6 +16,197 @@ from lean_lsp_mcp.utils import OutputCapture
 
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
+SHARED_CLIENT: "LeanLSPClient" | None = None
+SHARED_CLIENT_PROJECT_PATH: Path | None = None
+
+
+class LeanLSPClient(BaseLeanLSPClient):
+    """Lean client wrapper with safe cleanup for background diagnostics waits."""
+
+    @staticmethod
+    def _is_benign_detached_future_error(exc: Exception) -> bool:
+        msg = str(exc)
+        return "The file worker for" in msg and "has been terminated." in msg
+
+    def _detach_async_future(self, future: asyncio.Future) -> None:
+        for request_id, candidate in list(self._futures.items()):
+            if candidate is future:
+                self._futures.pop(request_id, None)
+                break
+
+        if not future.done():
+            if self._loop and not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(future.cancel)
+            return
+
+        try:
+            future.result()
+        except asyncio.CancelledError:
+            return
+        except EOFError as exc:
+            logger.debug("Ignoring detached diagnostics wait after LSP shutdown: %s", exc)
+        except Exception as exc:
+            if self._is_benign_detached_future_error(exc):
+                logger.debug(
+                    "Ignoring detached diagnostics wait after worker shutdown: %s", exc
+                )
+            else:
+                logger.warning("Detached diagnostics wait failed: %s", exc)
+
+    def _wait_for_diagnostics(
+        self,
+        uris: list[str],
+        inactivity_timeout: float = 15.0,
+        max_timeout: float = 300.0,
+    ) -> bool:
+        """Wait until diagnostics are ready without leaking late waitForDiagnostics futures."""
+        paths = [self._uri_to_local(uri) for uri in uris]
+        path_by_uri = dict(zip(uris, paths))
+
+        with self._opened_files_lock:
+            missing = [p for p in paths if p not in self.opened_files]
+            if missing:
+                raise FileNotFoundError(
+                    f"Files {missing} are not open. Call open_files first."
+                )
+
+        uris_needing_wait = []
+        target_versions: dict[str, int] = {}
+        with self._opened_files_lock:
+            for uri in uris:
+                path = path_by_uri[uri]
+                state = self.opened_files[path]
+
+                if not state.complete and not state.processing:
+                    if state.diagnostics_version >= state.version:
+                        state.complete = True
+
+                if not state.complete:
+                    uris_needing_wait.append(uri)
+                    target_versions[uri] = state.version
+
+        if not uris_needing_wait:
+            return True
+
+        futures_by_uri: dict[str, asyncio.Future] = {}
+        for uri in uris_needing_wait:
+            params = {"uri": uri, "version": target_versions[uri]}
+            futures_by_uri[uri] = self._send_request_async(
+                "textDocument/waitForDiagnostics", params
+            )
+
+        def cleanup_wait_futures() -> None:
+            for future in futures_by_uri.values():
+                self._detach_async_future(future)
+
+        start_time = time.monotonic()
+        pending_uris = set(uris_needing_wait)
+
+        try:
+            while pending_uris:
+                current_time = time.monotonic()
+                total_elapsed = current_time - start_time
+
+                completed_uris: set[str] = set()
+                max_inactivity = 0.0
+
+                with self._close_condition:
+                    for uri in list(pending_uris):
+                        future = futures_by_uri[uri]
+                        if future.done():
+                            path = path_by_uri[uri]
+                            state = self.opened_files[path]
+                            try:
+                                future.result()
+                            except Exception as exc:
+                                state.error = {"message": str(exc)}
+                                state.processing = False
+                                state.complete = True
+                                state.last_activity = current_time
+                                completed_uris.add(uri)
+                                continue
+
+                            state.wait_for_diag_done = True
+                            if state.is_ready(current_time):
+                                state.complete = True
+                                completed_uris.add(uri)
+
+                    any_rpc_pending = False
+                    for uri in pending_uris - completed_uris:
+                        path = path_by_uri[uri]
+                        state = self.opened_files[path]
+
+                        if state.is_ready(current_time):
+                            state.complete = True
+                            completed_uris.add(uri)
+                        else:
+                            inactivity = current_time - state.last_activity
+                            max_inactivity = max(max_inactivity, inactivity)
+                            any_rpc_pending = (
+                                any_rpc_pending or not futures_by_uri[uri].done()
+                            )
+
+                    pending_uris.difference_update(completed_uris)
+
+                    if not pending_uris:
+                        return True
+
+                    if self.process.poll() is not None:
+                        logger.warning(
+                            "_wait_for_diagnostics: LSP process exited (%.1fs total).",
+                            total_elapsed,
+                        )
+                        return False
+
+                    if total_elapsed > max_timeout:
+                        logger.warning(
+                            "_wait_for_diagnostics hit max timeout of %.1fs (%.1fs total).",
+                            max_timeout,
+                            total_elapsed,
+                        )
+                        return False
+
+                    if max_inactivity > inactivity_timeout and not any_rpc_pending:
+                        logger.warning(
+                            "_wait_for_diagnostics timed out after %.1fs of inactivity (%.1fs total).",
+                            inactivity_timeout,
+                            total_elapsed,
+                        )
+                        return False
+
+                    self._close_condition.wait(timeout=0.005)
+
+            return False
+        finally:
+            cleanup_wait_futures()
+
+
+def _close_client_quietly(client: LeanLSPClient | None) -> None:
+    if client is None:
+        return
+    try:
+        client.close()
+    except Exception:
+        logger.exception("Lean client close failed")
+
+
+def close_shared_client() -> None:
+    """Close the process-wide shared Lean client, if any."""
+    global SHARED_CLIENT, SHARED_CLIENT_PROJECT_PATH
+    with CLIENT_LOCK:
+        _close_client_quietly(SHARED_CLIENT)
+        SHARED_CLIENT = None
+        SHARED_CLIENT_PROJECT_PATH = None
+
+
+def replace_shared_client(project_path: Path, client: LeanLSPClient) -> None:
+    """Replace the process-wide shared Lean client."""
+    global SHARED_CLIENT, SHARED_CLIENT_PROJECT_PATH
+    with CLIENT_LOCK:
+        if SHARED_CLIENT is not None and SHARED_CLIENT is not client:
+            _close_client_quietly(SHARED_CLIENT)
+        SHARED_CLIENT = client
+        SHARED_CLIENT_PROJECT_PATH = project_path.resolve()
 
 
 def startup_client(ctx: Context):
@@ -20,23 +215,29 @@ def startup_client(ctx: Context):
     Args:
         ctx (Context): Context object.
     """
+    global SHARED_CLIENT, SHARED_CLIENT_PROJECT_PATH
     with CLIENT_LOCK:
         lean_project_path = ctx.request_context.lifespan_context.lean_project_path
         if lean_project_path is None:
             raise ValueError("lean project path is not set.")
+        lean_project_path = lean_project_path.resolve()
 
-        # Check if already correct client
-        client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
+        session_client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
 
-        if client is not None:
-            # Both are Path objects now, direct comparison works
-            if client.project_path == lean_project_path:
-                return  # Client already set up correctly - reuse it!
-            # Different project path - close old client
-            try:
-                client.close()
-            except Exception:
-                logger.exception("Lean client close failed")
+        # Reattach any already-running shared client for this project.
+        if SHARED_CLIENT is not None and SHARED_CLIENT_PROJECT_PATH == lean_project_path:
+            ctx.request_context.lifespan_context.client = SHARED_CLIENT
+            return
+
+        # Drop any stale session-local client handle that is not the shared one.
+        if session_client is not None and session_client is not SHARED_CLIENT:
+            _close_client_quietly(session_client)
+
+        # Different project path - replace the shared client entirely.
+        if SHARED_CLIENT is not None and SHARED_CLIENT_PROJECT_PATH != lean_project_path:
+            _close_client_quietly(SHARED_CLIENT)
+            SHARED_CLIENT = None
+            SHARED_CLIENT_PROJECT_PATH = None
 
         # Need to create a new client
         # In test environments, prevent repeated cache downloads
@@ -59,6 +260,9 @@ def startup_client(ctx: Context):
             raise ValueError(
                 f"Failed to start Lean language server at '{lean_project_path}': {e}"
             ) from e
+
+        SHARED_CLIENT = client
+        SHARED_CLIENT_PROJECT_PATH = lean_project_path
         ctx.request_context.lifespan_context.client = client
 
 

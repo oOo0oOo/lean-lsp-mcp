@@ -15,7 +15,7 @@ from typing import Annotated, Dict, List, Optional
 
 import certifi
 import orjson
-from leanclient import DocumentContentChange, LeanLSPClient
+from leanclient import DocumentContentChange
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
@@ -23,7 +23,10 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    LeanLSPClient,
+    close_shared_client,
     infer_project_path,
+    replace_shared_client,
     setup_client_for_file,
     startup_client,
 )
@@ -165,9 +168,10 @@ _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 #
 # With the ``streamable-http`` transport every MCP session gets its own
 # ``app_lifespan`` invocation.  Heavy resources like the local loogle
-# subprocess (~6 GB RSS for the Mathlib index) must be initialised exactly
-# once and shared across sessions; otherwise N concurrent clients would
-# spawn N loogle processes and exhaust memory.
+# subprocess (~6 GB RSS for the Mathlib index) and the Lean client / lake
+# server must be initialised exactly once and shared across sessions;
+# otherwise N concurrent clients would spawn N heavyweight subprocess trees
+# and exhaust memory.
 # ---------------------------------------------------------------------------
 _shared_loogle_manager: LoogleManager | None = None
 _shared_loogle_available: bool = False
@@ -283,15 +287,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
         yield context
     finally:
-        logger.info("Closing Lean LSP client")
-
-        if context and context.client:
-            try:
-                context.client.close()
-            except Exception:
-                logger.exception(
-                    "Lean client close failed during app_lifespan teardown"
-                )
+        logger.info("Leaving shared Lean LSP client alive across MCP sessions")
 
         if repl:
             try:
@@ -405,13 +401,8 @@ async def lsp_build(
     errors: List[str] = []
 
     try:
-        client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        if client:
-            ctx.request_context.lifespan_context.client = None
-            try:
-                client.close()
-            except Exception:
-                logger.exception("Lean client close failed during lsp_build restart")
+        close_shared_client()
+        ctx.request_context.lifespan_context.client = None
 
         if clean:
             await ctx.report_progress(
@@ -477,6 +468,7 @@ async def lsp_build(
             )
 
         logger.info("Built project and re-started LSP client")
+        replace_shared_client(lean_project_path_obj, client)
         ctx.request_context.lifespan_context.client = client
 
         return BuildResult(
