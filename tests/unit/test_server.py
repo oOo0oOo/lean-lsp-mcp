@@ -48,6 +48,9 @@ class _FailingRepl:
 
 @pytest.fixture(autouse=True)
 def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", raising=False)
+    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
+    monkeypatch.delenv("LEAN_LSP_MCP_TOKEN", raising=False)
     monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
     monkeypatch.delenv("LEAN_REPL", raising=False)
 
@@ -92,7 +95,6 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
 @pytest.mark.asyncio
 async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
-    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
 
     async with server.app_lifespan(object()) as context:
         assert context.lean_project_path is None
@@ -121,7 +123,6 @@ async def test_app_lifespan_sets_project_path(
 async def test_app_lifespan_requires_project_path_for_streamable_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
     monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "streamable-http")
 
     with pytest.raises(ValueError, match="`LEAN_PROJECT_PATH` is required"):
@@ -132,7 +133,6 @@ async def test_app_lifespan_requires_project_path_for_streamable_http(
 @pytest.mark.asyncio
 async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
-    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
 
     dummy_client = DummyClient()
 
@@ -147,7 +147,6 @@ async def test_app_lifespan_suppresses_client_close_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
-    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
 
     dummy_client = _FailingCloseClient()
 
