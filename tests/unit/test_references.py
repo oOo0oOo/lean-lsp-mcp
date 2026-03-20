@@ -43,9 +43,7 @@ def _make_raw_ref(
 
 
 @patch("lean_lsp_mcp.server.setup_client_for_file", return_value="Test.lean")
-def test_references_parses_lsp_response(
-    mock_setup: MagicMock, tmp_path: Path
-) -> None:
+def test_references_parses_lsp_response(mock_setup: MagicMock, tmp_path: Path) -> None:
     project = _make_project(tmp_path / "proj")
     lean_file = project / "Test.lean"
     client = MagicMock()

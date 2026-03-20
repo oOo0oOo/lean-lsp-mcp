@@ -6,12 +6,14 @@ from unittest.mock import patch
 import pytest
 
 
-def test_output_capture_handles_unicode() -> None:
+def test_output_capture_handles_unicode(monkeypatch) -> None:
     """Test that OutputCapture correctly handles Unicode characters.
 
     This test simulates Windows behavior where tempfile defaults to cp1252 encoding.
     """
     from lean_lsp_mcp.utils import OutputCapture
+
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "streamable-http")
 
     # Unicode content that Lean produces in diagnostics and goals
     unicode_content = "⊢ ℕ → ℕ"
