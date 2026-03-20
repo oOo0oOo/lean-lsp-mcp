@@ -179,6 +179,23 @@ async def test_app_lifespan_suppresses_repl_close_error(
 
 
 @pytest.mark.asyncio
+async def test_app_lifespan_disables_repl_when_binary_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project_dir = _make_project(tmp_path / "proj")
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
+    monkeypatch.setattr(server, "repl_enabled", lambda: True)
+    monkeypatch.setattr(
+        "lean_lsp_mcp.repl.find_repl_binary",
+        lambda _path: None,
+    )
+
+    async with server.app_lifespan(object()) as context:
+        assert context.repl is None
+        assert context.repl_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_app_lifespan_preserves_startup_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -863,3 +880,63 @@ def test_goal_retries_after_cold_file_timeout(monkeypatch: pytest.MonkeyPatch) -
     assert fake_client.goal_calls == 2
     assert fake_client.open_calls == [("GoalSample.lean", False)]
     assert fake_client.diagnostic_calls == [("GoalSample.lean", 30.0)]
+
+
+def test_goal_returns_no_goals_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.goal_calls = 0
+            self.diagnostic_calls = 0
+            self.open_calls: list[tuple[str, bool]] = []
+
+        def open_file(self, path: str, force_reopen: bool = False, **_kw) -> None:
+            self.open_calls.append((path, force_reopen))
+
+        def get_file_content(self, _path: str) -> str:
+            return "import Mathlib\n\ntheorem sample_goal : True := by\n  trivial\n"
+
+        def get_goal(self, _path: str, _line: int, _column: int) -> None:
+            self.goal_calls += 1
+            return None
+
+        def get_diagnostics(self, *_a, **_kw):
+            self.diagnostic_calls += 1
+            return types.SimpleNamespace(diagnostics=[], success=True)
+
+    monkeypatch.setattr(
+        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
+    )
+
+    ctx = _make_ctx()
+    fake_client = FakeClient()
+    ctx.request_context.lifespan_context.client = fake_client
+
+    result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
+
+    assert result.goals == []
+    assert fake_client.goal_calls == 1
+    assert fake_client.open_calls == [("GoalSample.lean", False)]
+    assert fake_client.diagnostic_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_multi_attempt_repl_does_not_autodiscover_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_resolve(*_args, **_kwargs):
+        raise AssertionError("unexpected")
+
+    ctx = _make_ctx()
+    lifespan = ctx.request_context.lifespan_context
+    lifespan.repl_enabled = True
+    lifespan.repl = None
+    monkeypatch.setattr(server, "resolve_file_path", fail_resolve)
+
+    result = await server._multi_attempt_repl(
+        ctx,
+        file_path="/abs/Foo.lean",
+        line=1,
+        snippets=["trivial"],
+    )
+
+    assert result is None

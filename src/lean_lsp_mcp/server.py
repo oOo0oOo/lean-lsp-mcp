@@ -389,8 +389,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
 
         # Initialize REPL if enabled
-        repl_requested = repl_enabled()
-        if repl_requested:
+        repl_available = False
+        if repl_enabled():
             if lean_project_path:
                 from lean_lsp_mcp.repl import find_repl_binary
 
@@ -398,6 +398,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 if repl_bin:
                     logger.info("REPL enabled, using: %s", repl_bin)
                     repl = Repl(project_dir=str(lean_project_path), repl_path=repl_bin)
+                    repl_available = True
                     logger.info("REPL initialized: timeout=%ds", repl.timeout)
                 else:
                     logger.warning(
@@ -427,7 +428,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
             repl=repl,
-            repl_enabled=repl_requested,
+            repl_enabled=repl_available,
             build_coordinator=build_coordinator,
         )
         yield context
@@ -442,9 +443,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                     "Lean client close failed during app_lifespan teardown"
                 )
 
-        if repl:
+        repl_to_close = context.repl if context and context.repl is not None else repl
+        if repl_to_close:
             try:
-                await repl.close()
+                await repl_to_close.close()
             except Exception:
                 logger.exception("REPL close failed during app_lifespan teardown")
 
@@ -519,6 +521,7 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
 
 async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
     repl = app_ctx.repl
+    app_ctx.repl_enabled = False
     if repl is None:
         return
     app_ctx.repl = None
@@ -923,12 +926,9 @@ def _get_goal_response(
     """Fetch a goal response after waiting for full-file elaboration on cold files."""
 
     try:
-        goal_result = client.get_goal(rel_path, line, column)
+        return client.get_goal(rel_path, line, column)
     except FuturesTimeoutError:
-        goal_result = None
-
-    if goal_result is not None:
-        return goal_result
+        pass
 
     client.get_diagnostics(rel_path, inactivity_timeout=30.0)
 
@@ -1332,6 +1332,7 @@ async def _multi_attempt_repl(
         column is not None
         or any("\n" in snippet for snippet in snippets)
         or not app_ctx.repl_enabled
+        or app_ctx.repl is None
     ):
         return None
 
@@ -1342,23 +1343,9 @@ async def _multi_attempt_repl(
             return None
         policy = build_lean_path_policy(project_path)
         resolved_path = policy.validate_path(resolved_path)
-        if (
-            app_ctx.repl is not None
-            and Path(app_ctx.repl.project_dir).resolve(strict=False) != project_path
-        ):
-            try:
-                await app_ctx.repl.close()
-            except Exception:
-                logger.exception("REPL close failed during project switch")
-            finally:
-                app_ctx.repl = None
-        if app_ctx.repl is None:
-            from lean_lsp_mcp.repl import find_repl_binary
-
-            repl_bin = find_repl_binary(str(project_path))
-            if repl_bin is None:
-                return None
-            app_ctx.repl = Repl(project_dir=str(project_path), repl_path=repl_bin)
+        if Path(app_ctx.repl.project_dir).resolve(strict=False) != project_path:
+            await _close_repl_for_project_switch(app_ctx)
+            return None
         content = get_file_contents(str(resolved_path))
         if content is None:
             return None
@@ -2175,13 +2162,13 @@ async def profile_proof(
 
     if not project_path:
         project_path = infer_project_path(str(file_path_obj), ctx=ctx)
+    if project_path is None:
+        raise LeanToolError("Lean project not found")
     try:
         policy = get_path_policy(ctx, project_path)
         file_path_obj = policy.validate_path(file_path_obj)
     except ValueError as exc:
         raise LeanToolError(str(exc)) from exc
-    if project_path is None:
-        raise LeanToolError("Lean project not found")
 
     try:
         return await profile_theorem(

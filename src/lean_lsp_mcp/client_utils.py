@@ -88,10 +88,7 @@ def startup_client(ctx: Context):
         configured_root = ctx.request_context.lifespan_context.lean_project_path
         if configured_root is None:
             raise ValueError("lean project path is not set.")
-        try:
-            lean_project_path = bind_lean_project_path(ctx, configured_root)
-        except ValueError as exc:
-            raise ValueError("lean project path is not set.") from exc
+        lean_project_path = bind_lean_project_path(ctx, configured_root)
 
         # Check if already correct client
         client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
@@ -178,7 +175,6 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
 
     Side effects when path changes when ctx is not None:
     - Next LSP tool will restart the client for the new project
-    - File content hashes will be cleared
 
     Args:
         file_path (str): Absolute or relative path to a Lean file
