@@ -25,6 +25,8 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    _active_transport,
+    _project_switching_allowed,
     bind_lean_project_path,
     get_path_policy,
     infer_project_path,
@@ -105,7 +107,6 @@ DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
 _INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
-_SWITCHABLE_TRANSPORTS = {"stdio"}
 
 
 def _raise_invalid_path(file_path: str) -> None:
@@ -114,17 +115,6 @@ def _raise_invalid_path(file_path: str) -> None:
         f"Invalid Lean file path: '{file_path}' not found in any Lean project "
         "(no lean-toolchain ancestor or file does not exist)"
     )
-
-
-def _active_transport() -> str:
-    return (
-        os.environ.get("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio").strip().lower()
-        or "stdio"
-    )
-
-
-def _project_switching_allowed(transport: str) -> bool:
-    return transport in _SWITCHABLE_TRANSPORTS
 
 
 def _validate_theorem_name(theorem_name: str) -> str:
@@ -372,7 +362,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     try:
         active_transport = _active_transport()
-        project_switching_allowed = _project_switching_allowed(active_transport)
+        project_switching_allowed = _project_switching_allowed()
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
         if not lean_project_path_str:
             if not project_switching_allowed:

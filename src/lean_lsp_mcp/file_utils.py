@@ -24,36 +24,40 @@ class LeanPathPolicy:
     allowed_roots: tuple[AllowedPathRoot, ...]
     stdlib_root: Path | None = None
 
-    def contains(self, path: Path | str) -> bool:
+    def _resolve_allowed_path(
+        self, path: Path | str
+    ) -> tuple[Path, AllowedPathRoot | None]:
         candidate = Path(path).resolve(strict=False)
-        return any(
-            _is_relative_to(candidate, allowed.root) for allowed in self.allowed_roots
-        )
+        for allowed in self.allowed_roots:
+            if _is_relative_to(candidate, allowed.root):
+                return candidate, allowed
+        return candidate, None
+
+    def contains(self, path: Path | str) -> bool:
+        _, allowed = self._resolve_allowed_path(path)
+        return allowed is not None
 
     def validate_path(self, path: Path | str) -> Path:
-        candidate = Path(path).resolve(strict=False)
-        if not self.contains(candidate):
+        candidate, allowed = self._resolve_allowed_path(path)
+        if allowed is None:
             raise ValueError(
                 f"Path '{candidate}' is outside the active Lean project, dependencies, and stdlib roots."
             )
         return candidate
 
     def display_path(self, path: Path | str) -> str:
-        candidate = self.validate_path(path)
-        for allowed in self.allowed_roots:
-            try:
-                relative = candidate.relative_to(allowed.root)
-            except ValueError:
-                continue
-            if not relative.parts:
-                return allowed.display_prefix or "."
-            relative_text = relative.as_posix()
-            if not allowed.display_prefix:
-                return relative_text
-            return f"{allowed.display_prefix}/{relative_text}"
-        raise ValueError(
-            f"Path '{candidate}' is outside the configured Lean path policy."
-        )
+        candidate, allowed = self._resolve_allowed_path(path)
+        if allowed is None:
+            raise ValueError(
+                f"Path '{candidate}' is outside the active Lean project, dependencies, and stdlib roots."
+            )
+        relative = candidate.relative_to(allowed.root)
+        if not relative.parts:
+            return allowed.display_prefix or "."
+        relative_text = relative.as_posix()
+        if not allowed.display_prefix:
+            return relative_text
+        return f"{allowed.display_prefix}/{relative_text}"
 
     def client_relative_path(self, path: Path | str) -> str:
         candidate = self.validate_path(path)
