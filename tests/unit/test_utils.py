@@ -7,6 +7,7 @@ import sys
 from lean_lsp_mcp.utils import (
     OptionalTokenVerifier,
     OutputCapture,
+    PreSharedTokenVerifier,
     extract_failed_dependency_paths,
     extract_goals_list,
     extract_range,
@@ -135,6 +136,13 @@ def test_optional_token_verifier() -> None:
     assert granted is not None
     assert granted.token == "secret"
     assert rejected is None
+
+
+def test_pre_shared_token_verifier_alias() -> None:
+    verifier = PreSharedTokenVerifier("secret")
+
+    assert asyncio.run(verifier.verify_token("secret")) is not None
+    assert asyncio.run(verifier.verify_token("wrong")) is None
 
 
 def test_output_capture_does_not_touch_stdout_in_stdio_mode(

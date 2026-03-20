@@ -578,7 +578,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
-- `LEAN_PROJECT_PATH`: Path to your Lean project root. Relative `file_path` arguments resolve against this root.
+- `LEAN_PROJECT_PATH`: Path to your Lean project root. A valid Lean project root must contain `lean-toolchain` and either `lakefile.lean` or `lakefile.toml`. Relative `file_path` arguments resolve against this root. This variable is required for `streamable-http` and `sse`.
 - `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
 - `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
 - `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
@@ -586,7 +586,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
-- `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport. If set, bearer auth is required for every request.
 - `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
@@ -626,6 +626,8 @@ The Lean LSP MCP server supports the following transport methods:
 - `streamable-http`: HTTP streaming
 - `sse`: Server-sent events (MCP legacy, use `streamable-http` if possible)
 
+`stdio` supports project inference and switching as you move between Lean projects. `streamable-http` and `sse` are single-project deployments: they require `LEAN_PROJECT_PATH` at startup and reject tool-driven project switching.
+
 You can specify the transport method using the `--transport` argument when running the server. For `sse` and `streamable-http` you can also optionally specify the host and port:
 
 ```bash
@@ -638,7 +640,7 @@ uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at ht
 
 Transport via `streamable-http` and `sse` supports bearer token authentication. This allows publicly accessible MCP servers to restrict access to authorized clients.
 
-Set the `LEAN_LSP_MCP_TOKEN` environment variable (or see section 3 for setting env variables in MCP config) to a secret token before starting the server.
+Set the `LEAN_LSP_MCP_TOKEN` environment variable (or see section 3 for setting env variables in MCP config) to a secret token before starting the server. If this variable is set, requests without a matching `Authorization: Bearer ...` header are rejected before tool dispatch.
 
 Example Linux/MacOS setup:
 
@@ -679,6 +681,16 @@ export LEAN_REPL=true
 
 The REPL binary is auto-detected from `.lake/packages/repl/`. Falls back to LSP if not found.
 
+### Path Policy
+
+File-based tools only operate on files inside the active Lean project, resolved `.lake/packages/*` dependencies, and the Lean stdlib source tree. Returned file paths are sanitized to avoid leaking host absolute paths:
+
+- Project files are returned relative to the project root, for example `src/MyFile.lean`.
+- Dependency files are returned under `.lake/packages/<package>/...`.
+- Stdlib files are returned under `.lean-stdlib/...`.
+
+Symlink escapes outside those roots are rejected.
+
 ### Local Loogle
 
 Run loogle locally to avoid the remote API's rate limit (3 req/30s). First run takes ~5-10 minutes to build; subsequent runs start in seconds.
@@ -704,7 +716,8 @@ There are many valid security concerns with the Model Context Protocol (MCP) in 
 This MCP server is meant as a research tool and is currently in beta.
 While it does not handle any sensitive data such as passwords or API keys, it still includes various security risks:
 - Access to your local file system.
-- No input or output validation.
+- Powerful local build and analysis capabilities.
+- External network access for remote search tools unless disabled by the operator.
 
 Please be aware of these risks. Feel free to audit the code and report security issues!
 

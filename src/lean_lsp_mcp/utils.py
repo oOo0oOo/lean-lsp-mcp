@@ -125,8 +125,8 @@ class OutputCapture:
         return self.captured_output
 
 
-class OptionalTokenVerifier(TokenVerifier):
-    """Minimal verifier that accepts a single pre-shared token."""
+class PreSharedTokenVerifier(TokenVerifier):
+    """Minimal verifier that requires a single pre-shared bearer token."""
 
     def __init__(self, expected_token: str):
         self._expected_token = expected_token
@@ -135,7 +135,10 @@ class OptionalTokenVerifier(TokenVerifier):
         if token is None or not secrets.compare_digest(token, self._expected_token):
             return None
         # AccessToken requires both client_id and scopes parameters to be provided.
-        return AccessToken(token=token, client_id="lean-lsp-mcp-optional", scopes=[])
+        return AccessToken(token=token, client_id="lean-lsp-mcp", scopes=[])
+
+
+OptionalTokenVerifier = PreSharedTokenVerifier
 
 
 def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[str]:

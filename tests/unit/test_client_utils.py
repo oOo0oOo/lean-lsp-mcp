@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from lean_lsp_mcp.client_utils import (
+    bind_lean_project_path,
     resolve_file_path,
     setup_client_for_file,
     startup_client,
@@ -37,10 +39,16 @@ class _LifespanContext:
         self,
         lean_project_path: Path | None,
         client: _MockLeanClient | None,
+        *,
+        active_transport: str = "stdio",
+        project_switching_allowed: bool = True,
     ) -> None:
         self.lean_project_path = lean_project_path
         self.client = client
+        self.active_transport = active_transport
+        self.project_switching_allowed = project_switching_allowed
         self.file_content_hashes: dict[str, int] = {}
+        self.project_cache: dict[str, Path | str] = {}
 
 
 class _RequestContext:
@@ -53,6 +61,24 @@ class _Context:
         self.request_context = _RequestContext(lifespan_context)
 
 
+def _make_project(root: Path) -> Path:
+    root.mkdir()
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    (root / "lakefile.toml").write_text('name = "test"\n')
+    return root
+
+
+def _make_dependency(project: Path, dep_root: Path) -> Path:
+    dep_file = dep_root / "Mathlib" / "Foo.lean"
+    dep_file.parent.mkdir(parents=True)
+    dep_file.write_text("theorem dep : True := by trivial\n")
+
+    dep_link = project / ".lake" / "packages" / "mathlib"
+    dep_link.parent.mkdir(parents=True)
+    dep_link.symlink_to(dep_root, target_is_directory=True)
+    return dep_file
+
+
 @pytest.fixture
 def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     created: list[_MockLeanClient] = []
@@ -60,6 +86,7 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     def _constructor(
         project_path: Path, initial_build: bool, prevent_cache_get: bool = False
     ) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
+        _ = initial_build, prevent_cache_get
         client = _MockLeanClient(project_path)
         created.append(client)
         return client
@@ -71,10 +98,7 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
 def test_startup_client_reuses_existing(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-
+    project = _make_project(tmp_path / "proj")
     ctx = _Context(_LifespanContext(project, None))
 
     startup_client(ctx)
@@ -82,14 +106,10 @@ def test_startup_client_reuses_existing(
     assert isinstance(first, _MockLeanClient)
     assert not first.closed
 
-    # second startup with same project path should reuse existing client
     startup_client(ctx)
     assert not first.closed
 
-    # change project path triggers close and replacement
-    new_project = tmp_path / "proj2"
-    new_project.mkdir()
-    (new_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    new_project = _make_project(tmp_path / "proj2")
     ctx.request_context.lifespan_context.lean_project_path = new_project
 
     startup_client(ctx)
@@ -101,13 +121,8 @@ def test_startup_client_reuses_existing(
 def test_startup_client_switches_project_even_if_close_fails(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    old_project = tmp_path / "proj1"
-    old_project.mkdir()
-    (old_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-
-    new_project = tmp_path / "proj2"
-    new_project.mkdir()
-    (new_project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    old_project = _make_project(tmp_path / "proj1")
+    new_project = _make_project(tmp_path / "proj2")
 
     old_client = _FailingCloseClient(old_project)
     ctx = _Context(_LifespanContext(new_project, old_client))
@@ -122,22 +137,22 @@ def test_startup_client_switches_project_even_if_close_fails(
     assert len(patched_clients) == 1
 
 
-def test_valid_lean_project_path(tmp_path: Path) -> None:
+def test_valid_lean_project_path_requires_lakefile(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0")
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
 
-    assert valid_lean_project_path(project)
+    assert not valid_lean_project_path(project)
     assert not valid_lean_project_path(project / "missing")
+
+    (project / "lakefile.lean").write_text("import Lake\n")
+    assert valid_lean_project_path(project)
 
 
 def test_setup_client_for_file_discovers_project(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-
+    project = _make_project(tmp_path / "proj")
     lean_file = project / "src" / "Example.lean"
     lean_file.parent.mkdir(parents=True)
     lean_file.write_text("example")
@@ -153,77 +168,93 @@ def test_setup_client_for_file_discovers_project(
 def test_setup_client_for_file_reuses_client_for_same_project(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    """Verify that multiple files in the same project reuse the same client."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-
+    project = _make_project(tmp_path / "proj")
     file1 = project / "File1.lean"
     file1.write_text("theorem a : True := by trivial")
-
     file2 = project / "src" / "File2.lean"
     file2.parent.mkdir(parents=True)
     file2.write_text("theorem b : True := by trivial")
 
     ctx = _Context(_LifespanContext(None, None))
 
-    # Setup for first file
     rel_path1 = setup_client_for_file(ctx, str(file1))
     assert rel_path1 == "File1.lean"
     first_client = ctx.request_context.lifespan_context.client
     assert len(patched_clients) == 1
 
-    # Setup for second file in same project should reuse client
     rel_path2 = setup_client_for_file(ctx, str(file2))
     assert rel_path2 == "src/File2.lean"
     assert ctx.request_context.lifespan_context.client is first_client
     assert not first_client.closed
-    assert len(patched_clients) == 1  # No new client created
+    assert len(patched_clients) == 1
 
 
 def test_setup_client_for_file_switches_projects(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    """Verify that switching to a different project closes old client and creates new one."""
-    project1 = tmp_path / "proj1"
-    project1.mkdir()
-    (project1 / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    project1 = _make_project(tmp_path / "proj1")
     file1 = project1 / "File1.lean"
     file1.write_text("theorem a : True := by trivial")
 
-    project2 = tmp_path / "proj2"
-    project2.mkdir()
-    (project2 / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    project2 = _make_project(tmp_path / "proj2")
     file2 = project2 / "File2.lean"
     file2.write_text("theorem b : True := by trivial")
 
     ctx = _Context(_LifespanContext(None, None))
 
-    # Setup for first project
     rel_path1 = setup_client_for_file(ctx, str(file1))
     assert rel_path1 == "File1.lean"
     first_client = ctx.request_context.lifespan_context.client
     assert len(patched_clients) == 1
 
-    # Switch to second project
     rel_path2 = setup_client_for_file(ctx, str(file2))
     assert rel_path2 == "File2.lean"
     second_client = ctx.request_context.lifespan_context.client
 
-    # Old client should be closed, new one created
     assert first_client.closed
     assert second_client is not first_client
     assert len(patched_clients) == 2
     assert ctx.request_context.lifespan_context.lean_project_path == project2
 
 
+def test_setup_client_for_dependency_file_uses_parent_project(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    dep_file = _make_dependency(project, tmp_path / "deps" / "mathlib")
+
+    ctx = _Context(_LifespanContext(project, None))
+
+    rel_path = setup_client_for_file(ctx, str(dep_file))
+
+    assert rel_path == os.path.relpath(dep_file, project)
+    assert ctx.request_context.lifespan_context.lean_project_path == project
+    assert ctx.request_context.lifespan_context.client.project_path == project
+    assert len(patched_clients) == 1
+
+
+def test_bind_lean_project_path_rejects_switch_on_remote_transport(
+    tmp_path: Path,
+) -> None:
+    project1 = _make_project(tmp_path / "proj1")
+    project2 = _make_project(tmp_path / "proj2")
+    ctx = _Context(
+        _LifespanContext(
+            project1,
+            None,
+            active_transport="streamable-http",
+            project_switching_allowed=False,
+        )
+    )
+
+    with pytest.raises(ValueError, match="Project switching is disabled"):
+        bind_lean_project_path(ctx, project2)
+
+
 def test_startup_client_serializes_concurrent_calls(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-
+    project = _make_project(tmp_path / "proj")
     ctx = _Context(_LifespanContext(project, None))
 
     def _invoke_startup() -> None:
@@ -239,8 +270,7 @@ def test_startup_client_serializes_concurrent_calls(
 
 
 def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> None:
-    project = tmp_path / "proj"
-    project.mkdir()
+    project = _make_project(tmp_path / "proj")
     target = project / "src" / "Example.lean"
     target.parent.mkdir(parents=True)
     target.write_text("theorem t : True := by trivial")

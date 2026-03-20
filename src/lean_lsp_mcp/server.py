@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 import functools
 import json
 import logging.config
@@ -24,12 +25,18 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    bind_lean_project_path,
+    get_path_policy,
     infer_project_path,
     resolve_file_path,
     setup_client_for_file,
     startup_client,
 )
-from lean_lsp_mcp.file_utils import get_file_contents
+from lean_lsp_mcp.file_utils import (
+    build_lean_path_policy,
+    get_file_contents,
+    require_lean_project_path,
+)
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import Repl, repl_enabled
@@ -81,8 +88,8 @@ from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
     LeanToolError,
-    OptionalTokenVerifier,
     OutputCapture,
+    PreSharedTokenVerifier,
     check_lsp_response,
     extract_failed_dependency_paths,
     extract_goals_list,
@@ -98,6 +105,7 @@ DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
 _INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
+_SWITCHABLE_TRANSPORTS = {"stdio"}
 
 
 def _raise_invalid_path(file_path: str) -> None:
@@ -106,6 +114,28 @@ def _raise_invalid_path(file_path: str) -> None:
         f"Invalid Lean file path: '{file_path}' not found in any Lean project "
         "(no lean-toolchain ancestor or file does not exist)"
     )
+
+
+def _active_transport() -> str:
+    return (
+        os.environ.get("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio").strip().lower()
+        or "stdio"
+    )
+
+
+def _project_switching_allowed(transport: str) -> bool:
+    return transport in _SWITCHABLE_TRANSPORTS
+
+
+def _validate_theorem_name(theorem_name: str) -> str:
+    if not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*",
+        theorem_name,
+    ):
+        raise LeanToolError(
+            "Invalid theorem name. Use a Lean fully qualified name such as `Namespace.theorem`."
+        )
+    return theorem_name
 
 
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
@@ -325,6 +355,8 @@ class AppContext:
     client: LeanLSPClient | None
     rate_limit: Dict[str, List[int]]
     lean_search_available: bool
+    active_transport: str = "stdio"
+    project_switching_allowed: bool = True
     loogle_manager: LoogleManager | None = None
     loogle_local_available: bool = False
     # REPL for efficient multi-attempt execution
@@ -336,15 +368,20 @@ class AppContext:
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
-    repl_on = False
     context: AppContext | None = None
 
     try:
+        active_transport = _active_transport()
+        project_switching_allowed = _project_switching_allowed(active_transport)
         lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
         if not lean_project_path_str:
+            if not project_switching_allowed:
+                raise ValueError(
+                    f"`LEAN_PROJECT_PATH` is required when using `{active_transport}` transport."
+                )
             lean_project_path = None
         else:
-            lean_project_path = Path(lean_project_path_str).resolve()
+            lean_project_path = require_lean_project_path(lean_project_path_str)
 
         # Use the shared loogle singleton (initialised at most once)
         loogle_manager, loogle_local_available = await _ensure_shared_loogle(
@@ -352,7 +389,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
 
         # Initialize REPL if enabled
-        if repl_enabled():
+        repl_requested = repl_enabled()
+        if repl_requested:
             if lean_project_path:
                 from lean_lsp_mcp.repl import find_repl_binary
 
@@ -360,7 +398,6 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 if repl_bin:
                     logger.info("REPL enabled, using: %s", repl_bin)
                     repl = Repl(project_dir=str(lean_project_path), repl_path=repl_bin)
-                    repl_on = True
                     logger.info("REPL initialized: timeout=%ds", repl.timeout)
                 else:
                     logger.warning(
@@ -385,10 +422,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 "hammer_premise": [],
             },
             lean_search_available=_RG_AVAILABLE,
+            active_transport=active_transport,
+            project_switching_allowed=project_switching_allowed,
             loogle_manager=loogle_manager,
             loogle_local_available=loogle_local_available,
             repl=repl,
-            repl_enabled=repl_on,
+            repl_enabled=repl_requested,
             build_coordinator=build_coordinator,
         )
         yield context
@@ -420,11 +459,10 @@ mcp_kwargs = dict(
 auth_token = os.environ.get("LEAN_LSP_MCP_TOKEN")
 if auth_token:
     mcp_kwargs["auth"] = AuthSettings(
-        type="optional",
         issuer_url="http://localhost/dummy-issuer",
         resource_server_url="http://localhost/dummy-resource",
     )
-    mcp_kwargs["token_verifier"] = OptionalTokenVerifier(auth_token)
+    mcp_kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
 
 mcp = FastMCP(**mcp_kwargs)
 
@@ -479,6 +517,17 @@ def rate_limited(category: str, max_requests: int, per_seconds: int):
     return decorator
 
 
+async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
+    repl = app_ctx.repl
+    if repl is None:
+        return
+    app_ctx.repl = None
+    try:
+        await repl.close()
+    except Exception:
+        logger.exception("REPL close failed during project switch")
+
+
 @mcp.tool(
     "lean_build",
     annotations=ToolAnnotations(
@@ -506,8 +555,13 @@ async def lsp_build(
     if not lean_project_path:
         lean_project_path_obj = configured_root
     else:
-        lean_project_path_obj = Path(lean_project_path).resolve()
-        lifespan.lean_project_path = lean_project_path_obj
+        previous_root = configured_root
+        try:
+            lean_project_path_obj = bind_lean_project_path(ctx, lean_project_path)
+        except ValueError as exc:
+            raise LeanToolError(str(exc)) from exc
+        if previous_root is not None and previous_root != lean_project_path_obj:
+            await _close_repl_for_project_switch(lifespan)
 
     if lean_project_path_obj is None:
         raise LeanToolError(
@@ -847,20 +901,41 @@ def goal(
         column_start = next(
             (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
-        goal_start = client.get_goal(rel_path, line - 1, column_start)
+        goal_start = _get_goal_response(client, rel_path, line - 1, column_start)
         check_lsp_response(goal_start, "get_goal", allow_none=True)
-        goal_end = client.get_goal(rel_path, line - 1, column_end)
+        goal_end = _get_goal_response(client, rel_path, line - 1, column_end)
         return GoalState(
             line_context=line_context,
             goals_before=extract_goals_list(goal_start),
             goals_after=extract_goals_list(goal_end),
         )
     else:
-        goal_result = client.get_goal(rel_path, line - 1, column - 1)
+        goal_result = _get_goal_response(client, rel_path, line - 1, column - 1)
         check_lsp_response(goal_result, "get_goal", allow_none=True)
         return GoalState(
             line_context=line_context, goals=extract_goals_list(goal_result)
         )
+
+
+def _get_goal_response(
+    client: LeanLSPClient, rel_path: str, line: int, column: int
+) -> dict | None:
+    """Fetch a goal response after waiting for full-file elaboration on cold files."""
+
+    try:
+        goal_result = client.get_goal(rel_path, line, column)
+    except FuturesTimeoutError:
+        goal_result = None
+
+    if goal_result is not None:
+        return goal_result
+
+    client.get_diagnostics(rel_path, inactivity_timeout=30.0)
+
+    try:
+        return client.get_goal(rel_path, line, column)
+    except FuturesTimeoutError as exc:
+        raise LeanToolError("LSP timeout during get_goal") from exc
 
 
 def _get_line_context(lines: List[str], line: int) -> str:
@@ -1153,15 +1228,23 @@ def declaration_file(
     decl = declaration[0]
     uri = decl.get("targetUri") or decl.get("uri")
 
-    abs_path = client._uri_to_abs(uri)
-    if not os.path.exists(abs_path):
+    try:
+        policy = get_path_policy(ctx)
+        abs_path = policy.validate_path(client._uri_to_abs(uri))
+    except ValueError as exc:
+        raise LeanToolError(str(exc)) from exc
+
+    if not abs_path.exists():
         raise LeanToolError(
             f"Could not open declaration file `{abs_path}` for `{symbol}`."
         )
 
     file_content = get_file_contents(abs_path)
 
-    return DeclarationInfo(file_path=str(abs_path), content=file_content)
+    return DeclarationInfo(
+        file_path=policy.display_path(abs_path),
+        content=file_content,
+    )
 
 
 @mcp.tool(
@@ -1204,10 +1287,19 @@ def references(
         raw_refs = []
 
     items: List[ReferenceLocation] = []
+    try:
+        policy = get_path_policy(ctx)
+    except ValueError as exc:
+        raise LeanToolError(str(exc)) from exc
     for ref in raw_refs:
         uri = ref.get("uri", "")
         r = ref.get("range", {})
-        abs_path = str(client._uri_to_abs(uri)) if uri else ""
+        abs_path = ""
+        if uri:
+            try:
+                abs_path = policy.display_path(client._uri_to_abs(uri))
+            except ValueError:
+                continue
         items.append(
             ReferenceLocation(
                 file_path=abs_path,
@@ -1240,12 +1332,33 @@ async def _multi_attempt_repl(
         column is not None
         or any("\n" in snippet for snippet in snippets)
         or not app_ctx.repl_enabled
-        or not app_ctx.repl
     ):
         return None
 
     try:
         resolved_path = resolve_file_path(ctx, file_path)
+        project_path = infer_project_path(str(resolved_path), ctx=ctx)
+        if project_path is None:
+            return None
+        policy = build_lean_path_policy(project_path)
+        resolved_path = policy.validate_path(resolved_path)
+        if (
+            app_ctx.repl is not None
+            and Path(app_ctx.repl.project_dir).resolve(strict=False) != project_path
+        ):
+            try:
+                await app_ctx.repl.close()
+            except Exception:
+                logger.exception("REPL close failed during project switch")
+            finally:
+                app_ctx.repl = None
+        if app_ctx.repl is None:
+            from lean_lsp_mcp.repl import find_repl_binary
+
+            repl_bin = find_repl_binary(str(project_path))
+            if repl_bin is None:
+                return None
+            app_ctx.repl = Repl(project_dir=str(project_path), repl_path=repl_bin)
         content = get_file_contents(str(resolved_path))
         if content is None:
             return None
@@ -1305,7 +1418,12 @@ def _multi_attempt_lsp(
     try:
         original_content = client.get_file_content(rel_path)
     except Exception:
-        original_content = get_file_contents(file_path)
+        try:
+            policy = get_path_policy(ctx)
+            resolved_path = policy.validate_path(resolve_file_path(ctx, file_path))
+        except (FileNotFoundError, ValueError) as exc:
+            raise LeanToolError(str(exc)) from exc
+        original_content = get_file_contents(resolved_path)
 
     lines = original_content.splitlines() if original_content is not None else []
     line_context = _get_line_context(lines, line)
@@ -1481,21 +1599,25 @@ def verify_theorem(
         scan_warnings,
     )
 
+    theorem_name = _validate_theorem_name(theorem_name)
     rel_path = setup_client_for_file(ctx, file_path)
     if not rel_path:
         _raise_invalid_path(file_path)
 
-    abs_path = Path(file_path)
+    try:
+        policy = get_path_policy(ctx)
+        abs_path = policy.validate_path(resolve_file_path(ctx, file_path))
+    except (FileNotFoundError, ValueError) as exc:
+        raise LeanToolError(str(exc)) from exc
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
 
     try:
         original_content = client.get_file_content(rel_path)
     except Exception:
-        original_content = get_file_contents(file_path)
+        original_content = get_file_contents(abs_path)
 
     snippet = f"\n#print axioms _root_.{theorem_name}\n"
-    snippet_lines = snippet.count("\n")
     original_lines = original_content.split("\n")
     appended_line = len(original_lines)  # 0-indexed line where snippet starts
 
@@ -1519,14 +1641,15 @@ def verify_theorem(
         axioms = parse_axioms(appended_diags)
     finally:
         try:
-            restore_change = DocumentContentChange(
-                "",
-                [appended_line, 0],
-                [appended_line + snippet_lines, 0],
-            )
-            client.update_file(rel_path, [restore_change])
+            client.update_file_content(rel_path, original_content)
         except Exception as exc:
             logger.warning("Failed to restore `%s` after verify: %s", rel_path, exc)
+        try:
+            client.open_file(rel_path, force_reopen=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to force-reopen `%s` after verify: %s", rel_path, exc
+            )
 
     w: list[SourceWarning] = []
     if scan_source:
@@ -1578,12 +1701,12 @@ async def local_search(
             root_path = Path(project_root).expanduser()
             if not root_path.is_absolute() and stored_root is not None:
                 root_path = stored_root / root_path
-            resolved_root = root_path.resolve()
-        except OSError as exc:
+            previous_root = stored_root
+            resolved_root = bind_lean_project_path(ctx, root_path)
+            if previous_root is not None and previous_root != resolved_root:
+                await _close_repl_for_project_switch(lifespan)
+        except (OSError, ValueError) as exc:
             raise LocalSearchError(f"Invalid project root '{project_root}': {exc}")
-        if not resolved_root.exists():
-            raise LocalSearchError(f"Project root '{project_root}' does not exist.")
-        lifespan.lean_project_path = resolved_root
     else:
         resolved_root = stored_root
 
@@ -1593,11 +1716,13 @@ async def local_search(
         )
 
     try:
+        policy = build_lean_path_policy(resolved_root)
         raw_results = await asyncio.to_thread(
             lean_local_search,
             query=query.strip(),
             limit=limit,
-            project_root=resolved_root,
+            project_root=policy.project_root,
+            path_policy=policy,
         )
         results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
@@ -2037,7 +2162,7 @@ async def profile_proof(
     top_n: Annotated[
         int, Field(description="Number of slowest lines to return", ge=1)
     ] = 5,
-    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 30.0,
+    timeout: Annotated[float, Field(description="Max seconds to wait", ge=1)] = 60.0,
 ) -> ProofProfileResult:
     """Run `lean --profile` on a theorem. Returns per-line timing and categories. SLOW - avoid on theorems that already hit heartbeat limits."""
     from lean_lsp_mcp.profile_utils import profile_theorem
@@ -2049,10 +2174,13 @@ async def profile_proof(
     project_path = lifespan.lean_project_path
 
     if not project_path:
-        infer_project_path(str(file_path_obj), ctx=ctx)
-        project_path = lifespan.lean_project_path
-
-    if not project_path:
+        project_path = infer_project_path(str(file_path_obj), ctx=ctx)
+    try:
+        policy = get_path_policy(ctx, project_path)
+        file_path_obj = policy.validate_path(file_path_obj)
+    except ValueError as exc:
+        raise LeanToolError(str(exc)) from exc
+    if project_path is None:
         raise LeanToolError("Lean project not found")
 
     try:

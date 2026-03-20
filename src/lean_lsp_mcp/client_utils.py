@@ -6,12 +6,76 @@ from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
 from leanclient import LeanLSPClient
 
-from lean_lsp_mcp.file_utils import get_relative_file_path
+from lean_lsp_mcp.file_utils import (
+    LeanPathPolicy,
+    build_lean_path_policy,
+    require_lean_project_path,
+    resolve_input_path,
+    valid_lean_project_path,
+)
 from lean_lsp_mcp.utils import OutputCapture
 
 
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
+_ACTIVE_TRANSPORT_ENV = "LEAN_LSP_MCP_ACTIVE_TRANSPORT"
+
+
+def _active_transport(ctx: Context | None = None) -> str:
+    if ctx is not None:
+        lifespan = ctx.request_context.lifespan_context
+        transport = getattr(lifespan, "active_transport", None)
+        if isinstance(transport, str) and transport:
+            return transport
+    return os.environ.get(_ACTIVE_TRANSPORT_ENV, "stdio").strip().lower() or "stdio"
+
+
+def _project_switching_allowed(ctx: Context | None = None) -> bool:
+    if ctx is not None:
+        lifespan = ctx.request_context.lifespan_context
+        explicit = getattr(lifespan, "project_switching_allowed", None)
+        if explicit is not None:
+            return bool(explicit)
+    return _active_transport(ctx) == "stdio"
+
+
+def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
+    lifespan = ctx.request_context.lifespan_context
+    resolved_project = require_lean_project_path(project_path)
+    current_root: Path | None = getattr(lifespan, "lean_project_path", None)
+    if current_root is not None:
+        current_root = current_root.resolve(strict=False)
+
+    if (
+        current_root is not None
+        and current_root != resolved_project
+        and not _project_switching_allowed(ctx)
+    ):
+        raise ValueError(
+            f"Project switching is disabled for `{_active_transport(ctx)}` transport. "
+            "Restart the server with LEAN_PROJECT_PATH set to the desired Lean project root."
+        )
+
+    if current_root != resolved_project:
+        client: LeanLSPClient | None = getattr(lifespan, "client", None)
+        if client is not None and client.project_path != resolved_project:
+            try:
+                client.close()
+            except Exception:
+                logger.exception("Lean client close failed during project switch")
+            finally:
+                lifespan.client = None
+        lifespan.lean_project_path = resolved_project
+
+    return resolved_project
+
+
+def get_path_policy(ctx: Context, project_path: Path | None = None) -> LeanPathPolicy:
+    lifespan = ctx.request_context.lifespan_context
+    root = project_path or getattr(lifespan, "lean_project_path", None)
+    if root is None:
+        raise ValueError("lean project path is not set.")
+    return build_lean_path_policy(root)
 
 
 def startup_client(ctx: Context):
@@ -21,9 +85,13 @@ def startup_client(ctx: Context):
         ctx (Context): Context object.
     """
     with CLIENT_LOCK:
-        lean_project_path = ctx.request_context.lifespan_context.lean_project_path
-        if lean_project_path is None:
+        configured_root = ctx.request_context.lifespan_context.lean_project_path
+        if configured_root is None:
             raise ValueError("lean project path is not set.")
+        try:
+            lean_project_path = bind_lean_project_path(ctx, configured_root)
+        except ValueError as exc:
+            raise ValueError("lean project path is not set.") from exc
 
         # Check if already correct client
         client: LeanLSPClient | None = ctx.request_context.lifespan_context.client
@@ -70,32 +138,35 @@ def resolve_file_path(
     """
     lifespan = ctx.request_context.lifespan_context
     project_root: Path | None = getattr(lifespan, "lean_project_path", None)
-
-    path_obj = Path(file_path).expanduser()
-    if path_obj.is_absolute():
-        resolved = path_obj.resolve()
-    elif project_root is not None:
-        resolved = (project_root / path_obj).resolve()
-    else:
-        resolved = path_obj.resolve()
-
-    if require_exists and not resolved.exists():
-        raise FileNotFoundError(str(resolved))
-
-    return resolved
+    return resolve_input_path(
+        file_path, project_root=project_root, require_exists=require_exists
+    )
 
 
-def valid_lean_project_path(path: Path | str) -> bool:
-    """Check if the given path is a valid Lean project path (contains a lean-toolchain file).
+def _pick_project_root(file_path: Path, candidates: list[Path]) -> Path | None:
+    if not candidates:
+        return None
 
-    Args:
-        path (Path | str): Absolute path to check.
+    for candidate in candidates:
+        try:
+            relative = file_path.relative_to(candidate)
+        except ValueError:
+            continue
+        if relative.parts[:2] == (".lake", "packages"):
+            return candidate
+    return candidates[0]
 
-    Returns:
-        bool: True if valid Lean project path, False otherwise.
-    """
-    path_obj = Path(path) if isinstance(path, str) else path
-    return (path_obj / "lean-toolchain").is_file()
+
+def _cacheable_project_dirs(project_path: Path, cache_dirs: list[str]) -> list[str]:
+    cacheable: list[str] = []
+    for directory in cache_dirs:
+        directory_path = Path(directory)
+        try:
+            directory_path.relative_to(project_path)
+        except ValueError:
+            continue
+        cacheable.append(directory)
+    return cacheable
 
 
 def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | None:
@@ -121,49 +192,66 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
         if not hasattr(lifespan, "project_cache"):
             lifespan.project_cache = {}
 
-    abs_file_path = str(resolve_file_path(ctx, file_path, require_exists=False))
-    file_dir = os.path.dirname(abs_file_path)
+    if ctx is not None:
+        resolved_input = resolve_file_path(ctx, file_path, require_exists=False)
+    else:
+        resolved_input = resolve_input_path(file_path, require_exists=False)
 
-    def set_project_path(project_path: Path, cache_dirs: list[str]) -> Path | None:
-        """Validate file is in project, set path, update cache."""
-        if get_relative_file_path(project_path, file_path) is None:
-            return None
+    start_dir = resolved_input if resolved_input.is_dir() else resolved_input.parent
+    start_dir = start_dir.resolve(strict=False)
+    file_dir = str(start_dir)
 
-        project_path = project_path.resolve()
+    def cache_project_path(project_path: Path, cache_dirs: list[str]) -> Path:
         if ctx:
-            lifespan.lean_project_path = project_path
-
-            # Update all relevant directories in cache
-            for directory in set(cache_dirs + [str(project_path)]):
+            bound_project = bind_lean_project_path(ctx, project_path)
+            cache_targets = _cacheable_project_dirs(bound_project, cache_dirs)
+            for directory in set(cache_targets + [str(bound_project)]):
                 if directory:
-                    lifespan.project_cache[directory] = project_path
-
+                    lifespan.project_cache[directory] = bound_project
+            return bound_project
         return project_path
 
     # Fast path: current project already valid for this file
-    if (
-        ctx
-        and lifespan.lean_project_path
-        and set_project_path(lifespan.lean_project_path, [file_dir])
-    ):
-        return lifespan.lean_project_path
+    if ctx and lifespan.lean_project_path:
+        try:
+            current_policy = build_lean_path_policy(lifespan.lean_project_path)
+        except ValueError:
+            current_policy = None
+        if current_policy is not None and current_policy.contains(resolved_input):
+            return cache_project_path(lifespan.lean_project_path, [file_dir])
 
     # Walk up directory tree using cache and lean-toolchain detection
-    current_dir = file_dir
-    while current_dir and current_dir != os.path.dirname(current_dir):
+    current_dir = start_dir
+    cache_dirs: list[str] = []
+    candidates: list[Path] = []
+    while True:
+        current_dir_str = str(current_dir)
+        cache_dirs.append(current_dir_str)
+
         if ctx:
-            cached_root = lifespan.project_cache.get(current_dir)
+            cached_root = lifespan.project_cache.get(current_dir_str)
 
             if cached_root:
-                if result := set_project_path(Path(cached_root), [current_dir]):
-                    return result
+                try:
+                    cached_policy = build_lean_path_policy(Path(cached_root))
+                except ValueError:
+                    lifespan.project_cache[current_dir_str] = ""
+                else:
+                    if cached_policy.contains(resolved_input):
+                        return cache_project_path(Path(cached_root), cache_dirs)
+                    lifespan.project_cache[current_dir_str] = ""
         if valid_lean_project_path(current_dir):
-            if result := set_project_path(Path(current_dir), [current_dir]):
-                return result
+            candidates.append(current_dir.resolve(strict=True))
         elif ctx:
-            lifespan.project_cache[current_dir] = ""  # Mark as checked
+            lifespan.project_cache[current_dir_str] = ""  # Mark as checked
 
-        current_dir = os.path.dirname(current_dir)
+        parent = current_dir.parent
+        if parent == current_dir:
+            break
+        current_dir = parent
+
+    if chosen_root := _pick_project_root(resolved_input, candidates):
+        return cache_project_path(chosen_root, cache_dirs)
 
     return None
 
@@ -179,5 +267,12 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     if project_path is None:
         return None
 
+    try:
+        policy = build_lean_path_policy(project_path)
+    except ValueError:
+        return None
+    if not policy.contains(resolved_file):
+        return None
+
     startup_client(ctx)
-    return get_relative_file_path(project_path, resolved_file)
+    return policy.client_relative_path(resolved_file)
