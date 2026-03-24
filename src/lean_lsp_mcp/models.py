@@ -47,6 +47,10 @@ class DiagnosticMessage(BaseModel):
 
 class GoalState(BaseModel):
     line_context: str = Field(description="Source line where goals were queried")
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out while preparing this query (results may be partial)",
+    )
     goals: Optional[List[str]] = Field(
         None, description="Goal list at specified column position"
     )
@@ -69,6 +73,10 @@ class CompletionItem(BaseModel):
 class HoverInfo(BaseModel):
     symbol: str = Field(description="The symbol being hovered")
     info: str = Field(description="Type signature and documentation")
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out while preparing this query (results may be partial)",
+    )
     diagnostics: List[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics at this position"
     )
@@ -76,6 +84,10 @@ class HoverInfo(BaseModel):
 
 class TermGoalState(BaseModel):
     line_context: str = Field(description="Source line where term goal was queried")
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out while preparing this query (results may be partial)",
+    )
     expected_type: Optional[str] = Field(
         None, description="Expected type at this position"
     )
@@ -98,6 +110,10 @@ class FileOutline(BaseModel):
     imports: List[str] = Field(default_factory=list, description="Import statements")
     declarations: List[OutlineEntry] = Field(
         default_factory=list, description="Top-level declarations"
+    )
+    timed_out: bool = Field(
+        False,
+        description="True if outline enrichment timed out; results may be partial.",
     )
     total_declarations: Optional[int] = Field(
         None, description="Total count (set when truncated)"
@@ -138,6 +154,10 @@ class RunResult(BaseModel):
 class DeclarationInfo(BaseModel):
     file_path: str = Field(description="Path to declaration file")
     content: str = Field(description="File content")
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out while preparing this query (results may be partial)",
+    )
 
 
 # Wrapper models for list-returning tools
@@ -167,6 +187,10 @@ class DiagnosticsResult(BaseModel):
 class CompletionsResult(BaseModel):
     """Wrapper for completions list."""
 
+    timed_out: bool = Field(
+        False,
+        description="True if elaboration timed out while preparing this query (results may be partial)",
+    )
     items: List[CompletionItem] = Field(
         default_factory=list, description="List of completion items"
     )

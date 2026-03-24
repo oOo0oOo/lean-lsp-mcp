@@ -9,6 +9,7 @@ from threading import Lock
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
 from leanclient import LeanLSPClient as BaseLeanLSPClient
+from leanclient.file_manager import DiagnosticsResult as BaseDiagnosticsResult
 
 from lean_lsp_mcp.file_utils import get_relative_file_path
 from lean_lsp_mcp.utils import OutputCapture
@@ -22,6 +23,13 @@ SHARED_CLIENT_PROJECT_PATH: Path | None = None
 
 class LeanLSPClient(BaseLeanLSPClient):
     """Lean client wrapper with safe cleanup for background diagnostics waits."""
+
+    @staticmethod
+    def _with_timed_out_flag(
+        result: BaseDiagnosticsResult, timed_out: bool
+    ) -> BaseDiagnosticsResult:
+        result.timed_out = timed_out
+        return result
 
     @staticmethod
     def _is_benign_detached_future_error(exc: Exception) -> bool:
@@ -179,6 +187,106 @@ class LeanLSPClient(BaseLeanLSPClient):
             return False
         finally:
             cleanup_wait_futures()
+
+    def get_diagnostics(
+        self,
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        inactivity_timeout: float = 15.0,
+        max_timeout: float = 300.0,
+    ) -> BaseDiagnosticsResult:
+        """Return diagnostics with an explicit timed_out flag.
+
+        The upstream leanclient result tracks timeout only indirectly via
+        `success=False`. For agentic callers that need to distinguish "file has
+        errors" from "Lean stopped responding in time", attach `timed_out`
+        directly to the returned DiagnosticsResult instance.
+        """
+        if start_line is not None and end_line is not None and start_line > end_line:
+            raise ValueError("start_line must be <= end_line")
+
+        use_range = start_line is not None or end_line is not None
+
+        with self._opened_files_lock:
+            need_to_open = path not in self.opened_files
+
+        if need_to_open:
+            self.open_files([path])
+
+        with self._opened_files_lock:
+            state = self.opened_files[path]
+            if use_range:
+                is_complete = (
+                    state.is_line_range_complete(start_line, end_line)
+                    and state.is_ready()
+                )
+            else:
+                is_complete = state.complete
+            uri = state.uri
+
+        wait_completed = True
+        if not is_complete:
+            if use_range:
+                wait_completed = self._wait_for_line_range(
+                    [uri], start_line, end_line, inactivity_timeout
+                )
+            else:
+                wait_completed = self._wait_for_diagnostics(
+                    [uri],
+                    inactivity_timeout=inactivity_timeout,
+                    max_timeout=max_timeout,
+                )
+
+        with self._opened_files_lock:
+            state = self.opened_files[path]
+
+            if state.error:
+                return self._with_timed_out_flag(
+                    BaseDiagnosticsResult(
+                        success=False,
+                        diagnostics=[state.error],
+                    ),
+                    timed_out=not wait_completed,
+                )
+
+            has_errors = any(d.get("severity") == 1 for d in state.diagnostics)
+            success = not has_errors and not state.fatal_error and wait_completed
+
+            if state.diagnostics:
+                filtered = (
+                    state.filter_diagnostics_by_range(start_line, end_line)
+                    if use_range
+                    else state.diagnostics
+                )
+                return self._with_timed_out_flag(
+                    BaseDiagnosticsResult(
+                        success=success,
+                        diagnostics=filtered,
+                    ),
+                    timed_out=not wait_completed,
+                )
+
+            if state.fatal_error:
+                return self._with_timed_out_flag(
+                    BaseDiagnosticsResult(
+                        success=False,
+                        diagnostics=[
+                            {
+                                "message": "leanclient: Received LeanFileProgressKind.fatalError."
+                            }
+                        ],
+                    ),
+                    timed_out=not wait_completed,
+                )
+
+            return self._with_timed_out_flag(
+                BaseDiagnosticsResult(
+                    success=wait_completed,
+                    diagnostics=[],
+                ),
+                timed_out=not wait_completed,
+            )
 
 
 def _close_client_quietly(client: LeanLSPClient | None) -> None:

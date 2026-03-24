@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from lean_lsp_mcp import client_utils
 from lean_lsp_mcp.client_utils import (
     setup_client_for_file,
     startup_client,
@@ -236,3 +237,54 @@ def test_startup_client_serializes_concurrent_calls(
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+class _NullLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeFileState:
+    def __init__(self) -> None:
+        self.uri = "file:///Foo.lean"
+        self.complete = False
+        self.processing = True
+        self.version = 0
+        self.diagnostics_version = -1
+        self.diagnostics: list[dict] = []
+        self.error = None
+        self.fatal_error = False
+
+    def is_line_range_complete(self, start_line: int | None, end_line: int | None) -> bool:
+        _ = (start_line, end_line)
+        return False
+
+    def is_ready(self, current_time: float | None = None) -> bool:
+        _ = current_time
+        return False
+
+    def filter_diagnostics_by_range(
+        self, start_line: int | None, end_line: int | None
+    ) -> list[dict]:
+        _ = (start_line, end_line)
+        return self.diagnostics
+
+
+def test_get_diagnostics_attaches_timed_out_flag() -> None:
+    client = object.__new__(client_utils.LeanLSPClient)
+    state = _FakeFileState()
+
+    client._opened_files_lock = _NullLock()
+    client.opened_files = {"Foo.lean": state}
+    client.open_files = lambda paths: None
+    client._wait_for_diagnostics = lambda uris, inactivity_timeout=15.0, max_timeout=300.0: False
+    client._wait_for_line_range = lambda uris, start_line, end_line, inactivity_timeout=3.0: False
+
+    result = client.get_diagnostics("Foo.lean")
+
+    assert result.success is False
+    assert result.timed_out is True
+    assert list(result) == []

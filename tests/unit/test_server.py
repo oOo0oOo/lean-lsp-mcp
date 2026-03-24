@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import types
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from lean_lsp_mcp import server
+from lean_lsp_mcp.utils import LeanToolError
 
 
 class DummyClient:
@@ -82,7 +84,9 @@ async def test_app_lifespan_sets_project_path(
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_app_lifespan_keeps_shared_client_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
     monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
 
@@ -91,11 +95,11 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
     async with server.app_lifespan(object()) as context:
         context.client = dummy_client
 
-    assert dummy_client.closed_calls == 1
+    assert dummy_client.closed_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_suppresses_client_close_error(
+async def test_app_lifespan_does_not_attempt_client_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
@@ -106,7 +110,7 @@ async def test_app_lifespan_suppresses_client_close_error(
     async with server.app_lifespan(object()) as context:
         context.client = dummy_client
 
-    assert dummy_client.close_calls == 1
+    assert dummy_client.close_calls == 0
 
 
 @pytest.mark.asyncio
@@ -369,3 +373,189 @@ def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
 
     assert result.items == []
     assert fake_client.restore_calls == [("Foo.lean", "disk-content")]
+
+
+class _FakeDiagnostics(list):
+    def __init__(self, items: list[dict] | None = None, *, timed_out: bool = False):
+        super().__init__(items or [])
+        self.timed_out = timed_out
+
+
+class _PositionClient:
+    def __init__(
+        self,
+        *,
+        diagnostics_timed_out: bool = False,
+        goal_result: dict | None = None,
+        term_goal_result: dict | None = None,
+        hover_result: dict | None = None,
+        completions_result: list[dict] | None = None,
+        declarations_result: list[dict] | Exception | None = None,
+    ) -> None:
+        self.diagnostics_timed_out = diagnostics_timed_out
+        self.goal_result = goal_result
+        self.term_goal_result = term_goal_result
+        self.hover_result = hover_result
+        self.completions_result = completions_result or []
+        self.declarations_result = declarations_result or []
+
+    def open_file(self, _path: str) -> None:
+        return
+
+    def get_file_content(self, _path: str) -> str:
+        return "\n".join(
+            [
+                "import Mathlib",
+                "",
+                "theorem sampleTheorem : True := by",
+                "  trivial",
+                "",
+                "def completionTest : Nat := Nat.su",
+                "def sampleValue : Nat := 42",
+            ]
+        )
+
+    def get_diagnostics(
+        self,
+        _path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        inactivity_timeout: float = 15.0,
+    ) -> _FakeDiagnostics:
+        _ = (start_line, end_line, inactivity_timeout)
+        return _FakeDiagnostics([], timed_out=self.diagnostics_timed_out)
+
+    def get_goal(self, _path: str, _line: int, _column: int) -> dict | None:
+        return self.goal_result
+
+    def get_term_goal(self, _path: str, _line: int, _column: int) -> dict | None:
+        return self.term_goal_result
+
+    def get_hover(self, _path: str, _line: int, _column: int) -> dict | None:
+        return self.hover_result
+
+    def get_completions(self, _path: str, _line: int, _column: int) -> list[dict]:
+        return self.completions_result
+
+    def get_declarations(self, _path: str, _line: int, _column: int) -> list[dict]:
+        if isinstance(self.declarations_result, Exception):
+            raise self.declarations_result
+        return self.declarations_result
+
+    def _uri_to_abs(self, uri: str) -> str:
+        return uri
+
+
+def test_goal_marks_timeout_when_preparation_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _PositionClient(
+        diagnostics_timed_out=True
+    )
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    result = server.goal(ctx=ctx, file_path="/abs/Foo.lean", line=4, column=3)
+
+    assert result.timed_out is True
+    assert result.goals == []
+
+
+def test_hover_returns_timeout_payload_instead_of_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _PositionClient(
+        diagnostics_timed_out=True
+    )
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    result = server.hover(ctx=ctx, file_path="/abs/Foo.lean", line=7, column=5)
+
+    assert result.timed_out is True
+    assert result.symbol == ""
+    assert result.info == ""
+
+
+def test_hover_still_raises_when_not_timed_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _PositionClient()
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    with pytest.raises(LeanToolError, match="No hover information"):
+        server.hover(ctx=ctx, file_path="/abs/Foo.lean", line=7, column=5)
+
+
+def test_term_goal_marks_timeout_when_request_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TimeoutTermGoalClient(_PositionClient):
+        def get_term_goal(self, _path: str, _line: int, _column: int) -> dict | None:
+            raise FutureTimeoutError()
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _TimeoutTermGoalClient()
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    result = server.term_goal(ctx=ctx, file_path="/abs/Foo.lean", line=4, column=3)
+
+    assert result.timed_out is True
+    assert result.expected_type is None
+
+
+def test_completions_propagate_timeout_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _PositionClient(
+        diagnostics_timed_out=True,
+        completions_result=[{"label": "succ", "kind": 3}],
+    )
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    result = server.completions(
+        ctx=ctx,
+        file_path="/abs/Foo.lean",
+        line=6,
+        column=31,
+        max_completions=10,
+    )
+
+    assert result.timed_out is True
+    assert [item.label for item in result.items] == ["succ"]
+
+
+def test_declaration_file_returns_timeout_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    src = tmp_path / "Foo.lean"
+    src.write_text("def sampleValue : Nat := 42\n", encoding="utf-8")
+
+    class _TimeoutDeclarationsClient(_PositionClient):
+        def get_file_content(self, _path: str) -> str:
+            return src.read_text(encoding="utf-8")
+
+        def get_declarations(self, _path: str, _line: int, _column: int) -> list[dict]:
+            raise FutureTimeoutError()
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _TimeoutDeclarationsClient()
+
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    result = server.declaration_file(
+        ctx=ctx,
+        file_path=str(src),
+        symbol="sampleValue",
+    )
+
+    assert result.timed_out is True
+    assert result.file_path == ""
+    assert result.content == ""

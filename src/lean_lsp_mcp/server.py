@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import json
 import logging.config
 import os
 import re
@@ -8,10 +9,11 @@ import time
 import urllib
 import uuid
 from collections.abc import AsyncIterator
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 import certifi
 import orjson
@@ -19,7 +21,8 @@ from leanclient import DocumentContentChange
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
-from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData, METHOD_NOT_FOUND, ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
@@ -97,6 +100,9 @@ from lean_lsp_mcp.utils import (
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
+POSITION_QUERY_INACTIVITY_TIMEOUT = float(
+    os.environ.get("LEAN_LSP_POSITION_QUERY_INACTIVITY_TIMEOUT", "3.0")
+)
 
 
 def _raise_invalid_path(file_path: str) -> None:
@@ -105,6 +111,37 @@ def _raise_invalid_path(file_path: str) -> None:
         f"Invalid Lean file path: '{file_path}' not found in any Lean project "
         "(no lean-toolchain ancestor or file does not exist)"
     )
+
+
+def _call_lsp_request(
+    operation: str,
+    request: Any,
+    *,
+    allow_none: bool = False,
+) -> tuple[Any, bool]:
+    """Call a leanclient request and report whether the request itself timed out."""
+    try:
+        response = request()
+    except (FutureTimeoutError, TimeoutError, asyncio.TimeoutError):
+        logger.warning("%s timed out waiting for an LSP response", operation)
+        return None, True
+
+    check_lsp_response(response, operation, allow_none=allow_none)
+    return response, False
+
+
+def _position_diagnostics(
+    client: LeanLSPClient, rel_path: str, line_index: int
+) -> tuple[Any, bool]:
+    """Wait for a line to settle before issuing position-sensitive LSP requests."""
+    diagnostics = client.get_diagnostics(
+        rel_path,
+        start_line=line_index,
+        end_line=line_index,
+        inactivity_timeout=POSITION_QUERY_INACTIVITY_TIMEOUT,
+    )
+    check_lsp_response(diagnostics, "get_diagnostics")
+    return diagnostics, getattr(diagnostics, "timed_out", False)
 
 
 async def _urlopen_json(req: urllib.request.Request, timeout: float):
@@ -161,6 +198,88 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
+
+
+_ALLOWED_TOOLS_HEADER = "x-lean-lsp-allowed-tools"
+_ALLOWED_TOOLS_ENV = "LEAN_LSP_MCP_ALLOWED_TOOLS"
+
+
+def _log_tool_result(tool_name: str, *, timed_out: bool = False, detail: str = "") -> None:
+    """Emit compact per-tool completion logs.
+
+    This makes it visible when a tool returned a structured `timed_out: true`
+    result rather than just looking empty to upstream agents.
+    """
+    suffix = f" ({detail})" if detail else ""
+    if timed_out:
+        logger.warning("%s returned timed_out=true%s", tool_name, suffix)
+    else:
+        logger.info("%s completed%s", tool_name, suffix)
+
+
+def _parse_allowed_tools(raw_value: str | None) -> set[str] | None:
+    """Parse a per-session allowed-tools policy.
+
+    Returns ``None`` when no restriction is requested.
+    """
+    if raw_value is None:
+        return None
+
+    value = raw_value.strip()
+    if not value or value in {"*", "all"}:
+        return None
+
+    names: list[str]
+    if value.startswith("["):
+        parsed = json.loads(value)
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise ValueError("allowed-tools policy must be a JSON list of tool names")
+        names = parsed
+    else:
+        names = value.split(",")
+
+    allowed = {name.strip() for name in names if name.strip()}
+    return allowed
+
+
+def _session_allowed_tools(ctx: Context | None) -> set[str] | None:
+    """Return the allowed tool names for this request/session, if restricted."""
+    raw_value = None
+    if ctx is not None:
+        request = getattr(ctx.request_context, "request", None)
+        headers = getattr(request, "headers", None)
+        if headers is not None:
+            raw_value = headers.get(_ALLOWED_TOOLS_HEADER)
+
+    if raw_value is None:
+        raw_value = os.environ.get(_ALLOWED_TOOLS_ENV)
+
+    return _parse_allowed_tools(raw_value)
+
+
+class PolicyFastMCP(FastMCP):
+    """FastMCP with optional per-session tool filtering."""
+
+    async def list_tools(self):
+        ctx = self.get_context()
+        tools = await super().list_tools()
+        allowed = _session_allowed_tools(ctx)
+        if allowed is None:
+            return tools
+        return [tool for tool in tools if tool.name in allowed]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]):
+        ctx = self.get_context()
+        allowed = _session_allowed_tools(ctx)
+        if allowed is not None and name not in allowed:
+            raise McpError(
+                ErrorData(
+                    code=METHOD_NOT_FOUND,
+                    message=f"Tool '{name}' is not available in this session.",
+                )
+            )
+        logger.info("Calling tool %s", name)
+        return await super().call_tool(name, arguments)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +431,7 @@ if auth_token:
     )
     mcp_kwargs["token_verifier"] = OptionalTokenVerifier(auth_token)
 
-mcp = FastMCP(**mcp_kwargs)
+mcp = PolicyFastMCP(**mcp_kwargs)
 
 
 def rate_limited(category: str, max_requests: int, per_seconds: int):
@@ -507,7 +626,13 @@ def file_outline(
         _raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path, max_declarations)
+    result = generate_outline_data(client, rel_path, max_declarations)
+    _log_tool_result(
+        "lean_file_outline",
+        timed_out=getattr(result, "timed_out", False),
+        detail=f"{rel_path}:{max_declarations or '-'}",
+    )
+    return result
 
 
 def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
@@ -638,10 +763,13 @@ def diagnostic_messages(
         end_line=end_line_0,
         inactivity_timeout=15.0,
     )
-
-    return _process_diagnostics(
-        result.diagnostics, result.success, getattr(result, "timed_out", False)
+    timed_out = getattr(result, "timed_out", False)
+    _log_tool_result(
+        "lean_diagnostic_messages",
+        timed_out=timed_out,
+        detail=f"{rel_path}:{start_line or '-'}-{end_line or '-'}",
     )
+    return _process_diagnostics(result.diagnostics, result.success, timed_out)
 
 
 @mcp.tool(
@@ -680,25 +808,51 @@ def goal(
         raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
 
     line_context = lines[line - 1]
+    _, prep_timed_out = _position_diagnostics(client, rel_path, line - 1)
 
     if column is None:
         column_end = len(line_context)
         column_start = next(
             (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
-        goal_start = client.get_goal(rel_path, line - 1, column_start)
-        check_lsp_response(goal_start, "get_goal", allow_none=True)
-        goal_end = client.get_goal(rel_path, line - 1, column_end)
+        goal_start, start_timed_out = _call_lsp_request(
+            "get_goal",
+            lambda: client.get_goal(rel_path, line - 1, column_start),
+            allow_none=True,
+        )
+        goal_end, end_timed_out = _call_lsp_request(
+            "get_goal",
+            lambda: client.get_goal(rel_path, line - 1, column_end),
+            allow_none=True,
+        )
+        timed_out = prep_timed_out or start_timed_out or end_timed_out
+        _log_tool_result(
+            "lean_goal",
+            timed_out=timed_out,
+            detail=f"{rel_path}:{line}:line-scan",
+        )
         return GoalState(
             line_context=line_context,
+            timed_out=timed_out,
             goals_before=extract_goals_list(goal_start),
             goals_after=extract_goals_list(goal_end),
         )
     else:
-        goal_result = client.get_goal(rel_path, line - 1, column - 1)
-        check_lsp_response(goal_result, "get_goal", allow_none=True)
+        goal_result, request_timed_out = _call_lsp_request(
+            "get_goal",
+            lambda: client.get_goal(rel_path, line - 1, column - 1),
+            allow_none=True,
+        )
+        timed_out = prep_timed_out or request_timed_out
+        _log_tool_result(
+            "lean_goal",
+            timed_out=timed_out,
+            detail=f"{rel_path}:{line}:{column}",
+        )
         return GoalState(
-            line_context=line_context, goals=extract_goals_list(goal_result)
+            line_context=line_context,
+            timed_out=timed_out,
+            goals=extract_goals_list(goal_result),
         )
 
 
@@ -736,15 +890,29 @@ def term_goal(
     if column is None:
         column = max(len(line_context), 1)
 
-    term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
-    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
+    _, prep_timed_out = _position_diagnostics(client, rel_path, line - 1)
+    term_goal_result, request_timed_out = _call_lsp_request(
+        "get_term_goal",
+        lambda: client.get_term_goal(rel_path, line - 1, column - 1),
+        allow_none=True,
+    )
     expected_type = None
     if term_goal_result is not None:
         rendered = term_goal_result.get("goal")
         if rendered:
             expected_type = rendered.replace("```lean\n", "").replace("\n```", "")
+    timed_out = prep_timed_out or request_timed_out
+    _log_tool_result(
+        "lean_term_goal",
+        timed_out=timed_out,
+        detail=f"{rel_path}:{line}:{column}",
+    )
 
-    return TermGoalState(line_context=line_context, expected_type=expected_type)
+    return TermGoalState(
+        line_context=line_context,
+        timed_out=timed_out,
+        expected_type=expected_type,
+    )
 
 
 @mcp.tool(
@@ -770,9 +938,28 @@ def hover(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     file_content = client.get_file_content(rel_path)
-    hover_info = client.get_hover(rel_path, line - 1, column - 1)
-    check_lsp_response(hover_info, "get_hover", allow_none=True)
+    diagnostics, prep_timed_out = _position_diagnostics(client, rel_path, line - 1)
+    hover_info, request_timed_out = _call_lsp_request(
+        "get_hover",
+        lambda: client.get_hover(rel_path, line - 1, column - 1),
+        allow_none=True,
+    )
+    timed_out = prep_timed_out or request_timed_out
     if hover_info is None:
+        if timed_out:
+            _log_tool_result(
+                "lean_hover_info",
+                timed_out=True,
+                detail=f"{rel_path}:{line}:{column}",
+            )
+            return HoverInfo(
+                symbol="",
+                info="",
+                timed_out=True,
+                diagnostics=_to_diagnostic_messages(
+                    filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
+                ),
+            )
         raise LeanToolError(f"No hover information at line {line}, column {column}")
 
     # Get the symbol and the hover information
@@ -782,13 +969,17 @@ def hover(
     info = info.replace("```lean\n", "").replace("\n```", "").strip()
 
     # Add diagnostics if available
-    diagnostics = client.get_diagnostics(rel_path)
-    check_lsp_response(diagnostics, "get_diagnostics")
     filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
+    _log_tool_result(
+        "lean_hover_info",
+        timed_out=timed_out,
+        detail=f"{rel_path}:{line}:{column}",
+    )
 
     return HoverInfo(
         symbol=symbol,
         info=info,
+        timed_out=timed_out,
         diagnostics=_to_diagnostic_messages(filtered),
     )
 
@@ -817,8 +1008,19 @@ def completions(
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
     client.open_file(rel_path)
     content = client.get_file_content(rel_path)
-    raw_completions = client.get_completions(rel_path, line - 1, column - 1)
-    check_lsp_response(raw_completions, "get_completions")
+    _, prep_timed_out = _position_diagnostics(client, rel_path, line - 1)
+    raw_completions, request_timed_out = _call_lsp_request(
+        "get_completions",
+        lambda: client.get_completions(rel_path, line - 1, column - 1),
+    )
+    timed_out = prep_timed_out or request_timed_out
+    if raw_completions is None:
+        _log_tool_result(
+            "lean_completions",
+            timed_out=timed_out,
+            detail=f"{rel_path}:{line}:{column}",
+        )
+        return CompletionsResult(timed_out=timed_out, items=[])
 
     # Convert to CompletionItem models
     items: List[CompletionItem] = []
@@ -836,7 +1038,7 @@ def completions(
         )
 
     if not items:
-        return CompletionsResult(items=[])
+        return CompletionsResult(timed_out=timed_out, items=[])
 
     # Find the sort term: The last word/identifier before the cursor
     lines = content.splitlines()
@@ -863,7 +1065,12 @@ def completions(
         items.sort(key=lambda x: x.label.lower())
 
     # Truncate if too many results
-    return CompletionsResult(items=items[:max_completions])
+    _log_tool_result(
+        "lean_completions",
+        timed_out=timed_out,
+        detail=f"{rel_path}:{line}:{column}",
+    )
+    return CompletionsResult(timed_out=timed_out, items=items[:max_completions])
 
 
 @mcp.tool(
@@ -898,11 +1105,31 @@ def declaration_file(
             f"Symbol `{symbol}` (case sensitive) not found in file. Add it first."
         )
 
-    declaration = client.get_declarations(
-        rel_path, position["line"], position["column"]
+    _, prep_timed_out = _position_diagnostics(client, rel_path, position["line"])
+    declaration, request_timed_out = _call_lsp_request(
+        "get_declarations",
+        lambda: client.get_declarations(
+            rel_path, position["line"], position["column"]
+        ),
     )
+    timed_out = prep_timed_out or request_timed_out
+
+    if declaration is None:
+        _log_tool_result(
+            "lean_declaration_file",
+            timed_out=timed_out,
+            detail=symbol,
+        )
+        return DeclarationInfo(file_path="", content="", timed_out=True)
 
     if len(declaration) == 0:
+        if timed_out:
+            _log_tool_result(
+                "lean_declaration_file",
+                timed_out=True,
+                detail=symbol,
+            )
+            return DeclarationInfo(file_path="", content="", timed_out=True)
         raise LeanToolError(f"No declaration available for `{symbol}`.")
 
     # Load the declaration file
@@ -916,8 +1143,15 @@ def declaration_file(
         )
 
     file_content = get_file_contents(abs_path)
+    _log_tool_result(
+        "lean_declaration_file",
+        timed_out=timed_out,
+        detail=symbol,
+    )
 
-    return DeclarationInfo(file_path=str(abs_path), content=file_content)
+    return DeclarationInfo(
+        file_path=str(abs_path), content=file_content, timed_out=timed_out
+    )
 
 
 async def _multi_attempt_repl(

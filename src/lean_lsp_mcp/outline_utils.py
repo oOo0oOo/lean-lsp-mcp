@@ -1,3 +1,4 @@
+import os
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -8,14 +9,20 @@ from lean_lsp_mcp.models import FileOutline, OutlineEntry
 
 METHOD_KIND = {6, "method"}
 KIND_TAGS = {"namespace": "Ns"}
+OUTLINE_INFO_TREES_INACTIVITY_TIMEOUT = float(
+    os.environ.get("LEAN_OUTLINE_INFO_TREES_INACTIVITY_TIMEOUT", "5.0")
+)
+OUTLINE_INFO_TREES_MAX_TIMEOUT = float(
+    os.environ.get("LEAN_OUTLINE_INFO_TREES_MAX_TIMEOUT", "30.0")
+)
 
 
 def _get_info_trees(
     client: LeanLSPClient, path: str, symbols: List[Dict]
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], bool]:
     """Insert #info_trees commands, collect diagnostics, then revert changes."""
     if not symbols:
-        return {}
+        return {}, False
 
     symbol_by_line = {}
     changes = []
@@ -25,7 +32,12 @@ def _get_info_trees(
         changes.append(DocumentContentChange("#info_trees in\n", [line, 0], [line, 0]))
 
     client.update_file(path, changes)
-    diagnostics = client.get_diagnostics(path)
+    diagnostics = client.get_diagnostics(
+        path,
+        inactivity_timeout=OUTLINE_INFO_TREES_INACTIVITY_TIMEOUT,
+        max_timeout=OUTLINE_INFO_TREES_MAX_TIMEOUT,
+    )
+    timed_out = getattr(diagnostics, "timed_out", False)
 
     info_trees = {
         symbol_by_line[diag["range"]["start"]["line"]]: diag["message"]
@@ -45,7 +57,7 @@ def _get_info_trees(
     # Force file reload to reset diagnostics after the insert/revert cycle.
     client.open_file(path, force_reopen=True)
 
-    return info_trees
+    return info_trees, timed_out
 
 
 def _extract_type(info: str, name: str) -> Optional[str]:
@@ -245,7 +257,7 @@ def generate_outline_data(
         for s, _ in all_symbols
         if s.get("kind") in METHOD_KIND and "_keyword" not in s
     ]
-    info_trees = _get_info_trees(client, path, lsp_methods)
+    info_trees, timed_out = _get_info_trees(client, path, lsp_methods)
 
     # Extract type signatures and fields from info trees
     type_sigs = {
@@ -271,7 +283,9 @@ def generate_outline_data(
             if entry:
                 declarations.append(entry)
 
-    outline = FileOutline(imports=imports, declarations=declarations)
+    outline = FileOutline(
+        imports=imports, declarations=declarations, timed_out=timed_out
+    )
     if max_declarations and len(declarations) > max_declarations:
         outline.total_declarations = len(declarations)
         outline.declarations = declarations[:max_declarations]
@@ -305,7 +319,7 @@ def generate_outline(client: LeanLSPClient, path: str) -> str:
         for s, _ in all_symbols
         if s.get("kind") in METHOD_KIND and "_keyword" not in s
     ]
-    info_trees = _get_info_trees(client, path, lsp_methods)
+    info_trees, _ = _get_info_trees(client, path, lsp_methods)
 
     # Extract type signatures and fields from info trees
     type_sigs = {
