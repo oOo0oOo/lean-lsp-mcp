@@ -2,6 +2,7 @@ import importlib
 import io
 import orjson
 from pathlib import Path
+import os
 
 import pytest
 
@@ -183,6 +184,13 @@ def _configure_env(
         if expected_cwd is not None and cmd and cmd[0] == "rg":
             assert cwd == expected_cwd
         return _DummyPopen(stdout_events, returncode=returncode)
+
+    def fake_run(cmd, *, capture_output=False, text=False, cwd=None, **kwargs):
+        run_calls.append((cmd, cwd))
+        if cmd[1:] == ["--print-prefix"] and os.path.basename(cmd[0]) == "lean":
+            return lean_completed
+        raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
+
 
     monkeypatch.setattr(search_utils, "check_ripgrep_status", fake_check)
     monkeypatch.setattr(search_utils, "_create_ripgrep_process", fake_create)

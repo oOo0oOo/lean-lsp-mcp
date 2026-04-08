@@ -331,3 +331,39 @@ def lean_local_search(
             break
 
     return deduped
+
+
+@lru_cache(maxsize=4)
+def _get_lean_src_search_path(project_root: Path | None = None) -> str | None:
+    """Return the Lean stdlib directory, if available.
+
+    Runs ``lean --print-prefix`` from *project_root* so that elan resolves the
+    toolchain from the project's ``lean-toolchain`` file.
+    """
+    cwd = str(project_root) if project_root else None
+    commands = [["lean", "--print-prefix"]]
+    elan_lean = Path("~/.elan/bin/lean").expanduser()
+    if elan_lean.exists():
+        commands.append([str(elan_lean), "--print-prefix"])
+
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=cwd,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            continue
+
+        prefix = completed.stdout.strip()
+        if not prefix:
+            continue
+
+        candidate = Path(prefix).expanduser().resolve() / "src"
+        if candidate.exists():
+            return str(candidate)
+
+    return None

@@ -108,10 +108,12 @@ def startup_client(ctx: Context):
         prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
         try:
             with OutputCapture() as output:
+                max_files = int(os.environ.get("LEAN_LSP_MAX_OPEN_FILES", "4"))
                 client = LeanLSPClient(
                     lean_project_path,
                     initial_build=False,
                     prevent_cache_get=prevent_cache,
+                    max_opened_files=max_files,
                 )
                 logger.info(f"Connected to Lean language server at {lean_project_path}")
             build_output = output.get_output()

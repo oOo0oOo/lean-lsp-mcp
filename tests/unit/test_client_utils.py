@@ -84,7 +84,10 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     created: list[_MockLeanClient] = []
 
     def _constructor(
-        project_path: Path, initial_build: bool, prevent_cache_get: bool = False
+        project_path: Path,
+        initial_build: bool,
+        prevent_cache_get: bool = False,
+        **kwargs,
     ) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
         _ = initial_build, prevent_cache_get
         client = _MockLeanClient(project_path)
