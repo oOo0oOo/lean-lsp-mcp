@@ -49,13 +49,6 @@ def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     client_utils.close_shared_client()
 
 
-def _make_project(root: Path) -> Path:
-    root.mkdir()
-    (root / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
-    (root / "lakefile.toml").write_text('name = "test"\n')
-    return root
-
-
 def _make_ctx(
     rate_limit: dict[str, list[int]] | None = None,
     *,
