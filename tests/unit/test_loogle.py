@@ -383,7 +383,8 @@ class TestLoogleInstall:
 class TestLoogleQuery:
     """Test start/query/stop against installed loogle binary.
 
-    Skips if loogle is not installed. Run TestLoogleInstall first to install.
+    Skips if loogle is not installed or the local cache is not runnable.
+    Run TestLoogleInstall first to install or refresh the cache.
     """
 
     @pytest.mark.asyncio
@@ -395,7 +396,13 @@ class TestLoogleQuery:
             )
 
         try:
-            assert await mgr.start(), "Failed to start loogle"
+            started = await mgr.start()
+            if not started:
+                await mgr.stop()
+                pytest.skip(
+                    "loogle installed but not runnable "
+                    "(run: pytest -m slow tests/unit/test_loogle.py)"
+                )
             assert mgr.is_running
 
             results = await mgr.query("Nat.add", num_results=3)

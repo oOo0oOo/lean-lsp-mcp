@@ -8,6 +8,7 @@ import lean_lsp_mcp
 
 def test_main_sets_security_env_flags(monkeypatch):
     for key in [
+        "LEAN_LSP_MCP_ACTIVE_TRANSPORT",
         "LEAN_PROJECT_PATH",
         "LEAN_MCP_DISABLED_TOOLS",
         "LEAN_MCP_TOOL_DESCRIPTIONS",

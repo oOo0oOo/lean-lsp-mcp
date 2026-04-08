@@ -12,6 +12,7 @@ import threading
 from orjson import loads as _json_loads
 from pathlib import Path
 
+from lean_lsp_mcp.file_utils import LeanPathPolicy, build_lean_path_policy
 
 INSTALL_URL = "https://github.com/BurntSushi/ripgrep#installation"
 
@@ -152,9 +153,14 @@ def lean_local_search(
     query: str,
     limit: int = 32,
     project_root: Path | None = None,
+    path_policy: LeanPathPolicy | None = None,
 ) -> list[dict[str, str]]:
     """Search Lean declarations matching ``query`` using ripgrep; results include theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls."""
-    root = (project_root or Path.cwd()).resolve()
+    policy = path_policy
+    if policy is None:
+        root = (project_root or Path.cwd()).resolve()
+        policy = build_lean_path_policy(root)
+    root = policy.project_root
 
     pattern = (
         rf"^\s*(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
@@ -180,8 +186,8 @@ def lean_local_search(
         str(root),
     ]
 
-    if lean_src := _get_lean_src_search_path(root):
-        command.append(lean_src)
+    if policy.stdlib_root is not None:
+        command.append(str(policy.stdlib_root))
 
     process = _create_ripgrep_process(command, cwd=str(root))
 
@@ -239,9 +245,9 @@ def lean_local_search(
             )
 
             try:
-                display_path = abs_path.relative_to(root).as_posix()
+                display_path = policy.display_path(abs_path)
             except ValueError:
-                display_path = file_path.as_posix()
+                continue
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
             match_locations.append((abs_path, line_number))

@@ -38,13 +38,6 @@ class LeanToolError(Exception):
     pass
 
 
-_ACTIVE_TRANSPORT_ENV = "LEAN_LSP_MCP_ACTIVE_TRANSPORT"
-
-
-def _active_transport_is_stdio() -> bool:
-    return os.environ.get(_ACTIVE_TRANSPORT_ENV, "").strip().lower() == "stdio"
-
-
 def check_lsp_response(
     response: Any, operation: str, *, allow_none: bool = False
 ) -> Any:
@@ -77,12 +70,14 @@ class OutputCapture:
         self.captured_output = ""
 
     def __enter__(self):
+        from lean_lsp_mcp.client_utils import _active_transport
+
         self.temp_file = tempfile.NamedTemporaryFile(
             mode="w+", delete=False, encoding="utf-8"
         )
         temp_fd = self.temp_file.fileno()
 
-        if not _active_transport_is_stdio():
+        if _active_transport() != "stdio":
             self.original_stdout_fd = os.dup(sys.stdout.fileno())
             os.dup2(temp_fd, sys.stdout.fileno())
 
@@ -125,8 +120,8 @@ class OutputCapture:
         return self.captured_output
 
 
-class OptionalTokenVerifier(TokenVerifier):
-    """Minimal verifier that accepts a single pre-shared token."""
+class PreSharedTokenVerifier(TokenVerifier):
+    """Minimal verifier that requires a single pre-shared bearer token."""
 
     def __init__(self, expected_token: str):
         self._expected_token = expected_token
@@ -135,7 +130,10 @@ class OptionalTokenVerifier(TokenVerifier):
         if token is None or not secrets.compare_digest(token, self._expected_token):
             return None
         # AccessToken requires both client_id and scopes parameters to be provided.
-        return AccessToken(token=token, client_id="lean-lsp-mcp-optional", scopes=[])
+        return AccessToken(token=token, client_id="lean-lsp-mcp", scopes=[])
+
+
+OptionalTokenVerifier = PreSharedTokenVerifier
 
 
 def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[str]:
