@@ -2,6 +2,7 @@ import importlib
 import io
 import orjson
 from pathlib import Path
+import os
 
 import pytest
 
@@ -132,7 +133,7 @@ def _configure_env(
 
     def fake_run(cmd, *, capture_output=False, text=False, cwd=None, **kwargs):
         run_calls.append((cmd, cwd))
-        if cmd[:2] == ["lean", "--print-prefix"]:
+        if cmd[1:] == ["--print-prefix"] and os.path.basename(cmd[0]) == "lean":
             return lean_completed
         raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
 
