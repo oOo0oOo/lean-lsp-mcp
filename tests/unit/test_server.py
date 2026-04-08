@@ -555,7 +555,7 @@ def test_diagnostic_messages_passes_severity_to_process(
     """diagnostic_messages tool forwards the severity parameter to _process_diagnostics."""
     captured: dict = {}
 
-    def fake_process(diagnostics, build_success, severity=None):
+    def fake_process(diagnostics, build_success, timed_out=False, severity=None):
         captured["severity"] = severity
         from lean_lsp_mcp.models import DiagnosticsResult
 
@@ -599,7 +599,7 @@ def test_diagnostic_messages_default_severity_is_none(
 ) -> None:
     captured: dict = {}
 
-    def fake_process(diagnostics, build_success, severity=None):
+    def fake_process(diagnostics, build_success, timed_out=False, severity=None):
         captured["severity"] = severity
         from lean_lsp_mcp.models import DiagnosticsResult
 
