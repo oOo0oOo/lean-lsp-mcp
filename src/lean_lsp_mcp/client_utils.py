@@ -155,15 +155,7 @@ def _pick_project_root(file_path: Path, candidates: list[Path]) -> Path | None:
 
 
 def _cacheable_project_dirs(project_path: Path, cache_dirs: list[str]) -> list[str]:
-    cacheable: list[str] = []
-    for directory in cache_dirs:
-        directory_path = Path(directory)
-        try:
-            directory_path.relative_to(project_path)
-        except ValueError:
-            continue
-        cacheable.append(directory)
-    return cacheable
+    return [d for d in cache_dirs if Path(d).is_relative_to(project_path)]
 
 
 def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | None:

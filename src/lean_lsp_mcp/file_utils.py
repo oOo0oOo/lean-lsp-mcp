@@ -29,7 +29,7 @@ class LeanPathPolicy:
     ) -> tuple[Path, AllowedPathRoot | None]:
         candidate = Path(path).resolve(strict=False)
         for allowed in self.allowed_roots:
-            if _is_relative_to(candidate, allowed.root):
+            if candidate.is_relative_to(allowed.root):
                 return candidate, allowed
         return candidate, None
 
@@ -63,13 +63,6 @@ class LeanPathPolicy:
         candidate = self.validate_path(path)
         return os.path.relpath(candidate, self.project_root)
 
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
 
 
 def valid_lean_project_path(path: Path | str) -> bool:
