@@ -5,7 +5,7 @@ from contextlib import suppress
 from importlib.metadata import version
 
 import anyio
-from lean_lsp_mcp.client_utils import infer_project_path
+from lean_lsp_mcp.client_utils import close_shared_client, infer_project_path
 from lean_lsp_mcp.server import apply_tool_configuration, mcp
 
 _TRANSPORT_CLOSE_HINTS = (
@@ -163,4 +163,6 @@ def main():
             _silence_stdout()
             return 0
         raise
+    finally:
+        close_shared_client()
     return 0

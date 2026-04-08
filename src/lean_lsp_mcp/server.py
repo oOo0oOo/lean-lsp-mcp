@@ -25,12 +25,16 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp.client_utils import (
+    CLIENT_LOCK,
     _active_transport,
+    _max_opened_files,
     _project_switching_allowed,
     bind_lean_project_path,
     get_path_policy,
     infer_project_path,
+    replace_shared_client,
     resolve_file_path,
+    set_build_in_progress,
     setup_client_for_file,
     startup_client,
 )
@@ -423,15 +427,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         )
         yield context
     finally:
-        logger.info("Closing Lean LSP client")
+        logger.info("Session ending — cleaning up per-session resources")
 
-        if context and context.client:
-            try:
-                context.client.close()
-            except Exception:
-                logger.exception(
-                    "Lean client close failed during app_lifespan teardown"
-                )
+        # NOTE: Do NOT close context.client here.  The LSP client is a shared
+        # singleton managed by client_utils.  Closing it would kill ``lake
+        # serve`` for all other sessions.  The shared client is cleaned up via
+        # close_shared_client() at process exit (see __init__.py).
 
         repl_to_close = context.repl if context and context.repl is not None else repl
         if repl_to_close:
@@ -580,6 +581,7 @@ async def _run_build(
     log_lines: List[str] = []
     errors: List[str] = []
     active_proc: asyncio.subprocess.Process | None = None
+    build_flag_set = False
 
     async def _run_proc(*args: str, **kwargs) -> asyncio.subprocess.Process:
         nonlocal active_proc
@@ -588,11 +590,22 @@ async def _run_build(
         return proc
 
     try:
-        client: LeanLSPClient = ctx.request_context.lifespan_context.client
-        if client:
+        clients_to_close: list[LeanLSPClient] = []
+        with CLIENT_LOCK:
+            set_build_in_progress(lean_project_path_obj, True)
+            build_flag_set = True
+            client = ctx.request_context.lifespan_context.client
             ctx.request_context.lifespan_context.client = None
+            shared_client = replace_shared_client(lean_project_path_obj, None)
+
+        for candidate in (client, shared_client):
+            if candidate is None or candidate in clients_to_close:
+                continue
+            clients_to_close.append(candidate)
+
+        for client_to_close in clients_to_close:
             try:
-                client.close()
+                client_to_close.close()
             except Exception:
                 logger.exception("Lean client close failed during lsp_build restart")
 
@@ -655,10 +668,15 @@ async def _run_build(
         # Start LSP client (without initial build since we just did it)
         with OutputCapture():
             client = LeanLSPClient(
-                lean_project_path_obj, initial_build=False, prevent_cache_get=True
+                lean_project_path_obj,
+                initial_build=False,
+                prevent_cache_get=True,
+                max_opened_files=_max_opened_files(),
             )
 
         logger.info("Built project and re-started LSP client")
+        with CLIENT_LOCK:
+            replace_shared_client(lean_project_path_obj, client)
         ctx.request_context.lifespan_context.client = client
 
         return BuildResult(
@@ -682,6 +700,10 @@ async def _run_build(
             output="\n".join(log_lines[-output_lines:]) if output_lines else "",
             errors=[str(e)],
         )
+    finally:
+        if build_flag_set:
+            with CLIENT_LOCK:
+                set_build_in_progress(lean_project_path_obj, False)
 
 
 @mcp.tool(
@@ -1533,7 +1555,6 @@ def run_code(
             if client is None:
                 raise LeanToolError("Failed to initialize Lean client for run_code.")
 
-        assert client is not None
         client.open_file(rel_path)
         opened_file = True
         raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)

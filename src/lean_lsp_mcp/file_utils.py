@@ -68,9 +68,7 @@ def valid_lean_project_path(path: Path | str) -> bool:
     path_obj = Path(path).expanduser()
     try:
         resolved = path_obj.resolve(strict=True)
-    except FileNotFoundError:
-        return False
-    except OSError:
+    except (FileNotFoundError, OSError):
         return False
 
     if not resolved.is_dir():
@@ -133,7 +131,8 @@ def build_lean_path_policy(project_root: Path | str) -> LeanPathPolicy:
                 continue
             allowed_roots.append(
                 AllowedPathRoot(
-                    resolved_package_root, f".lake/packages/{package_root.name}"
+                    resolved_package_root,
+                    f".lake/packages/{package_root.name}",
                 )
             )
 

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from lean_lsp_mcp import client_utils
 from lean_lsp_mcp import server
 from lean_lsp_mcp.models import DiagnosticSeverity
 
@@ -20,15 +21,6 @@ class DummyClient:
 
     def close(self) -> None:
         self.closed_calls += 1
-
-
-class _FailingCloseClient:
-    def __init__(self) -> None:
-        self.close_calls = 0
-
-    def close(self) -> None:
-        self.close_calls += 1
-        raise PermissionError("operation not permitted")
 
 
 class _FailingRepl:
@@ -53,6 +45,8 @@ def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEAN_LSP_MCP_TOKEN", raising=False)
     monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
     monkeypatch.delenv("LEAN_REPL", raising=False)
+    monkeypatch.delenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", raising=False)
+    client_utils.close_shared_client()
 
 
 def _make_ctx(
@@ -120,18 +114,22 @@ async def test_app_lifespan_sets_project_path(
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_requires_project_path_for_streamable_http(
+async def test_app_lifespan_requires_project_path_for_remote_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("LEAN_PROJECT_PATH", raising=False)
     monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "streamable-http")
 
-    with pytest.raises(ValueError, match="`LEAN_PROJECT_PATH` is required"):
+    with pytest.raises(ValueError, match="LEAN_PROJECT_PATH"):
         async with server.app_lifespan(object()):
             pass
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_app_lifespan_does_not_close_shared_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LSP client is a shared singleton — app_lifespan must NOT close it."""
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
 
     dummy_client = DummyClient()
@@ -139,21 +137,48 @@ async def test_app_lifespan_closes_client(monkeypatch: pytest.MonkeyPatch) -> No
     async with server.app_lifespan(object()) as context:
         context.client = dummy_client
 
-    assert dummy_client.closed_calls == 1
+    assert dummy_client.closed_calls == 0
 
 
-@pytest.mark.asyncio
-async def test_app_lifespan_suppresses_client_close_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
+def test_close_shared_client_closes_client() -> None:
+    """close_shared_client() closes the shared singleton and resets state."""
+    dummy = DummyClient()
+    client_utils._shared_clients[Path("/tmp/proj")] = dummy
 
-    dummy_client = _FailingCloseClient()
+    try:
+        client_utils.close_shared_client()
+        assert dummy.closed_calls == 1
+        assert client_utils._shared_clients == {}
+    finally:
+        client_utils._shared_clients.clear()
 
-    async with server.app_lifespan(object()) as context:
-        context.client = dummy_client
 
-    assert dummy_client.close_calls == 1
+def test_close_shared_client_suppresses_error() -> None:
+    """close_shared_client() suppresses exceptions from client.close()."""
+
+    class _FailingCloseClient:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise PermissionError("operation not permitted")
+
+    dummy = _FailingCloseClient()
+    client_utils._shared_clients[Path("/tmp/proj")] = dummy
+
+    try:
+        client_utils.close_shared_client()  # should not raise
+        assert dummy.close_calls == 1
+        assert client_utils._shared_clients == {}
+    finally:
+        client_utils._shared_clients.clear()
+
+
+def test_close_shared_client_noop_when_none() -> None:
+    """close_shared_client() is safe to call when no client exists."""
+    client_utils._shared_clients.clear()
+    client_utils.close_shared_client()  # should not raise
 
 
 @pytest.mark.asyncio

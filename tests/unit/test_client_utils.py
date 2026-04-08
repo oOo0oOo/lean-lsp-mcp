@@ -7,17 +7,30 @@ from pathlib import Path
 import pytest
 
 from lean_lsp_mcp.client_utils import (
+    CLIENT_LOCK,
     bind_lean_project_path,
+    close_shared_client,
+    replace_shared_client,
     resolve_file_path,
+    set_build_in_progress,
     setup_client_for_file,
     startup_client,
     valid_lean_project_path,
 )
 
 
+class _MockProcess:
+    def __init__(self, returncode: int | None = None) -> None:
+        self.returncode = returncode
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
 class _MockLeanClient:
     def __init__(self, project_path: Path) -> None:
         self.project_path = project_path
+        self.process = _MockProcess()
         self.closed = False
 
     def close(self) -> None:
@@ -79,6 +92,12 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
     return dep_file
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_clients() -> None:
+    yield
+    close_shared_client()
+
+
 @pytest.fixture
 def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
     created: list[_MockLeanClient] = []
@@ -89,7 +108,7 @@ def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
         prevent_cache_get: bool = False,
         **kwargs,
     ) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
-        _ = initial_build, prevent_cache_get
+        _ = initial_build, prevent_cache_get, kwargs
         client = _MockLeanClient(project_path)
         created.append(client)
         return client
@@ -110,32 +129,71 @@ def test_startup_client_reuses_existing(
     assert not first.closed
 
     startup_client(ctx)
-    assert not first.closed
+    assert ctx.request_context.lifespan_context.client is first
+    assert len(patched_clients) == 1
 
-    new_project = _make_project(tmp_path / "proj2")
-    ctx.request_context.lifespan_context.lean_project_path = new_project
+
+def test_startup_client_keeps_project_specific_clients(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project1 = _make_project(tmp_path / "proj1")
+    project2 = _make_project(tmp_path / "proj2")
+    ctx = _Context(_LifespanContext(project1, None))
 
     startup_client(ctx)
-    assert first.closed
-    assert ctx.request_context.lifespan_context.client.project_path == new_project
+    first = ctx.request_context.lifespan_context.client
+
+    ctx.request_context.lifespan_context.lean_project_path = project2
+    startup_client(ctx)
+    second = ctx.request_context.lifespan_context.client
+
+    ctx.request_context.lifespan_context.lean_project_path = project1
+    startup_client(ctx)
+
+    assert first is not None
+    assert second is not None
+    assert first is not second
+    assert ctx.request_context.lifespan_context.client is first
+    assert not first.closed
+    assert not second.closed
     assert len(patched_clients) == 2
 
 
-def test_startup_client_switches_project_even_if_close_fails(
+def test_startup_client_recreates_dead_shared_client(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
-    old_project = _make_project(tmp_path / "proj1")
-    new_project = _make_project(tmp_path / "proj2")
+    project = _make_project(tmp_path / "proj")
+    ctx = _Context(_LifespanContext(project, None))
 
-    old_client = _FailingCloseClient(old_project)
-    ctx = _Context(_LifespanContext(new_project, old_client))
+    startup_client(ctx)
+    first = ctx.request_context.lifespan_context.client
+    first.process.returncode = 1
 
+    startup_client(ctx)
+
+    second = ctx.request_context.lifespan_context.client
+    assert second is not first
+    assert first.closed
+    assert len(patched_clients) == 2
+
+
+def test_startup_client_recreates_dead_client_even_if_close_fails(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    old_client = _FailingCloseClient(project)
+    old_client.process.returncode = 1
+
+    with CLIENT_LOCK:
+        replace_shared_client(project, old_client)
+
+    ctx = _Context(_LifespanContext(project, old_client))
     startup_client(ctx)
 
     new_client = ctx.request_context.lifespan_context.client
     assert isinstance(new_client, _MockLeanClient)
     assert new_client is not old_client
-    assert new_client.project_path == new_project
+    assert new_client.project_path == project
     assert old_client.close_calls == 1
     assert len(patched_clients) == 1
 
@@ -192,7 +250,7 @@ def test_setup_client_for_file_reuses_client_for_same_project(
     assert len(patched_clients) == 1
 
 
-def test_setup_client_for_file_switches_projects(
+def test_setup_client_for_file_switches_projects_without_closing_cache(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
     project1 = _make_project(tmp_path / "proj1")
@@ -205,17 +263,15 @@ def test_setup_client_for_file_switches_projects(
 
     ctx = _Context(_LifespanContext(None, None))
 
-    rel_path1 = setup_client_for_file(ctx, str(file1))
-    assert rel_path1 == "File1.lean"
+    assert setup_client_for_file(ctx, str(file1)) == "File1.lean"
     first_client = ctx.request_context.lifespan_context.client
-    assert len(patched_clients) == 1
 
-    rel_path2 = setup_client_for_file(ctx, str(file2))
-    assert rel_path2 == "File2.lean"
+    assert setup_client_for_file(ctx, str(file2)) == "File2.lean"
     second_client = ctx.request_context.lifespan_context.client
 
-    assert first_client.closed
-    assert second_client is not first_client
+    assert first_client is not second_client
+    assert not first_client.closed
+    assert not second_client.closed
     assert len(patched_clients) == 2
     assert ctx.request_context.lifespan_context.lean_project_path == project2
 
@@ -224,7 +280,10 @@ def test_setup_client_for_dependency_file_uses_parent_project(
     tmp_path: Path, patched_clients: list[_MockLeanClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
-    dep_file = _make_dependency(project, tmp_path / "deps" / "mathlib")
+    try:
+        dep_file = _make_dependency(project, tmp_path / "deps" / "mathlib")
+    except OSError as exc:  # pragma: no cover - platform dependent
+        pytest.skip(f"symlinks unavailable: {exc}")
 
     ctx = _Context(_LifespanContext(project, None))
 
@@ -270,6 +329,29 @@ def test_startup_client_serializes_concurrent_calls(
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+def test_build_in_progress_blocks_only_same_project(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project1 = _make_project(tmp_path / "proj1")
+    project2 = _make_project(tmp_path / "proj2")
+
+    with CLIENT_LOCK:
+        set_build_in_progress(project1, True)
+
+    try:
+        with pytest.raises(ValueError, match="build is in progress"):
+            startup_client(_Context(_LifespanContext(project1, None)))
+
+        other_ctx = _Context(_LifespanContext(project2, None))
+        startup_client(other_ctx)
+
+        assert other_ctx.request_context.lifespan_context.client is patched_clients[0]
+        assert len(patched_clients) == 1
+    finally:
+        with CLIENT_LOCK:
+            set_build_in_progress(project1, False)
 
 
 def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> None:
