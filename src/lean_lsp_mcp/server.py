@@ -804,7 +804,10 @@ def diagnostic_messages(
     )
 
     return _process_diagnostics(
-        result.diagnostics, result.success, severity=severity, timed_out=getattr(result, "timed_out", False)
+        result.diagnostics,
+        result.success,
+        severity=severity,
+        timed_out=getattr(result, "timed_out", False),
     )
 
 
