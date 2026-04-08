@@ -147,8 +147,20 @@ def _filter_categories(cumulative: dict[str, float]) -> dict[str, float]:
     }
 
 
+def _kill_process_group(pid: int) -> None:
+    """Kill an entire process group. No-op if already dead."""
+    try:
+        os.killpg(os.getpgid(pid), 9)
+    except (ProcessLookupError, OSError):
+        pass
+
+
 async def _run_lean_profile(file_path: Path, project_path: Path, timeout: float) -> str:
-    """Run lean --profile, return output."""
+    """Run lean --profile, return output.
+
+    Uses start_new_session so lake/elan/lean share a process group that we
+    can kill as a unit.  Without this, lean survives as an orphan (~2.5 GB).
+    """
     proc = await asyncio.create_subprocess_exec(
         "lake",
         "env",
@@ -161,14 +173,15 @@ async def _run_lean_profile(file_path: Path, project_path: Path, timeout: float)
         stderr=asyncio.subprocess.STDOUT,
         cwd=project_path.resolve(),
         env=os.environ.copy(),
+        start_new_session=True,
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return stdout.decode("utf-8", errors="replace")
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
         raise TimeoutError(f"Profiling timed out after {timeout}s")
+    finally:
+        _kill_process_group(proc.pid)
 
 
 def _find_proof_start(source_lines: list[str]) -> int:

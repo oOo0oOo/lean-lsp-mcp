@@ -18,12 +18,27 @@ class _FailingClient:
         raise PermissionError("operation not permitted")
 
 
+def _make_project(root):
+    root.mkdir()
+    (root / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    (root / "lakefile.toml").write_text('name = "test"\n')
+    return root
+
+
 @pytest.fixture
-def build_mocks():
+def build_mocks(tmp_path):
     """Shared mocks for lsp_build tests."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.24.0\n")
+    (project / "lakefile.toml").write_text('name = "test"\n')
+
     ctx = MagicMock()
-    ctx.request_context.lifespan_context.lean_project_path = None
+    ctx.request_context.lifespan_context.lean_project_path = project
     ctx.request_context.lifespan_context.client = None
+    ctx.request_context.lifespan_context.build_coordinator = None
+    ctx.info = AsyncMock()
+    ctx.debug = AsyncMock()
     ctx.report_progress = AsyncMock()
 
     # Simple process for cache (no stdout needed)
@@ -35,7 +50,7 @@ def build_mocks():
     build_proc.returncode = 0
     build_proc.wait = AsyncMock()
 
-    return ctx, cache_proc, build_proc
+    return project, ctx, cache_proc, build_proc
 
 
 def make_readline(output: bytes):
@@ -60,9 +75,9 @@ def patch_build():
 
 
 @pytest.mark.asyncio
-async def test_progress_parsing(build_mocks, patch_build):
+async def test_progress_parsing(build_mocks, patch_build, tmp_path):
     """Progress markers [n/m] are parsed and reported."""
-    ctx, cache_proc, build_proc = build_mocks
+    project, ctx, cache_proc, build_proc = build_mocks
     progress_calls = []
     ctx.report_progress = AsyncMock(
         side_effect=lambda progress, total, message: progress_calls.append(
@@ -75,7 +90,7 @@ async def test_progress_parsing(build_mocks, patch_build):
     )
     patch_build.side_effect = [cache_proc, build_proc]
 
-    await lsp_build(ctx, lean_project_path="/fake")
+    await lsp_build(ctx, lean_project_path=str(project))
 
     # Check build progress calls (exclude setup phases)
     build_progress = [
@@ -85,15 +100,15 @@ async def test_progress_parsing(build_mocks, patch_build):
 
 
 @pytest.mark.asyncio
-async def test_filters_trace_lines(build_mocks, patch_build):
+async def test_filters_trace_lines(build_mocks, patch_build, tmp_path):
     """Verbose trace: and LEAN_PATH= lines are filtered from output."""
-    ctx, cache_proc, build_proc = build_mocks
+    project, ctx, cache_proc, build_proc = build_mocks
     build_proc.stdout.readline = make_readline(
         b"[0/2] Built A\ntrace: .> LEAN_PATH=/x lean cmd\n[1/2] Built B\n"
     )
     patch_build.side_effect = [cache_proc, build_proc]
 
-    result = await lsp_build(ctx, lean_project_path="/fake", output_lines=100)
+    result = await lsp_build(ctx, lean_project_path=str(project), output_lines=100)
 
     assert "trace:" not in result.output
     assert "LEAN_PATH" not in result.output
@@ -101,36 +116,36 @@ async def test_filters_trace_lines(build_mocks, patch_build):
 
 
 @pytest.mark.asyncio
-async def test_output_truncation(build_mocks, patch_build):
+async def test_output_truncation(build_mocks, patch_build, tmp_path):
     """output_lines parameter truncates to last N lines."""
-    ctx, cache_proc, build_proc = build_mocks
+    project, ctx, cache_proc, build_proc = build_mocks
     lines = b"\n".join(f"[{i}/50] Built M{i}".encode() for i in range(50))
     build_proc.stdout.readline = make_readline(lines + b"\nDone\n")
     patch_build.side_effect = [cache_proc, build_proc]
 
-    result = await lsp_build(ctx, lean_project_path="/fake", output_lines=5)
+    result = await lsp_build(ctx, lean_project_path=str(project), output_lines=5)
 
     # Should only have last 5 lines
     assert len(result.output.strip().split("\n")) <= 5
 
 
 @pytest.mark.asyncio
-async def test_output_lines_zero(build_mocks, patch_build):
+async def test_output_lines_zero(build_mocks, patch_build, tmp_path):
     """output_lines=0 returns empty output."""
-    ctx, cache_proc, build_proc = build_mocks
+    project, ctx, cache_proc, build_proc = build_mocks
     build_proc.stdout.readline = make_readline(b"[0/1] Built\nDone\n")
     patch_build.side_effect = [cache_proc, build_proc]
 
-    result = await lsp_build(ctx, lean_project_path="/fake", output_lines=0)
+    result = await lsp_build(ctx, lean_project_path=str(project), output_lines=0)
 
     assert result.output == ""
     assert result.success
 
 
 @pytest.mark.asyncio
-async def test_reports_cache_progress(build_mocks, patch_build):
+async def test_reports_cache_progress(build_mocks, patch_build, tmp_path):
     """Cache fetch is reported via progress."""
-    ctx, cache_proc, build_proc = build_mocks
+    project, ctx, cache_proc, build_proc = build_mocks
     progress_calls = []
     ctx.report_progress = AsyncMock(
         side_effect=lambda progress, total, message: progress_calls.append(
@@ -140,23 +155,26 @@ async def test_reports_cache_progress(build_mocks, patch_build):
     build_proc.stdout.readline = make_readline(b"Done\n")
     patch_build.side_effect = [cache_proc, build_proc]
 
-    await lsp_build(ctx, lean_project_path="/fake", output_lines=100)
+    await lsp_build(ctx, lean_project_path=str(project), output_lines=100)
 
     # Should have reported cache fetch progress
     assert any("cache" in m.lower() for p, t, m in progress_calls)
 
 
 @pytest.mark.asyncio
-async def test_lsp_build_continues_when_client_close_fails(build_mocks, patch_build):
+async def test_lsp_build_continues_when_client_close_fails(
+    build_mocks, patch_build, tmp_path
+):
     """Pre-build client close failure is logged and does not abort the build."""
-    ctx, cache_proc, build_proc = build_mocks
+    project, ctx, cache_proc, build_proc = build_mocks
     failing_client = _FailingClient()
+    failing_client.project_path = tmp_path / "old-proj"
     ctx.request_context.lifespan_context.client = failing_client
 
     build_proc.stdout.readline = make_readline(b"[0/1] Built\nDone\n")
     patch_build.side_effect = [cache_proc, build_proc]
 
-    result = await lsp_build(ctx, lean_project_path="/fake", output_lines=100)
+    result = await lsp_build(ctx, lean_project_path=str(project), output_lines=100)
 
     assert failing_client.close_calls == 1
     assert result.success

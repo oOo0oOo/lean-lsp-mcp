@@ -65,6 +65,69 @@ def test_split_imports_preserves_specific_mathlib():
     assert "import Other" in header
 
 
+@pytest.mark.asyncio
+async def test_run_snippets_uses_last_sorry(tmp_path: Path):
+    """When body already contains sorries, the *last* (injected) one is used."""
+    from unittest.mock import AsyncMock
+
+    repl = Repl(project_dir=str(tmp_path))
+    repl._proc = True  # fake "running"
+    repl._header = ""
+    repl._header_env = 0
+
+    # Simulate a response with two sorries: pre-existing (ps=10) + injected (ps=42)
+    cmd_resp = {
+        "sorries": [
+            {"proofState": 10},  # pre-existing sorry
+            {"proofState": 42},  # our injected sorry
+        ]
+    }
+    tactic_resp = {"goals": ["⊢ True"]}
+
+    repl._ensure_header = AsyncMock(return_value=0)
+    repl._send_cmd = AsyncMock(return_value=cmd_resp)
+    repl._send_tactic = AsyncMock(return_value=tactic_resp)
+
+    results = await repl.run_snippets(
+        "import Mathlib\n\ntheorem t : True := by\n  have : False := sorry",
+        ["trivial"],
+    )
+
+    # Should have used proofState 42 (last sorry), not 10
+    repl._send_tactic.assert_called_once_with("trivial", 42)
+    assert results[0].goals == ["⊢ True"]
+
+
+@pytest.mark.asyncio
+async def test_run_snippets_matches_body_indentation(tmp_path: Path):
+    """Injected sorry matches the indentation of surrounding tactic lines."""
+    from unittest.mock import AsyncMock
+
+    repl = Repl(project_dir=str(tmp_path))
+    repl._proc = True
+    repl._header = ""
+    repl._header_env = 0
+
+    cmd_resp = {"sorries": [{"proofState": 1}]}
+    tactic_resp = {"goals": []}
+
+    repl._ensure_header = AsyncMock(return_value=0)
+    repl._send_cmd = AsyncMock(return_value=cmd_resp)
+    repl._send_tactic = AsyncMock(return_value=tactic_resp)
+
+    # Body has 4-space indented tactics
+    await repl.run_snippets(
+        "import Foo\n\ntheorem t : True := by\n    intro h",
+        ["trivial"],
+    )
+
+    # Verify the sorry was appended with 4-space indent, not hard-coded 2
+    sent_code = repl._send_cmd.call_args[0][0]
+    assert sent_code.endswith("    sorry"), (
+        f"Expected 4-space indent, got: {sent_code!r}"
+    )
+
+
 # =============================================================================
 # Integration Tests (require REPL binary)
 # =============================================================================

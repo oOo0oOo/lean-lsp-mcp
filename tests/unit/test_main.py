@@ -7,6 +7,11 @@ import lean_lsp_mcp
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clear_active_transport_env(monkeypatch) -> None:
+    monkeypatch.delenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", raising=False)
+
+
 def test_main_handles_keyboard_interrupt(monkeypatch) -> None:
     def raise_interrupt(*_args, **_kwargs) -> None:
         raise KeyboardInterrupt
@@ -24,7 +29,6 @@ def test_main_sets_active_transport_env_before_run(monkeypatch) -> None:
         observed["transport_arg"] = kwargs["transport"]
         observed["transport_env"] = os.environ.get("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "")
 
-    monkeypatch.delenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", raising=False)
     monkeypatch.setattr(lean_lsp_mcp.mcp, "run", capture_transport)
     monkeypatch.setattr(
         sys,

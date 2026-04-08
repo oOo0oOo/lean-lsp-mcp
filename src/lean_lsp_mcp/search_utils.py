@@ -12,6 +12,7 @@ import threading
 from orjson import loads as _json_loads
 from pathlib import Path
 
+from lean_lsp_mcp.file_utils import LeanPathPolicy, build_lean_path_policy
 
 INSTALL_URL = "https://github.com/BurntSushi/ripgrep#installation"
 
@@ -40,6 +41,7 @@ def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         )
     except FileNotFoundError:
@@ -124,7 +126,7 @@ def _resolve_namespaces(file_path: Path, line_numbers: set[int]) -> dict[int, st
     if not line_numbers:
         return {}
     try:
-        lines = file_path.read_text().splitlines()
+        lines = file_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return {}
 
@@ -151,9 +153,14 @@ def lean_local_search(
     query: str,
     limit: int = 32,
     project_root: Path | None = None,
+    path_policy: LeanPathPolicy | None = None,
 ) -> list[dict[str, str]]:
     """Search Lean declarations matching ``query`` using ripgrep; results include theorems, lemmas, defs, classes, instances, structures, inductives, abbrevs, and opaque decls."""
-    root = (project_root or Path.cwd()).resolve()
+    policy = path_policy
+    if policy is None:
+        root = (project_root or Path.cwd()).resolve()
+        policy = build_lean_path_policy(root)
+    root = policy.project_root
 
     pattern = (
         rf"^\s*(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
@@ -179,8 +186,8 @@ def lean_local_search(
         str(root),
     ]
 
-    if lean_src := _get_lean_src_search_path(root):
-        command.append(lean_src)
+    if policy.stdlib_root is not None:
+        command.append(str(policy.stdlib_root))
 
     process = _create_ripgrep_process(command, cwd=str(root))
 
@@ -238,9 +245,9 @@ def lean_local_search(
             )
 
             try:
-                display_path = abs_path.relative_to(root).as_posix()
+                display_path = policy.display_path(abs_path)
             except ValueError:
-                display_path = file_path.as_posix()
+                continue
 
             matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
             match_locations.append((abs_path, line_number))
@@ -335,19 +342,29 @@ def _get_lean_src_search_path(project_root: Path | None = None) -> str | None:
     toolchain from the project's ``lean-toolchain`` file.
     """
     cwd = str(project_root) if project_root else None
-    try:
-        completed = subprocess.run(
-            ["lean", "--print-prefix"], capture_output=True, text=True, cwd=cwd
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
+    commands = [["lean", "--print-prefix"]]
+    elan_lean = Path("~/.elan/bin/lean").expanduser()
+    if elan_lean.exists():
+        commands.append([str(elan_lean), "--print-prefix"])
 
-    prefix = completed.stdout.strip()
-    if not prefix:
-        return None
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=cwd,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            continue
 
-    candidate = Path(prefix).expanduser().resolve() / "src"
-    if candidate.exists():
-        return str(candidate)
+        prefix = completed.stdout.strip()
+        if not prefix:
+            continue
+
+        candidate = Path(prefix).expanduser().resolve() / "src"
+        if candidate.exists():
+            return str(candidate)
 
     return None
