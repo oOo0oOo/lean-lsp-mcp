@@ -634,6 +634,7 @@ You can specify the transport method using the `--transport` argument when runni
 uvx lean-lsp-mcp --transport stdio # Default transport
 uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
 uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at http://localhost:12345/sse
+uvx lean-lsp-mcp --version # Print the installed version
 ```
 
 ### Bearer Token Authentication
