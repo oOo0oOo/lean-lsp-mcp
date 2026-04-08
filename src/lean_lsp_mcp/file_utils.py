@@ -64,7 +64,6 @@ class LeanPathPolicy:
         return os.path.relpath(candidate, self.project_root)
 
 
-
 def valid_lean_project_path(path: Path | str) -> bool:
     path_obj = Path(path).expanduser()
     try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from functools import lru_cache
 import platform
 import re
 import shutil
