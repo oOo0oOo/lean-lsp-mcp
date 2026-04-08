@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 from contextlib import suppress
+from importlib.metadata import version
 
 import anyio
 from lean_lsp_mcp.client_utils import infer_project_path
@@ -60,6 +61,12 @@ def _silence_stdout() -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Lean LSP MCP Server")
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {version('lean-lsp-mcp')}",
+    )
     parser.add_argument(
         "--transport",
         type=str,
