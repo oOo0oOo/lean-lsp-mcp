@@ -120,6 +120,7 @@ class LoogleManager:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout,
             cwd=cwd or self.repo_dir,
             env=env,
@@ -176,7 +177,9 @@ class LoogleManager:
 
     def _get_mathlib_version(self) -> str:
         try:
-            manifest = json.loads((self.repo_dir / "lake-manifest.json").read_text())
+            manifest = json.loads(
+                (self.repo_dir / "lake-manifest.json").read_text(encoding="utf-8")
+            )
             for pkg in manifest.get("packages", []):
                 if pkg.get("name") == "mathlib":
                     return pkg.get("rev", "unknown")[:12]
@@ -187,12 +190,14 @@ class LoogleManager:
     def _get_toolchain_version(self) -> str | None:
         """Get the Lean toolchain version from lean-toolchain file."""
         try:
-            return (self.repo_dir / "lean-toolchain").read_text().strip()
+            return (
+                (self.repo_dir / "lean-toolchain").read_text(encoding="utf-8").strip()
+            )
         except Exception:
             return None
 
     def _check_toolchain_installed(self) -> tuple[bool, str]:
-        """Check if the required Lean toolchain is installed."""
+        """Check if the required Lean toolchain is installed, auto-installing via elan if needed."""
         tc = self._get_toolchain_version()
         if not tc:
             return True, ""  # Can't check without lean-toolchain file
@@ -202,9 +207,31 @@ class LoogleManager:
         elan_home = Path(os.environ.get("ELAN_HOME", Path.home() / ".elan"))
         tc_path = elan_home / "toolchains" / tc_dir_name
         if not tc_path.exists():
+            # Loogle tracks mathlib HEAD which often requires an RC toolchain.
+            # Auto-install it via elan so users don't need to do this manually.
+            if shutil.which("elan"):
+                logger.info("Installing toolchain '%s' for loogle...", tc)
+                try:
+                    result = subprocess.run(
+                        ["elan", "toolchain", "install", tc],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        timeout=300,
+                    )
+                    if result.returncode == 0:
+                        logger.info("Toolchain '%s' installed successfully.", tc)
+                        return True, ""
+                    logger.warning(
+                        "Failed to install toolchain '%s' (exit %s): %s",
+                        tc,
+                        result.returncode,
+                        (result.stderr or result.stdout or "")[:500],
+                    )
+                except Exception as e:
+                    logger.warning("Failed to install toolchain '%s': %s", tc, e)
             return False, (
-                f"Toolchain '{tc}' not installed. "
-                f"Run: cd {self.repo_dir} && lake update"
+                f"Toolchain '{tc}' not installed. Run: elan toolchain install {tc}"
             )
         return True, ""
 
@@ -217,9 +244,35 @@ class LoogleManager:
             return False, err
         return True, ""
 
-    def _discover_project_paths(self) -> list[Path]:
-        """Find .lake/packages lib paths from the user's project."""
+    def _get_project_toolchain(self) -> str | None:
+        """Get the Lean toolchain version from the user's project."""
         if not self.project_path:
+            return None
+        try:
+            return (
+                (self.project_path / "lean-toolchain")
+                .read_text(encoding="utf-8")
+                .strip()
+            )
+        except Exception:
+            return None
+
+    def _discover_project_paths(self) -> list[Path]:
+        """Find .lake/packages lib paths from the user's project.
+
+        Skips user paths when toolchains differ (incompatible .olean headers).
+        """
+        if not self.project_path:
+            return []
+        loogle_tc = self._get_toolchain_version()
+        project_tc = self._get_project_toolchain()
+        if loogle_tc and project_tc and loogle_tc != project_tc:
+            logger.warning(
+                "Toolchain mismatch: loogle uses %s, project uses %s. "
+                "Skipping project paths (incompatible .olean files).",
+                loogle_tc,
+                project_tc,
+            )
             return []
         paths = []
         # Check packages directory
@@ -362,7 +415,7 @@ class LoogleManager:
                 cwd=self.repo_dir,
             )
             line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
-            decoded = line.decode()
+            decoded = line.decode("utf-8", errors="replace")
             if self.READY_SIGNAL in decoded:
                 self._ready = True
                 logger.info("Loogle ready")
@@ -373,7 +426,9 @@ class LoogleManager:
                     self.process.stderr.read(), timeout=1
                 )
                 if stderr_data:
-                    logger.error(f"Loogle stderr: {stderr_data.decode().strip()}")
+                    logger.error(
+                        f"Loogle stderr: {stderr_data.decode('utf-8', errors='replace').strip()}"
+                    )
             except asyncio.TimeoutError:
                 pass
             logger.error(f"Loogle failed to start. stdout: {decoded.strip()}")
@@ -407,7 +462,7 @@ class LoogleManager:
                     line = await asyncio.wait_for(
                         self.process.stdout.readline(), timeout=30
                     )
-                    response = json.loads(line.decode())
+                    response = json.loads(line.decode("utf-8", errors="replace"))
                     if err := response.get("error"):
                         logger.warning(f"Query error: {err}")
                         return []

@@ -40,6 +40,7 @@ def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
             cwd=cwd,
         )
     except FileNotFoundError:
@@ -124,7 +125,7 @@ def _resolve_namespaces(file_path: Path, line_numbers: set[int]) -> dict[int, st
     if not line_numbers:
         return {}
     try:
-        lines = file_path.read_text().splitlines()
+        lines = file_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return {}
 
@@ -337,7 +338,11 @@ def _get_lean_src_search_path(project_root: Path | None = None) -> str | None:
     cwd = str(project_root) if project_root else None
     try:
         completed = subprocess.run(
-            ["lean", "--print-prefix"], capture_output=True, text=True, cwd=cwd
+            ["lean", "--print-prefix"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None

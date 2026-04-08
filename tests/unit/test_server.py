@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from lean_lsp_mcp import server
+from lean_lsp_mcp.models import DiagnosticSeverity
 
 
 class DummyClient:
@@ -41,9 +43,19 @@ class _FailingRepl:
         raise RuntimeError("close boom")
 
 
-def _make_ctx(rate_limit: dict[str, list[int]] | None = None) -> types.SimpleNamespace:
+@pytest.fixture(autouse=True)
+def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
+    monkeypatch.delenv("LEAN_REPL", raising=False)
+
+
+def _make_ctx(
+    rate_limit: dict[str, list[int]] | None = None,
+    *,
+    lean_project_path: Path | None = None,
+) -> types.SimpleNamespace:
     context = server.AppContext(
-        lean_project_path=None,
+        lean_project_path=lean_project_path,
         client=None,
         rate_limit=rate_limit or {"test": []},
         lean_search_available=True,
@@ -189,6 +201,65 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert wrapped(ctx=ctx) == "ok"
     assert rate_limit["test"] == [100]
+
+
+def test_parse_disabled_tools() -> None:
+    assert server._parse_disabled_tools(None) == set()
+    assert server._parse_disabled_tools("") == set()
+    assert server._parse_disabled_tools("lean_build, lean_run_code ,,") == {
+        "lean_build",
+        "lean_run_code",
+    }
+
+
+def test_load_tool_description_overrides_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        json.dumps(
+            {
+                "lean_build": "Build tool from env",
+                "lean_goal": "Goal tool from env",
+            }
+        ),
+    )
+
+    overrides = server._load_tool_description_overrides()
+    assert overrides["lean_build"] == "Build tool from env"
+    assert overrides["lean_goal"] == "Goal tool from env"
+
+
+def test_apply_tool_configuration_disables_and_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mcp = server.FastMCP(name="test", instructions="base instructions")
+
+    @mcp.tool("enabled_tool")
+    def enabled_tool() -> str:
+        """enabled description"""
+        return "ok"
+
+    @mcp.tool("removed_tool")
+    def removed_tool() -> str:
+        """removed description"""
+        return "ok"
+
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "removed_tool")
+    monkeypatch.setenv("LEAN_MCP_INSTRUCTIONS", "custom server instructions")
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        json.dumps({"enabled_tool": "overridden description"}),
+    )
+
+    server.apply_tool_configuration(mcp)
+
+    assert mcp.instructions == "custom server instructions"
+    assert mcp._tool_manager.get_tool("removed_tool") is None
+    assert (
+        mcp._tool_manager.get_tool("enabled_tool").description
+        == "overridden description"
+    )
 
 
 @pytest.mark.asyncio
@@ -369,3 +440,190 @@ def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
 
     assert result.items == []
     assert fake_client.restore_calls == [("Foo.lean", "disk-content")]
+
+
+# ---------------------------------------------------------------------------
+# Severity filtering in _process_diagnostics / diagnostic_messages
+# ---------------------------------------------------------------------------
+
+_MIXED_DIAGNOSTICS = [
+    {
+        "severity": 1,
+        "message": "unknown identifier",
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 5},
+        },
+    },
+    {
+        "severity": 2,
+        "message": "unused variable",
+        "range": {
+            "start": {"line": 1, "character": 0},
+            "end": {"line": 1, "character": 3},
+        },
+    },
+    {
+        "severity": 3,
+        "message": "declaration uses sorry",
+        "range": {
+            "start": {"line": 2, "character": 0},
+            "end": {"line": 2, "character": 4},
+        },
+    },
+    {
+        "severity": 4,
+        "message": "consider using simp",
+        "range": {
+            "start": {"line": 3, "character": 0},
+            "end": {"line": 3, "character": 3},
+        },
+    },
+]
+
+
+def test_process_diagnostics_no_severity_filter_returns_all() -> None:
+    result = server._process_diagnostics(
+        _MIXED_DIAGNOSTICS, build_success=True, severity=None
+    )
+    assert [d.severity for d in result.items] == ["error", "warning", "info", "hint"]
+
+
+def test_process_diagnostics_filter_errors_only() -> None:
+    result = server._process_diagnostics(
+        _MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.error
+    )
+    assert len(result.items) == 1
+    assert result.items[0].severity == "error"
+    assert result.items[0].message == "unknown identifier"
+
+
+def test_process_diagnostics_filter_warnings_only() -> None:
+    result = server._process_diagnostics(
+        _MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.warning
+    )
+    assert len(result.items) == 1
+    assert result.items[0].severity == "warning"
+    assert result.items[0].message == "unused variable"
+
+
+def test_process_diagnostics_filter_info_only() -> None:
+    result = server._process_diagnostics(
+        _MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.info
+    )
+    assert len(result.items) == 1
+    assert result.items[0].severity == "info"
+
+
+def test_process_diagnostics_filter_hint_only() -> None:
+    result = server._process_diagnostics(
+        _MIXED_DIAGNOSTICS, build_success=True, severity=DiagnosticSeverity.hint
+    )
+    assert len(result.items) == 1
+    assert result.items[0].severity == "hint"
+
+
+def test_process_diagnostics_filter_no_matches_returns_empty() -> None:
+    error_only = [_MIXED_DIAGNOSTICS[0]]
+    result = server._process_diagnostics(
+        error_only, build_success=True, severity=DiagnosticSeverity.warning
+    )
+    assert result.items == []
+
+
+def test_process_diagnostics_build_failure_excluded_regardless_of_filter() -> None:
+    """Build stderr blobs at (1,1) should be excluded even when severity filter matches."""
+    # "lake setup-file" triggers is_build_stderr
+    build_diag = {
+        "severity": 1,
+        "message": "lake setup-file some/dep/path",
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 0},
+        },
+    }
+    result = server._process_diagnostics(
+        [build_diag], build_success=False, severity=DiagnosticSeverity.error
+    )
+    assert result.items == []
+    assert result.success is False
+
+
+def test_diagnostic_messages_passes_severity_to_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """diagnostic_messages tool forwards the severity parameter to _process_diagnostics."""
+    captured: dict = {}
+
+    def fake_process(diagnostics, build_success, severity=None, timed_out=False):
+        captured["severity"] = severity
+        from lean_lsp_mcp.models import DiagnosticsResult
+
+        return DiagnosticsResult(success=build_success, items=[])
+
+    class FakeDiagResult:
+        diagnostics = [
+            {
+                "severity": 2,
+                "message": "unused",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 3},
+                },
+            }
+        ]
+        success = True
+        timed_out = False
+
+    class FakeClient:
+        def open_file(self, *_a, **_kw):
+            pass
+
+        def get_diagnostics(self, *_a, **_kw):
+            return FakeDiagResult()
+
+    monkeypatch.setattr(server, "_process_diagnostics", fake_process)
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = FakeClient()
+
+    server.diagnostic_messages(
+        ctx=ctx, file_path="/abs/Foo.lean", severity=DiagnosticSeverity.warning
+    )
+
+    assert captured["severity"] == DiagnosticSeverity.warning
+
+
+def test_diagnostic_messages_default_severity_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_process(diagnostics, build_success, severity=None, timed_out=False):
+        captured["severity"] = severity
+        from lean_lsp_mcp.models import DiagnosticsResult
+
+        return DiagnosticsResult(success=build_success, items=[])
+
+    class FakeDiagResult:
+        diagnostics = []
+        success = True
+        timed_out = False
+
+    class FakeClient:
+        def open_file(self, *_a, **_kw):
+            pass
+
+        def get_diagnostics(self, *_a, **_kw):
+            return FakeDiagResult()
+
+    monkeypatch.setattr(server, "_process_diagnostics", fake_process)
+    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = FakeClient()
+
+    server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean")
+
+    assert captured["severity"] is None

@@ -178,8 +178,11 @@ class Repl:
                 if not body.strip():
                     return [SnippetResult(error="No proof body") for _ in snippets]
 
-                # Ensure proper whitespace before sorry
-                body_with_sorry = body.rstrip() + "\n  sorry"
+                # Match indentation of the last non-empty body line
+                body_lines = body.splitlines()
+                last_line = next((ln for ln in reversed(body_lines) if ln.strip()), "")
+                indent = last_line[: len(last_line) - len(last_line.lstrip())]
+                body_with_sorry = body.rstrip() + "\n" + indent + "sorry"
                 resp = await asyncio.wait_for(
                     self._send_cmd(body_with_sorry, env=header_env),
                     timeout=self.timeout,
@@ -188,7 +191,8 @@ class Repl:
                 if "error" in resp:
                     return [SnippetResult(error=resp["error"]) for _ in snippets]
 
-                # Get proof state from the sorry
+                # Get proof state from the sorry (use last — ours is always
+                # appended at the end; earlier entries may be pre-existing).
                 sorries = resp.get("sorries", [])
                 if not sorries:
                     # No sorry = no proof goal, check messages for errors
@@ -201,7 +205,7 @@ class Repl:
                         for _ in snippets
                     ]
 
-                proof_state = sorries[0].get("proofState")
+                proof_state = sorries[-1].get("proofState")
                 if proof_state is None:
                     return [
                         SnippetResult(error="No proofState returned") for _ in snippets

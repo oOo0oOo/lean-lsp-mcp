@@ -130,7 +130,7 @@ def _configure_env(
             assert cwd == expected_cwd
         return _DummyPopen(stdout_events, returncode=returncode)
 
-    def fake_run(cmd, *, capture_output=False, text=False, cwd=None):
+    def fake_run(cmd, *, capture_output=False, text=False, cwd=None, **kwargs):
         run_calls.append((cmd, cwd))
         if cmd[:2] == ["lean", "--print-prefix"]:
             return lean_completed

@@ -1,8 +1,16 @@
 """Pydantic models for MCP tool structured outputs."""
 
+from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
+
+
+class DiagnosticSeverity(str, Enum):
+    error = "error"
+    warning = "warning"
+    info = "info"
+    hint = "hint"
 
 
 class LocalSearchResult(BaseModel):
@@ -249,6 +257,24 @@ class WidgetSourceResult(BaseModel):
     """Widget JavaScript source for a given hash."""
 
     source: dict = Field(description="Widget source data including JavaScript module")
+
+
+class ReferenceLocation(BaseModel):
+    """A single reference location."""
+
+    file_path: str = Field(description="Absolute file path")
+    line: int = Field(description="Line (1-indexed)")
+    column: int = Field(description="Column (1-indexed)")
+    end_line: int = Field(description="End line (1-indexed)")
+    end_column: int = Field(description="End column (1-indexed)")
+
+
+class ReferencesResult(BaseModel):
+    """Wrapper for find references results."""
+
+    items: List[ReferenceLocation] = Field(
+        default_factory=list, description="List of reference locations"
+    )
 
 
 class LineProfile(BaseModel):

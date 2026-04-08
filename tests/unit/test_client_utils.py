@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from lean_lsp_mcp.client_utils import (
+    resolve_file_path,
     setup_client_for_file,
     startup_client,
     valid_lean_project_path,
@@ -33,7 +34,9 @@ class _FailingCloseClient(_MockLeanClient):
 
 class _LifespanContext:
     def __init__(
-        self, lean_project_path: Path | None, client: _MockLeanClient | None
+        self,
+        lean_project_path: Path | None,
+        client: _MockLeanClient | None,
     ) -> None:
         self.lean_project_path = lean_project_path
         self.client = client
@@ -236,3 +239,15 @@ def test_startup_client_serializes_concurrent_calls(
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    target = project / "src" / "Example.lean"
+    target.parent.mkdir(parents=True)
+    target.write_text("theorem t : True := by trivial")
+
+    ctx = _Context(_LifespanContext(project, None))
+    resolved = resolve_file_path(ctx, "src/Example.lean")
+    assert resolved == target.resolve()

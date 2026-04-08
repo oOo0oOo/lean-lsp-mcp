@@ -131,6 +131,23 @@ claude mcp add lean-lsp -s project uvx lean-lsp-mcp
 You can find more details about MCP server configuration for Claude Code [here](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials#configure-mcp-servers).
 </details>
 
+<details>
+<summary><b>Mistral Vibe (Click to expand)</b></summary>
+(These instructions cover Mac/Linux.)
+
+1. Edit `~/.vibe/config.toml`.
+
+2. Paste the following into the file (e.g. at the end):
+```toml
+[[mcp_servers]]
+name = "lean-lsp"
+transport = "stdio"
+command = "uvx"
+args = ["lean-lsp-mcp"]
+```
+If there are no existing MCP servers, you may have to remove `mcp_servers = []`.
+</details>
+
 ### 4. Install ripgrep (optional but recommended)
 
 For the local search tool `lean_local_search`, install [ripgrep](https://github.com/BurntSushi/ripgrep?tab=readme-ov-file#installation) (`rg`) and make sure it is available in your PATH.
@@ -150,7 +167,7 @@ Get a concise outline of a Lean file showing imports and declarations with type 
 
 #### lean_diagnostic_messages
 
-Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
+Get all diagnostic messages for a Lean file. This includes infos, warnings and errors. Use `severity` (`"error"`, `"warning"`, `"info"`, `"hint"`) to filter to a single level. `interactive=True` returns verbose nested `TaggedText` with embedded widgets. For "Try This" suggestions, prefer `lean_code_actions`.
 
 <details>
 <summary>Example output</summary>
@@ -221,6 +238,10 @@ of the `#print axioms my_thm` command, the axiom used by the implementation of `
 
 Get the file contents where a symbol or term is declared.
 
+#### lean_references
+
+Find all references to a symbol at a given position (line & column), including its declaration.
+
 #### lean_completions
 
 Code auto-completion: Find available identifiers or import suggestions at a specific position (line & column) in a Lean file.
@@ -239,10 +260,16 @@ l1c1-l1c6, severity: 3
 
 #### lean_multi_attempt
 
-Attempt multiple tactics on a line and return goal state and diagnostics for each.
+Attempt multiple tactics at a proof position and return goal state and diagnostics for each.
 Useful to screen different proof attempts before committing to one.
 
-When `LEAN_REPL=true`, uses the REPL tactic mode for up to 5x faster execution (see [Environment Variables](#environment-variables)).
+Accepts:
+- `line` to target a tactic line
+- optional `column` to target an exact source position, similar to `lean_goal`
+
+Execution mode:
+- When `LEAN_REPL=true` and `column` is omitted, uses the REPL tactic mode for up to 5x faster execution (see [Environment Variables](#environment-variables)).
+- When `column` is provided, uses the LSP path so the attempt is evaluated at the exact source position.
 
 <details>
 <summary>Example output (attempting `rw [Nat.pow_sub (Fintype.card_pos_of_nonempty S)]` and `by_contra h_neq`)</summary>
@@ -529,6 +556,20 @@ Many clients allow the user to disable specific tools manually (e.g. lean_build)
 
 **Cursor**: In "Cursor Settings" > "MCP" click on the name of a tool to disable it (strikethrough).
 
+You can also disable tools at server startup:
+
+- `LEAN_MCP_DISABLED_TOOLS`: Comma-separated tool names (for example `lean_run_code,lean_build`).
+- `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
+- `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object to override tool descriptions.
+
+Example:
+
+```bash
+export LEAN_MCP_DISABLED_TOOLS="lean_run_code,lean_build"
+export LEAN_MCP_INSTRUCTIONS="Prefer lean_local_search before remote search tools."
+export LEAN_MCP_TOOL_DESCRIPTIONS='{"lean_goal":"Primary proof-state inspection tool."}'
+```
+
 ## MCP Configuration
 
 This MCP server works out-of-the-box without any configuration. However, a few optional settings are available.
@@ -537,12 +578,16 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
-- `LEAN_PROJECT_PATH`: Path to your Lean project root. Set this if the server cannot automatically detect your project.
-- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` (~5x faster, see [REPL Setup](#repl-setup)).
+- `LEAN_PROJECT_PATH`: Path to your Lean project root. Relative `file_path` arguments resolve against this root.
+- `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
+- `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
+- `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
+- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` for line-based attempts (~5x faster, see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport.
+- `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
@@ -587,6 +632,7 @@ You can specify the transport method using the `--transport` argument when runni
 uvx lean-lsp-mcp --transport stdio # Default transport
 uvx lean-lsp-mcp --transport streamable-http # Available at http://127.0.0.1:8000/mcp
 uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at http://localhost:12345/sse
+uvx lean-lsp-mcp --version # Print the installed version
 ```
 
 ### Bearer Token Authentication
@@ -606,7 +652,7 @@ Clients should then include the token in the `Authorization` header.
 
 ### REPL Setup
 
-Enable fast REPL-based `lean_multi_attempt` (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode.
+Enable fast REPL-based `lean_multi_attempt` for line-based attempts (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode. Exact `column`-based attempts still use the LSP path.
 
 **1. Add REPL to your Lean project's `lakefile.toml`:**
 
@@ -662,6 +708,34 @@ While it does not handle any sensitive data such as passwords or API keys, it st
 - No input or output validation.
 
 Please be aware of these risks. Feel free to audit the code and report security issues!
+
+### Containerized setup (recommended for stricter isolation)
+
+Build image:
+
+```bash
+docker build -t lean-lsp-mcp:containerized .
+```
+
+Run with a mounted project root (read-only source + writable Lake cache):
+
+```bash
+docker run --rm -i \
+  -v "$PWD":/workspace:ro \
+  -v lean-lsp-mcp-lake-cache:/workspace/.lake \
+  lean-lsp-mcp:containerized
+```
+
+The included Docker image defaults to:
+
+- `LEAN_PROJECT_PATH=/workspace`
+- `LEAN_MCP_DISABLED_TOOLS=lean_run_code`
+
+Notes:
+
+- `LEAN_MCP_DISABLED_TOOLS` is a startup default and can be overridden by `docker run -e`.
+- Using `--network none` can break tools that require network access (`leansearch`, `loogle`, `leanfinder`, `state_search`, `hammer_premise`) and dependency downloads.
+- The entrypoint exits immediately if `LEAN_PROJECT_PATH` does not exist.
 
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
 

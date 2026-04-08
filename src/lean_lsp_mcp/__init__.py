@@ -2,10 +2,11 @@ import argparse
 import os
 import sys
 from contextlib import suppress
+from importlib.metadata import version
 
 import anyio
 from lean_lsp_mcp.client_utils import infer_project_path
-from lean_lsp_mcp.server import mcp
+from lean_lsp_mcp.server import apply_tool_configuration, mcp
 
 _TRANSPORT_CLOSE_HINTS = (
     "transport closed",
@@ -61,6 +62,12 @@ def _silence_stdout() -> None:
 def main():
     parser = argparse.ArgumentParser(description="Lean LSP MCP Server")
     parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {version('lean-lsp-mcp')}",
+    )
+    parser.add_argument(
         "--transport",
         type=str,
         choices=["stdio", "streamable-http", "sse"],
@@ -83,6 +90,21 @@ def main():
         "--lean-project-path",
         type=str,
         help=("Path to a Lean project root or to a file/dir inside it."),
+    )
+    parser.add_argument(
+        "--disable-tools",
+        type=str,
+        help="Comma-separated tool names to disable (e.g. lean_run_code,lean_build).",
+    )
+    parser.add_argument(
+        "--tool-descriptions",
+        type=str,
+        help="JSON object mapping tool names to replacement descriptions.",
+    )
+    parser.add_argument(
+        "--instructions",
+        type=str,
+        help="Override the server instructions sent to the client.",
     )
     parser.add_argument(
         "--loogle-local",
@@ -113,6 +135,12 @@ def main():
         if project_path is None:
             parser.error(f"No lean-toolchain found for: {args.lean_project_path}")
         os.environ["LEAN_PROJECT_PATH"] = str(project_path)
+    if args.disable_tools:
+        os.environ["LEAN_MCP_DISABLED_TOOLS"] = args.disable_tools
+    if args.tool_descriptions:
+        os.environ["LEAN_MCP_TOOL_DESCRIPTIONS"] = args.tool_descriptions
+    if args.instructions:
+        os.environ["LEAN_MCP_INSTRUCTIONS"] = args.instructions
     if args.loogle_local:
         os.environ["LEAN_LOOGLE_LOCAL"] = "true"
     if args.loogle_cache_dir:
@@ -123,6 +151,7 @@ def main():
         os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
     os.environ["LEAN_LSP_MCP_ACTIVE_TRANSPORT"] = args.transport
 
+    apply_tool_configuration(mcp)
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     try:
