@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,6 +45,7 @@ def build_mocks(tmp_path):
     # Simple process for cache (no stdout needed)
     cache_proc = MagicMock()
     cache_proc.wait = AsyncMock()
+    cache_proc.stdout.readline = AsyncMock(return_value=b"")
 
     # Build process with stdout
     build_proc = MagicMock()
@@ -159,6 +161,26 @@ async def test_reports_cache_progress(build_mocks, patch_build, tmp_path):
 
     # Should have reported cache fetch progress
     assert any("cache" in m.lower() for p, t, m in progress_calls)
+
+
+@pytest.mark.asyncio
+async def test_setup_subprocesses_pipe_output(build_mocks, patch_build, tmp_path):
+    """Setup subprocesses must not inherit stdio."""
+    project, ctx, cache_proc, build_proc = build_mocks
+    clean_proc = MagicMock()
+    clean_proc.wait = AsyncMock()
+    clean_proc.stdout.readline = AsyncMock(return_value=b"")
+    build_proc.stdout.readline = make_readline(b"Done\n")
+    patch_build.side_effect = [clean_proc, cache_proc, build_proc]
+
+    await lsp_build(ctx, lean_project_path=str(project), clean=True, output_lines=100)
+
+    clean_call = patch_build.await_args_list[0]
+    cache_call = patch_build.await_args_list[1]
+    assert clean_call.kwargs["stdout"] == asyncio.subprocess.PIPE
+    assert clean_call.kwargs["stderr"] == asyncio.subprocess.STDOUT
+    assert cache_call.kwargs["stdout"] == asyncio.subprocess.PIPE
+    assert cache_call.kwargs["stderr"] == asyncio.subprocess.STDOUT
 
 
 @pytest.mark.asyncio
