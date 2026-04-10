@@ -589,26 +589,37 @@ async def _run_build(
         active_proc = proc
         return proc
 
+    async def _handle_build_output_line(line_str: str) -> None:
+        line_str = line_str.rstrip()
+
+        if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
+            return
+
+        log_lines.append(line_str)
+        if "error" in line_str.lower():
+            errors.append(line_str)
+
+        if m := re.search(
+            r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
+        ):
+            await _safe_report_progress(
+                ctx,
+                progress=int(m.group(1)),
+                total=int(m.group(2)),
+                message=m.group(3) or "Building",
+            )
+
     async def _consume_build_output(proc: asyncio.subprocess.Process) -> None:
-        while line := await proc.stdout.readline():
-            line_str = line.decode("utf-8", errors="replace").rstrip()
+        assert proc.stdout is not None
+        remainder = ""
+        while chunk := await proc.stdout.read(64 * 1024):
+            parts = (remainder + chunk.decode("utf-8", errors="replace")).split("\n")
+            remainder = parts.pop()
+            for line_str in parts:
+                await _handle_build_output_line(line_str)
 
-            if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
-                continue
-
-            log_lines.append(line_str)
-            if "error" in line_str.lower():
-                errors.append(line_str)
-
-            if m := re.search(
-                r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
-            ):
-                await _safe_report_progress(
-                    ctx,
-                    progress=int(m.group(1)),
-                    total=int(m.group(2)),
-                    message=m.group(3) or "Building",
-                )
+        if remainder:
+            await _handle_build_output_line(remainder)
 
     try:
         clients_to_close: list[LeanLSPClient] = []
