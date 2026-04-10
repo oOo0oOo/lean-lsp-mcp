@@ -634,26 +634,30 @@ async def _run_build(
             stderr=asyncio.subprocess.STDOUT,
         )
 
-        while line := await process.stdout.readline():
-            line_str = line.decode("utf-8", errors="replace").rstrip()
+        assert process.stdout is not None
+        chunk_size = 64 * 1024  # 64 KB
+        remainder = ""
+        while chunk := await process.stdout.read(chunk_size):
+            parts = (remainder + chunk.decode("utf-8", errors="replace")).split("\n")
+            remainder = parts.pop()
+            for line_str in parts:
+                line_str = line_str.rstrip()
+                if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
+                    continue
 
-            if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
-                continue
+                log_lines.append(line_str)
+                if "error" in line_str.lower():
+                    errors.append(line_str)
 
-            log_lines.append(line_str)
-            if "error" in line_str.lower():
-                errors.append(line_str)
-
-            # Parse progress: "[2/8] Building Foo (1.2s)" -> (2, 8, "Building Foo")
-            if m := re.search(
-                r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
-            ):
-                await _safe_report_progress(
-                    ctx,
-                    progress=int(m.group(1)),
-                    total=int(m.group(2)),
-                    message=m.group(3) or "Building",
-                )
+                if m := re.search(
+                    r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
+                ):
+                    await _safe_report_progress(
+                        ctx,
+                        progress=int(m.group(1)),
+                        total=int(m.group(2)),
+                        message=m.group(3) or "Building",
+                    )
 
         await process.wait()
 
