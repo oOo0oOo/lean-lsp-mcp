@@ -144,6 +144,7 @@ name = "lean-lsp"
 transport = "stdio"
 command = "uvx"
 args = ["lean-lsp-mcp"]
+tool_timeout_sec = 600
 ```
 If there are no existing MCP servers, you may have to remove `mcp_servers = []`.
 </details>
