@@ -1,4 +1,3 @@
-
 ### File interactions (LSP)
 
 #### lean_file_outline
