@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional, Literal
+from typing import Annotated, Dict, List, Literal, Optional
 
 import certifi
 import orjson
@@ -83,6 +83,7 @@ from lean_lsp_mcp.models import (
     SourceWarning,
     StateSearchResult,
     StateSearchResults,
+    StructuredGoal,
     TermGoalState,
     VerifyResult,
 )
@@ -927,8 +928,8 @@ def goal(
     ] = None,
     format: Annotated[
         Literal["text", "structured"],
-        Field(description="Output format: 'text' (default) or 'structured'")
-    ] = "text", 
+        Field(description="Output format: 'text' (default) or 'structured'"),
+    ] = "text",
 ) -> GoalState:
     """Get proof goals at a position. MOST IMPORTANT tool - use often!
 
@@ -977,29 +978,30 @@ def goal(
             goals = [_goal_to_structured(g) for g in goals]
         return GoalState(
             line_context=line_context,
-            goals=goals
+            goals=goals,
         )
 
-def _goal_to_structured(goal_str: str) -> dict:
+
+def _goal_to_structured(goal_str: str) -> StructuredGoal:
     goal_str = (goal_str or "").strip()
 
     # Case: no goals (proof finished)
     if goal_str == "" or goal_str.lower() == "no goals":
-        return {
-            "context": [],
-            "goal": None,
-            "status": "complete",
-            "pretty": goal_str,
-        }
+        return StructuredGoal(
+            context=[],
+            goal=None,
+            status="complete",
+            pretty=goal_str,
+        )
 
     # Case: no turnstile (fallback)
     if "⊢" not in goal_str:
-        return {
-            "context": [],
-            "goal": goal_str,
-            "status": "unknown",
-            "pretty": goal_str,
-        }
+        return StructuredGoal(
+            context=[],
+            goal=goal_str,
+            status="unknown",
+            pretty=goal_str,
+        )
 
     before, after = goal_str.split("⊢", 1)
 
@@ -1012,10 +1014,14 @@ def _goal_to_structured(goal_str: str) -> dict:
     def flush():
         nonlocal current_name, current_type_lines
         if current_name is not None:
-            context.append({
-                "name": current_name,
-                "type": " ".join(l.strip() for l in current_type_lines).strip()
-            })
+            context.append(
+                {
+                    "name": current_name,
+                    "type": " ".join(
+                        line.strip() for line in current_type_lines
+                    ).strip(),
+                }
+            )
         current_name = None
         current_type_lines = []
 
@@ -1038,12 +1044,13 @@ def _goal_to_structured(goal_str: str) -> dict:
 
     flush()
 
-    return {
-        "context": context,
-        "goal": after.strip(),
-        "status": "open",
-        "pretty": goal_str,
-    }
+    return StructuredGoal(
+        context=context,
+        goal=after.strip(),
+        status="open",
+        pretty=goal_str,
+    )
+
 
 def _get_goal_response(
     client: LeanLSPClient, rel_path: str, line: int, column: int
