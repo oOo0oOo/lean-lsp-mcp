@@ -71,6 +71,7 @@ from lean_lsp_mcp.models import (
     LocalSearchResults,
     LoogleResult,
     LoogleResults,
+    MinimalHypothesesResult,
     MultiAttemptResult,
     PremiseResult,
     PremiseResults,
@@ -80,6 +81,8 @@ from lean_lsp_mcp.models import (
     RunResult,
     WidgetSourceResult,
     WidgetsResult,
+    HypothesisStatus,
+    HypothesisVerdict,
     SourceWarning,
     StateSearchResult,
     StateSearchResults,
@@ -1789,6 +1792,197 @@ def verify_theorem(
             ]
 
     return VerifyResult(axioms=axioms, warnings=w)
+
+
+@mcp.tool(
+    "lean_minimal_hypotheses",
+    annotations=ToolAnnotations(
+        title="Minimal Hypotheses",
+        readOnlyHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def minimal_hypotheses(
+    ctx: Context,
+    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
+    theorem_name: Annotated[
+        str,
+        Field(
+            description=(
+                "Theorem name. Either bare (e.g. `add_comm`) or fully qualified "
+                "(e.g. `Namespace.add_comm`); only the trailing segment is used "
+                "for source matching."
+            ),
+        ),
+    ],
+    inactivity_timeout: Annotated[
+        float,
+        Field(
+            description="Per-hypothesis LSP elaboration timeout (seconds)",
+            ge=5.0,
+            le=300.0,
+        ),
+    ] = 60.0,
+) -> MinimalHypothesesResult:
+    """For each explicit `(h : T)` hypothesis of a theorem, drop it and re-elaborate
+    the file via the LSP. Reports which hypotheses are load-bearing and which are
+    actually unused. Skips implicit `{x : α}` and instance `[inst : C]` binders
+    (those are usually inferable / always load-bearing). Does not rewrite the proof
+    body — a body that names `h` will fail to elaborate without the binder, which
+    is the truthful answer (load-bearing).
+
+    Slow: each hypothesis triggers a re-elaboration capped at `inactivity_timeout`.
+    The original file content is restored before the tool returns."""
+    from lean_lsp_mcp.minimal_hypotheses import (
+        drop_binder,
+        explicit_hypotheses,
+        find_theorem_binders,
+    )
+
+    theorem_name = _validate_theorem_name(theorem_name)
+    rel_path = setup_client_for_file(ctx, file_path)
+    if not rel_path:
+        _raise_invalid_path(file_path)
+
+    client: LeanLSPClient = ctx.request_context.lifespan_context.client
+    client.open_file(rel_path)
+    try:
+        original_content = client.get_file_content(rel_path)
+    except Exception:
+        try:
+            policy = get_path_policy(ctx)
+            abs_path = policy.validate_path(resolve_file_path(ctx, file_path))
+        except (FileNotFoundError, ValueError) as exc:
+            raise LeanToolError(str(exc)) from exc
+        original_content = get_file_contents(abs_path)
+
+    if original_content is None:
+        raise LeanToolError(f"Could not read content for {rel_path}")
+
+    bare_name = theorem_name.split(".")[-1]
+    binders = find_theorem_binders(original_content, bare_name)
+    if not binders:
+        raise LeanToolError(
+            f"Could not find theorem '{theorem_name}' in {rel_path}, "
+            "or it has no binders before its type."
+        )
+    explicit = explicit_hypotheses(binders)
+    skipped = len(binders) - len(explicit)
+
+    if not explicit:
+        return MinimalHypothesesResult(
+            theorem_name=theorem_name,
+            file=rel_path,
+            verdicts=[],
+            skipped_implicit=skipped,
+        )
+
+    def _error_key(diag: Dict) -> tuple[int, int, str]:
+        """Stable identifier for a single LSP diagnostic — used to filter the
+        set of *new* errors against the pre-modification baseline. Line and
+        column may shift slightly if a multi-line binder is removed, but most
+        binders are single-line so (line, column, message[:120]) is stable
+        in practice.
+        """
+        r = diag.get("fullRange", diag.get("range")) or {}
+        start = r.get("start", {})
+        return (
+            int(start.get("line", -1)),
+            int(start.get("character", -1)),
+            str(diag.get("message", ""))[:120],
+        )
+
+    baseline = client.get_diagnostics(rel_path, inactivity_timeout=inactivity_timeout)
+    check_lsp_response(baseline, "get_diagnostics")
+    baseline_keys = {
+        _error_key(d) for d in list(baseline or []) if d.get("severity") == 1
+    }
+
+    verdicts: list[HypothesisVerdict] = []
+    try:
+        for binder, start, end in explicit:
+            modified = drop_binder(original_content, start, end)
+            try:
+                client.update_file_content(rel_path, modified)
+            except Exception as exc:
+                verdicts.append(
+                    HypothesisVerdict(
+                        binder=binder.strip(),
+                        status=HypothesisStatus.error,
+                        detail=f"update_file_content failed: {exc}",
+                    )
+                )
+                continue
+
+            diag = client.get_diagnostics(
+                rel_path, inactivity_timeout=inactivity_timeout
+            )
+            try:
+                check_lsp_response(diag, "get_diagnostics")
+            except Exception as exc:
+                verdicts.append(
+                    HypothesisVerdict(
+                        binder=binder.strip(),
+                        status=HypothesisStatus.error,
+                        detail=str(exc)[:200],
+                    )
+                )
+                continue
+
+            if getattr(diag, "timed_out", False):
+                verdicts.append(
+                    HypothesisVerdict(
+                        binder=binder.strip(),
+                        status=HypothesisStatus.error,
+                        detail=f"LSP elaboration timed out after {inactivity_timeout}s",
+                    )
+                )
+                continue
+
+            new_errors = [
+                d
+                for d in list(diag or [])
+                if d.get("severity") == 1 and _error_key(d) not in baseline_keys
+            ]
+            if new_errors:
+                breaks = _to_diagnostic_messages(new_errors)
+                verdicts.append(
+                    HypothesisVerdict(
+                        binder=binder.strip(),
+                        status=HypothesisStatus.load_bearing,
+                        breaks=breaks,
+                    )
+                )
+            else:
+                verdicts.append(
+                    HypothesisVerdict(
+                        binder=binder.strip(),
+                        status=HypothesisStatus.removable,
+                    )
+                )
+    finally:
+        try:
+            client.update_file_content(rel_path, original_content)
+        except Exception as exc:
+            logger.warning(
+                "Failed to restore `%s` after minimal_hypotheses: %s", rel_path, exc
+            )
+        try:
+            client.open_file(rel_path, force_reopen=True)
+        except Exception as exc:
+            logger.warning(
+                "Failed to force-reopen `%s` after minimal_hypotheses: %s",
+                rel_path,
+                exc,
+            )
+
+    return MinimalHypothesesResult(
+        theorem_name=theorem_name,
+        file=rel_path,
+        verdicts=verdicts,
+        skipped_implicit=skipped,
+    )
 
 
 class LocalSearchError(Exception):
