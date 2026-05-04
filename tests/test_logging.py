@@ -74,7 +74,7 @@ async def test_info_level_emits_server_logs(repo_root, test_project_path) -> Non
     )
 
     normalized = " ".join(logs.split())
-    assert "Closing Lean LSP client" in normalized
+    assert "Session ending" in normalized
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_error_level_suppresses_info_logs(repo_root, test_project_path) ->
     )
 
     normalized = " ".join(logs.split())
-    assert "Closing Lean LSP client" not in normalized
+    assert "Session ending" not in normalized
 
 
 def test_logging_to_file(tmp_path):

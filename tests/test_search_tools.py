@@ -7,7 +7,7 @@ from typing import AsyncContextManager
 import orjson
 import pytest
 
-from tests.helpers.mcp_client import MCPClient, result_text
+from tests.helpers.mcp_client import MCPClient, MCPToolError, result_text
 
 
 def _first_result_item(result) -> dict[str, str] | None:
@@ -125,10 +125,16 @@ async def test_search_tools(
             "file": "EditorTools.lean",
         }
 
-        leansearch = await client.call_tool(
-            "lean_leansearch",
-            {"query": "Nat.succ"},
-        )
+        try:
+            leansearch = await client.call_tool(
+                "lean_leansearch",
+                {"query": "Nat.succ"},
+            )
+        except MCPToolError as exc:
+            message = result_text(exc.result)
+            if "timed out" in message.lower():
+                pytest.skip(message)
+            raise
         entry = _first_result_item(leansearch)
         if entry is None:
             pytest.skip("lean_leansearch did not return JSON content")
