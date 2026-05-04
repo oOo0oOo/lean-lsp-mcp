@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated, Dict, List, Literal, Optional
 
 import certifi
 import orjson
@@ -83,6 +83,7 @@ from lean_lsp_mcp.models import (
     SourceWarning,
     StateSearchResult,
     StateSearchResults,
+    StructuredGoal,
     TermGoalState,
     VerifyResult,
 )
@@ -925,6 +926,10 @@ def goal(
         Optional[int],
         Field(description="Column (1-indexed). Omit for before/after", ge=1),
     ] = None,
+    format: Annotated[
+        Literal["text", "structured"],
+        Field(description="Output format: 'text' (default) or 'structured'"),
+    ] = "text",
 ) -> GoalState:
     """Get proof goals at a position. MOST IMPORTANT tool - use often!
 
@@ -953,17 +958,98 @@ def goal(
         goal_start = _get_goal_response(client, rel_path, line - 1, column_start)
         check_lsp_response(goal_start, "get_goal", allow_none=True)
         goal_end = _get_goal_response(client, rel_path, line - 1, column_end)
+        goals_before = extract_goals_list(goal_start)
+        goals_after = extract_goals_list(goal_end)
+
+        if format == "structured":
+            goals_before = [_goal_to_structured(g) for g in goals_before]
+            goals_after = [_goal_to_structured(g) for g in goals_after]
+
         return GoalState(
             line_context=line_context,
-            goals_before=extract_goals_list(goal_start),
-            goals_after=extract_goals_list(goal_end),
+            goals_before=goals_before,
+            goals_after=goals_after,
         )
     else:
         goal_result = _get_goal_response(client, rel_path, line - 1, column - 1)
         check_lsp_response(goal_result, "get_goal", allow_none=True)
+        goals = extract_goals_list(goal_result)
+        if format == "structured":
+            goals = [_goal_to_structured(g) for g in goals]
         return GoalState(
-            line_context=line_context, goals=extract_goals_list(goal_result)
+            line_context=line_context,
+            goals=goals,
         )
+
+
+def _goal_to_structured(goal_str: str) -> StructuredGoal:
+    goal_str = (goal_str or "").strip()
+
+    # Case: no goals (proof finished)
+    if goal_str == "" or goal_str.lower() == "no goals":
+        return StructuredGoal(
+            context=[],
+            goal=None,
+            status="complete",
+            pretty=goal_str,
+        )
+
+    # Case: no turnstile (fallback)
+    if "⊢" not in goal_str:
+        return StructuredGoal(
+            context=[],
+            goal=goal_str,
+            status="unknown",
+            pretty=goal_str,
+        )
+
+    before, after = goal_str.split("⊢", 1)
+
+    context = []
+    lines = before.splitlines()
+
+    current_name = None
+    current_type_lines = []
+
+    def flush():
+        nonlocal current_name, current_type_lines
+        if current_name is not None:
+            context.append(
+                {
+                    "name": current_name,
+                    "type": " ".join(
+                        line.strip() for line in current_type_lines
+                    ).strip(),
+                }
+            )
+        current_name = None
+        current_type_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+
+        # New hypothesis line
+        if ":" in stripped and not line.startswith(" "):
+            flush()
+            name, typ = stripped.split(":", 1)
+            current_name = name.strip()
+            current_type_lines = [typ.strip()]
+        else:
+            # continuation of previous type
+            if current_name is not None:
+                current_type_lines.append(stripped)
+
+    flush()
+
+    return StructuredGoal(
+        context=context,
+        goal=after.strip(),
+        status="open",
+        pretty=goal_str,
+    )
 
 
 def _get_goal_response(

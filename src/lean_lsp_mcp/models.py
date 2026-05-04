@@ -1,7 +1,7 @@
 """Pydantic models for MCP tool structured outputs."""
 
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -53,15 +53,32 @@ class DiagnosticMessage(BaseModel):
     column: int = Field(description="Column (1-indexed)")
 
 
+class GoalContextEntry(BaseModel):
+    name: str = Field(description="Local hypothesis or variable name")
+    type: str = Field(description="Lean type")
+
+
+class StructuredGoal(BaseModel):
+    context: List[GoalContextEntry] = Field(
+        default_factory=list, description="Local context entries"
+    )
+    goal: Optional[str] = Field(None, description="Target goal")
+    status: str = Field(description="Goal status: open, complete, or unknown")
+    pretty: str = Field(description="Original pretty-printed goal")
+
+
+GoalOutput = Union[str, StructuredGoal]
+
+
 class GoalState(BaseModel):
     line_context: str = Field(description="Source line where goals were queried")
-    goals: Optional[List[str]] = Field(
+    goals: Optional[List[GoalOutput]] = Field(
         None, description="Goal list at specified column position"
     )
-    goals_before: Optional[List[str]] = Field(
+    goals_before: Optional[List[GoalOutput]] = Field(
         None, description="Goals at line start (when column omitted)"
     )
-    goals_after: Optional[List[str]] = Field(
+    goals_after: Optional[List[GoalOutput]] = Field(
         None, description="Goals at line end (when column omitted)"
     )
 

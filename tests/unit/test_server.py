@@ -908,6 +908,48 @@ def test_goal_retries_after_cold_file_timeout(monkeypatch: pytest.MonkeyPatch) -
     assert fake_client.diagnostic_calls == [("GoalSample.lean", 30.0)]
 
 
+def test_goal_structured_format_accepts_structured_goals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def open_file(self, _path: str, force_reopen: bool = False, **_kw) -> None:
+            pass
+
+        def get_file_content(self, _path: str) -> str:
+            return "import Mathlib\n\ntheorem sample_goal (x : Nat) (h : x = 0) : x = 0 := by\n  exact h\n"
+
+        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
+            return {"goals": ["x : Nat\nh : x = 0\n⊢ x = 0"]}
+
+    monkeypatch.setattr(
+        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
+    )
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = FakeClient()
+
+    result = server.goal(
+        ctx,
+        file_path="/abs/GoalSample.lean",
+        line=4,
+        column=3,
+        format="structured",
+    )
+
+    assert result.goals is not None
+    structured_goal = result.goals[0]
+    assert not isinstance(structured_goal, str)
+    assert structured_goal.model_dump() == {
+        "context": [
+            {"name": "x", "type": "Nat"},
+            {"name": "h", "type": "x = 0"},
+        ],
+        "goal": "x = 0",
+        "status": "open",
+        "pretty": "x : Nat\nh : x = 0\n⊢ x = 0",
+    }
+
+
 def test_goal_returns_no_goals_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeClient:
         def __init__(self) -> None:
