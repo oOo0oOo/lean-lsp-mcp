@@ -369,6 +369,8 @@ For more information, you can use [Awesome MCP Security](https://github.com/Puli
 
 ## Development
 
+See [Adding a new tool](docs/adding-a-tool.md) for a step-by-step guide to implementing a new MCP tool (return models, helper modules, registration, tests, and docs).
+
 ### MCP Inspector
 
 ```bash
