@@ -33,9 +33,18 @@ class LoogleResult(BaseModel):
 
 
 class LeanFinderResult(BaseModel):
-    full_name: str = Field(description="Full qualified name")
-    formal_statement: str = Field(description="Lean type signature")
-    informal_statement: str = Field(description="Natural language description")
+    formal_name: str = Field(description="Fully qualified Lean declaration name")
+    informal_name: str = Field(
+        description="Short natural-language name for the statement"
+    )
+    kind: str = Field(description="Declaration kind (theorem, def, instance, etc.)")
+    type: str = Field(description="Lean type signature / formal statement")
+    informal_description: str = Field(
+        description="Natural-language description of the statement"
+    )
+    path: str = Field(
+        description="Mathlib module path, dot-separated (e.g. Mathlib.Data.Nat.Basic)"
+    )
 
 
 class StateSearchResult(BaseModel):

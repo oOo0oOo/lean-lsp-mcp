@@ -314,21 +314,25 @@ Semantic search for Mathlib theorems using [Lean Finder](https://huggingface.co/
 
 - Supports informal descriptions, user questions, proof states, and statement fragments.
 - Examples: `algebraic elements x,y over K with same minimal polynomial`, `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`, `⊢ |re z| ≤ ‖z‖` + `transform to squared norm inequality`, `theorem restrict Ioi: restrict Ioi e = restrict Ici e`
+- Optional `version`: `v4.19.0`, `v4.24.0`, or `v4.28.0` (default). Selects which mathlib snapshot is searched.
 
 <details>
 <summary>Example output</summary>
 
-Query: `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`
+Query: `fundamental theorem of calculus` (version `v4.28.0`)
 
 ```json
-  [
-    [
-      "/-- If `y : L` is a root of `minpoly K x`, then `minpoly K y = minpoly K x`. -/\ntheorem eq_of_root {x y : L} (hx : IsAlgebraic K x)\n    (h_ev : Polynomial.aeval y (minpoly K x) = 0) : minpoly K y = minpoly K x :=\n  ((eq_iff_aeval_minpoly_eq_zero hx.isIntegral).mpr h_ev).symm",
-      
-      "Let $L/K$ be a field extension, and let $x, y \\in L$ be elements such that $y$ is a root of the minimal polynomial of $x$ over $K$. If $x$ is algebraic over $K$, then the minimal polynomial of $y$ over $K$ is equal to the minimal polynomial of $x$ over $K$, i.e., $\\text{minpoly}_K(y) = \\text{minpoly}_K(x)$. This means that if $y$ satisfies the polynomial equation defined by $x$, then $y$ shares the same minimal polynomial as $x$."
-    ],
-    ...
-  ]
+[
+  {
+    "formal_name": "intervalIntegral.integral_eq_sub_of_hasDerivAt",
+    "informal_name": "Fundamental Theorem of Calculus for Functions with Pointwise Derivatives on $[a, b]$",
+    "kind": "theorem",
+    "type": "∀ {E : Type u_3} [inst : NormedAddCommGroup E] [inst_1 : NormedSpace ℝ E] {a b : ℝ} [CompleteSpace E] {f f' : ℝ → E},\n  (∀ x ∈ Set.uIcc a b, HasDerivAt f (f' x) x) →\n    IntervalIntegrable f' MeasureTheory.volume a b → ∫ (y : ℝ) in a..b, f' y = f b - f a",
+    "informal_description": "Let $f : \\mathbb{R} \\to E$ be a function and $f'$ its derivative. If $f$ has a derivative $f'(x)$ at every point $x$ in the closed interval $[a \\sqcap b, a \\sqcup b]$, and $f'$ is integrable on $[a, b]$, then the integral of $f'$ over $[a, b]$ equals $f(b) - f(a)$.",
+    "path": "Mathlib.MeasureTheory.Integral.IntervalIntegral.FundThmCalculus"
+  },
+  ...
+]
 ```
 </details>
 
