@@ -251,6 +251,14 @@ def test_server_configures_required_bearer_auth(
         importlib.reload(server)
 
 
+def test_code_execution_tools_are_not_marked_read_only() -> None:
+    for tool_name in ("lean_multi_attempt", "lean_run_code", "lean_profile_proof"):
+        tool = server.mcp._tool_manager.get_tool(tool_name)
+        assert tool is not None
+        assert tool.annotations.readOnlyHint is False
+        assert tool.annotations.idempotentHint is False
+
+
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
     monkeypatch.setattr(server.time, "time", lambda: next(times))

@@ -1595,8 +1595,9 @@ def _multi_attempt_lsp(
     "lean_multi_attempt",
     annotations=ToolAnnotations(
         title="Multi-Attempt",
-        readOnlyHint=True,
-        idempotentHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
         openWorldHint=False,
     ),
 )
@@ -1629,8 +1630,9 @@ async def multi_attempt(
     "lean_run_code",
     annotations=ToolAnnotations(
         title="Run Code",
-        readOnlyHint=True,
-        idempotentHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
         openWorldHint=False,
     ),
 )
@@ -2269,8 +2271,9 @@ def get_widget_source(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",
-        readOnlyHint=True,
-        idempotentHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
         openWorldHint=False,
     ),
 )
