@@ -1090,6 +1090,59 @@ def _resolve_multi_attempt_column(line_context: str, column: Optional[int]) -> i
     return column - 1
 
 
+def _diagnostic_identity(diagnostic: Dict) -> tuple:
+    """Stable identity for a diagnostic — used to compute new vs. baseline
+    diagnostics in multi_attempt, so that errors a snippet introduces at
+    lines outside the local edit window aren't silently dropped.
+
+    ``code`` and ``source`` are included to disambiguate cases where the
+    LSP emits two diagnostics with the same range/severity/message but
+    different metadata (e.g. one from a linter, one from the elaborator).
+    """
+    diagnostic_range = diagnostic.get("range") or diagnostic.get("fullRange") or {}
+    start = diagnostic_range.get("start") or {}
+    end = diagnostic_range.get("end") or {}
+    return (
+        start.get("line"),
+        start.get("character"),
+        end.get("line"),
+        end.get("character"),
+        diagnostic.get("severity"),
+        diagnostic.get("code"),
+        diagnostic.get("source"),
+        diagnostic.get("message"),
+    )
+
+
+def _shift_baseline_keys(
+    baseline_keys: set, edit_start_line: int, line_delta: int
+) -> set:
+    """Shift baseline diagnostic-identity entries to compensate for the
+    file-line shift introduced by a multi-attempt edit.
+
+    Entries at lines strictly before ``edit_start_line`` are unaffected.
+    Entries at or beyond it (which the LSP re-emits at line + line_delta
+    after the edit) get their start/end lines shifted accordingly so the
+    post-edit identity tuple matches.
+    """
+    if not line_delta:
+        return baseline_keys
+    shifted = set()
+    for key in baseline_keys:
+        start_line, start_char, end_line, end_char, severity, code, source, message = (
+            key
+        )
+        if start_line is None or start_line < edit_start_line:
+            shifted.add(key)
+            continue
+        new_start = start_line + line_delta
+        new_end = end_line + line_delta if end_line is not None else end_line
+        shifted.add(
+            (new_start, start_char, new_end, end_char, severity, code, source, message)
+        )
+    return shifted
+
+
 def _filter_diagnostics_by_line_range(
     diagnostics: List[Dict], start_line: int, end_line: int
 ) -> List[Dict]:
@@ -1117,8 +1170,14 @@ def _filter_diagnostics_by_line_range(
 
 def _prepare_multi_attempt_edit(
     line_context: str, target_column: int, snippet: str, total_lines: int, line: int
-) -> tuple[str, DocumentContentChange, int, int]:
-    """Build the temporary edit and return its goal cursor location."""
+) -> tuple[str, DocumentContentChange, int, int, int]:
+    """Build the temporary edit and return its goal cursor location.
+
+    The final integer is the post-edit line delta: how many lines the file
+    grows by once the change is applied. Non-zero only when the snippet is
+    near end-of-file and the replacement range is clamped, in which case
+    pre-existing diagnostics at lines >= end_line shift by that delta.
+    """
     snippet_str = snippet.rstrip("\n")
     snippet_lines = snippet_str.split("\n") if snippet_str else [""]
     indent = line_context[:target_column]
@@ -1130,6 +1189,7 @@ def _prepare_multi_attempt_edit(
 
     replaced_line_count = max(len(snippet_lines), 1)
     end_line = min(line - 1 + replaced_line_count, total_lines)
+    line_delta = len(payload_lines) - (end_line - (line - 1))
     change = DocumentContentChange(
         payload,
         [line - 1, target_column],
@@ -1142,7 +1202,7 @@ def _prepare_multi_attempt_edit(
     else:
         goal_column = len(payload_lines[-1])
 
-    return snippet_str, change, goal_line, goal_column
+    return snippet_str, change, goal_line, goal_column, line_delta
 
 
 @mcp.tool(
@@ -1548,16 +1608,91 @@ def _multi_attempt_lsp(
     line_context = _get_line_context(lines, line)
     target_column = _resolve_multi_attempt_column(line_context, column)
 
+    # Snapshot baseline diagnostics before any edit. The line-range filter
+    # alone misses errors that surface at distant lines (e.g. a `whnf`
+    # heartbeat timeout reported at the leaf-statement line when a snippet's
+    # tactic forces aggressive unfolding) — that would produce a misleading
+    # `goals=[], diagnostics=[]` result indistinguishable from genuine
+    # tactic success. Diff against baseline to surface any *new* diagnostic
+    # the snippet introduced, regardless of its line position. Use
+    # leanclient's default cutoffs so the baseline wait is symmetric with
+    # the per-snippet `get_diagnostics` call below: asymmetric timeouts
+    # would leave the baseline partial while the per-snippet snapshot is
+    # complete, causing pre-existing diagnostics to be reported as
+    # snippet-introduced.
+    try:
+        baseline_diag = client.get_diagnostics(rel_path)
+        check_lsp_response(baseline_diag, "get_diagnostics")
+        if getattr(baseline_diag, "timed_out", False):
+            # Baseline is partial — set-diff would over-report. Disable
+            # it and fall back to local line-range filter only.
+            logger.warning(
+                "_multi_attempt_lsp: baseline diagnostics timed out — "
+                "set-diff disabled for this call (results limited to local "
+                "line-range filter)."
+            )
+            baseline_keys = None
+        else:
+            baseline_keys = {_diagnostic_identity(d) for d in baseline_diag}
+    except Exception:
+        logger.warning(
+            "_multi_attempt_lsp: baseline diagnostics unavailable — "
+            "set-diff disabled; results limited to local line-range filter.",
+            exc_info=True,
+        )
+        baseline_keys = None
+
     try:
         results: List[AttemptResult] = []
-        for snippet in snippets:
-            snippet_str, change, goal_line, goal_column = _prepare_multi_attempt_edit(
+        for i, snippet in enumerate(snippets):
+            # Restore original content before each iteration after the first.
+            # ``_prepare_multi_attempt_edit`` computes edit positions from the
+            # ORIGINAL ``line_context`` / ``len(lines)``; if the previous
+            # snippet's edit grew or shrank the file (EOF clamping), those
+            # positions no longer point to the original sorry region — the
+            # next snippet would patch the wrong content and report drifted
+            # diagnostics as snippet-introduced via ``extra_diag``.
+            if i > 0 and original_content is not None:
+                client.update_file_content(rel_path, original_content)
+            (
+                snippet_str,
+                change,
+                goal_line,
+                goal_column,
+                line_delta,
+            ) = _prepare_multi_attempt_edit(
                 line_context, target_column, snippet, len(lines), line
             )
             client.update_file(rel_path, [change])
             diag = client.get_diagnostics(rel_path)
             check_lsp_response(diag, "get_diagnostics")
             filtered_diag = _filter_diagnostics_by_line_range(diag, line - 1, goal_line)
+            in_filtered = {id(d) for d in filtered_diag}
+            # Surface any new diagnostic — relative to the pre-edit baseline —
+            # even if outside the local line range. When baseline capture
+            # failed (baseline_keys is None), set-diff is disabled and we
+            # rely on the local filter only — same behavior as the original
+            # (pre-fix) code path.
+            if baseline_keys is None:
+                extra_diag = []
+            else:
+                # Multi-line snippets near end-of-file can grow the file
+                # (replacement range gets clamped). Pre-existing diagnostics
+                # at or past end_line get re-emitted at shifted line numbers
+                # post-edit, so their identity (which keys on line) won't
+                # match baseline_keys without compensating for the shift.
+                if line_delta:
+                    shifted_keys = _shift_baseline_keys(
+                        baseline_keys, edit_start_line=line - 1, line_delta=line_delta
+                    )
+                else:
+                    shifted_keys = baseline_keys
+                extra_diag = [
+                    d
+                    for d in diag
+                    if id(d) not in in_filtered
+                    and _diagnostic_identity(d) not in shifted_keys
+                ]
             goal_result = client.get_goal(rel_path, goal_line, goal_column)
             check_lsp_response(goal_result, "get_goal", allow_none=True)
             goals = extract_goals_list(goal_result)
@@ -1565,7 +1700,7 @@ def _multi_attempt_lsp(
                 AttemptResult(
                     snippet=snippet_str,
                     goals=goals,
-                    diagnostics=_to_diagnostic_messages(filtered_diag),
+                    diagnostics=_to_diagnostic_messages(filtered_diag + extra_diag),
                     timed_out=getattr(diag, "timed_out", False),
                 )
             )
