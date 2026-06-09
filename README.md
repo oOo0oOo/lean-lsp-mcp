@@ -361,6 +361,8 @@ export LEAN_LOOGLE_LOCAL=true
 
 **Note:** Local loogle is currently only supported on Unix systems (Linux/macOS). Windows users should use WSL or the remote API.
 
+**Mathlib must come from your project:** loogle searches the `Mathlib` it finds on the search path, which is taken from your project's built dependencies (`.lake/packages/mathlib`). This requires `--lean-project-path` to point at a project that depends on Mathlib, has been built, and uses the same Lean toolchain as loogle. If the toolchain differs or Mathlib isn't built, local loogle falls back to the remote API.
+
 Falls back to remote API if local loogle fails.
 
 ## Notes on MCP Security

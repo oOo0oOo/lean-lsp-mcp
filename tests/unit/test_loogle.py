@@ -360,6 +360,88 @@ class TestLoogleManager:
         changed = mgr.set_project_path(project)
         assert not changed
 
+    # --- issue #193: search-path and CLI-flag handling ---
+
+    def test_loogle_env_no_extra_paths(self, mgr):
+        """Without project paths, LEAN_PATH is left unset (loogle uses its own)."""
+        env = mgr._loogle_env()
+        assert "LEAN_PATH" not in env
+        assert env["LAKE_ARTIFACT_CACHE"] == "false"
+
+    def test_loogle_env_with_extra_paths(self, mgr, monkeypatch):
+        """Project paths extend (not replace) loogle's base search path via LEAN_PATH."""
+        monkeypatch.setattr(mgr, "_get_base_lean_path", lambda: "/base/a:/base/b")
+        mgr._extra_paths = [Path("/proj/p1"), Path("/proj/p2")]
+        entries = mgr._loogle_env()["LEAN_PATH"].split(os.pathsep)
+        # Loogle's base (toolchain core with Init.olean + mathlib) comes first.
+        assert entries[0] == "/base/a"
+        assert entries[1] == "/base/b"
+        assert str(Path("/proj/p1")) in entries
+        assert str(Path("/proj/p2")) in entries
+
+    def test_get_base_lean_path_caches(self, mgr, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, timeout=300, cwd=None, env=None):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="/x/lib:/y/lib\n")
+
+        monkeypatch.setattr(mgr, "_run", fake_run)
+        assert mgr._get_base_lean_path() == "/x/lib:/y/lib"
+        assert mgr._get_base_lean_path() == "/x/lib:/y/lib"  # cached, no second call
+        assert len(calls) == 1
+        assert calls[0][:3] == ["lake", "env", "printenv"]
+
+    def test_build_index_uses_index_mode_not_write_index(self, mgr, monkeypatch):
+        """Index build uses the new --index-mode/--index-file flags, never --path."""
+        mgr.binary_path.parent.mkdir(parents=True)
+        mgr.binary_path.touch()
+        mgr._extra_paths = [Path("/proj/p1")]
+        monkeypatch.setattr(mgr, "_get_base_lean_path", lambda: "/base")
+        captured = {}
+
+        def fake_run(cmd, timeout=300, cwd=None, env=None):
+            captured["cmd"], captured["env"] = cmd, env
+            Path(cmd[cmd.index("--index-file") + 1]).touch()
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(mgr, "_run", fake_run)
+        assert mgr._build_index() is not None
+        cmd = captured["cmd"]
+        assert "--index-mode" in cmd and "write" in cmd and "--index-file" in cmd
+        assert "--write-index" not in cmd
+        assert "--path" not in cmd
+        assert "LEAN_PATH" in captured["env"]
+
+    @pytest.mark.asyncio
+    async def test_start_uses_index_mode_and_lean_path(self, mgr, monkeypatch):
+        """start() uses --index-mode/--index-file and LEAN_PATH, never --read-index/--path."""
+        mgr.binary_path.parent.mkdir(parents=True)
+        mgr.binary_path.touch()
+        mgr._extra_paths = [Path("/proj/p1")]
+        monkeypatch.setattr(mgr, "check_environment", lambda: (True, ""))
+        monkeypatch.setattr(mgr, "_get_base_lean_path", lambda: "/base")
+        captured = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"], captured["env"] = args, kwargs.get("env")
+            proc = AsyncMock()
+            proc.returncode = None
+            proc.stdout.readline = AsyncMock(
+                return_value=(mgr.READY_SIGNAL + "\n").encode()
+            )
+            return proc
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", fake_exec
+        )
+        assert await mgr.start()
+        args = list(captured["args"])
+        assert "--index-mode" in args and "use" in args and "--index-file" in args
+        assert "--read-index" not in args
+        assert "--path" not in args
+        assert "LEAN_PATH" in captured["env"]
+
 
 @pytest.mark.slow
 class TestLoogleInstall:
