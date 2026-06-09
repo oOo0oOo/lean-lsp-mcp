@@ -27,6 +27,18 @@ def _find_balanced_close(s: str, open_pos: int, open_ch: str, close_ch: str) -> 
     return -1
 
 
+def theorem_declared(source: str, name: str) -> bool:
+    """True if `source` declares a theorem/lemma/example/def named `name`.
+
+    Lets callers distinguish a genuinely-missing theorem from one that simply
+    has no binders (``find_theorem_binders`` returns ``[]`` for both).
+    """
+    return (
+        re.search(rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}\b", source)
+        is not None
+    )
+
+
 def find_theorem_binders(source: str, name: str) -> list[tuple[str, int, int]]:
     """Find the binder list of a theorem/lemma/def.
 

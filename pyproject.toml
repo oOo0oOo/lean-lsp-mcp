@@ -34,8 +34,10 @@ asyncio_mode = "auto"
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [tool.setuptools]
-packages = ["lean_lsp_mcp"]
 package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
