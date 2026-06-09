@@ -262,5 +262,6 @@ class Repl:
             await asyncio.wait_for(proc.wait(), timeout=1.0)
         except asyncio.TimeoutError:
             pass
-        if hasattr(proc, "_transport") and proc._transport:
-            proc._transport.close()
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            transport.close()

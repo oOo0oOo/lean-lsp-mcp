@@ -13,8 +13,15 @@ Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6.0"]
-lint = ["ruff>=0.2.0"]
-dev = ["ruff>=0.2.0", "pytest>=8.3", "anyio>=4.12.1", "pytest-asyncio>=0.23", "pytest-timeout>=2.3"]
+lint = ["ruff>=0.2.0", "ty>=0.0.46"]
+dev = ["ruff>=0.2.0", "ty>=0.0.46", "pytest>=8.3", "anyio>=4.12.1", "pytest-asyncio>=0.23", "pytest-timeout>=2.3"]
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.src]
+# The MCP server package; tests are mock-heavy and intentionally not type-checked.
+include = ["src"]
 
 [tool.ruff]
 exclude = [

@@ -22,7 +22,7 @@ def _get_info_trees(
     for i, sym in enumerate(sorted(symbols, key=lambda s: s["range"]["start"]["line"])):
         line = sym["range"]["start"]["line"] + i
         symbol_by_line[line] = sym["name"]
-        changes.append(DocumentContentChange("#info_trees in\n", [line, 0], [line, 0]))
+        changes.append(DocumentContentChange("#info_trees in\n", (line, 0), (line, 0)))
 
     client.update_file(path, changes)
     diagnostics = client.get_diagnostics(path)
@@ -37,7 +37,7 @@ def _get_info_trees(
     client.update_file(
         path,
         [
-            DocumentContentChange("", [line, 0], [line + 1, 0])
+            DocumentContentChange("", (line, 0), (line + 1, 0))
             for line in sorted(symbol_by_line.keys(), reverse=True)
         ],
     )

@@ -111,7 +111,7 @@ def _start_client(project_path: Path) -> LeanLSPClient:
     try:
         with OutputCapture() as output:
             client = LeanLSPClient(
-                project_path,
+                project_path,  # ty: ignore[invalid-argument-type]
                 initial_build=False,
                 prevent_cache_get=prevent_cache,
                 max_opened_files=_max_opened_files(),
