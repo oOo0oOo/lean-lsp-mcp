@@ -2183,6 +2183,48 @@ def code_actions(
                 seen.add(action.get("title", ""))
                 raw_actions.append(action)
 
+    # Fallback: if no diagnostics on the line, retry across the full line
+    # range. Tactic `TryThis` suggestions (`simp?`, `exact?`, `apply?`) and
+    # other `IdeView` quick-actions can be registered without an
+    # accompanying diagnostic, so the diagnostic-driven scan misses them.
+    if not raw_actions:
+        line_str = ""
+        try:
+            resolved_path = resolve_file_path(ctx, file_path)
+            line_text = resolved_path.read_text(encoding="utf-8").splitlines()
+            line_str = line_text[line - 1] if 0 < line <= len(line_text) else ""
+        except (
+            OSError,
+            IndexError,
+            UnicodeDecodeError,
+            ValueError,
+            RuntimeError,
+        ) as exc:
+            # Path-resolution failures are common for files in
+            # `.lake/packages/...` (dep paths that `setup_client_for_file`
+            # accepts but `resolve_file_path(require_exists=True)` rejects).
+            # `RuntimeError` covers CPython's symlink-loop raise from
+            # ``Path.resolve(strict=True)``.
+            # Log so production failures aren't silently invisible.
+            logger.debug(
+                "lean_code_actions fallback: could not read line text from %s: %s",
+                file_path,
+                exc,
+            )
+            line_str = ""
+        if line_str:
+            # LSP positions are UTF-16 code units, not Python codepoints —
+            # surrogate-pair characters (e.g. `𝕜`) count as 2 units. Use the
+            # UTF-16 length so the end-column reaches the actual end of the
+            # line on those rare inputs.
+            end_col = len(line_str.encode("utf-16-le")) // 2
+            for action in client.get_code_actions(
+                rel_path, line - 1, 0, line - 1, end_col
+            ):
+                if action.get("title", "") not in seen:
+                    seen.add(action.get("title", ""))
+                    raw_actions.append(action)
+
     # Resolve and convert
     actions: list[CodeAction] = []
     for raw in raw_actions:
