@@ -281,6 +281,7 @@ def minimal_hypotheses(
         drop_binder,
         explicit_hypotheses,
         find_theorem_binders,
+        theorem_declared,
     )
 
     theorem_name = server._validate_theorem_name(theorem_name)
@@ -304,15 +305,17 @@ def minimal_hypotheses(
         raise server.LeanToolError(f"Could not read content for {rel_path}")
 
     bare_name = theorem_name.split(".")[-1]
-    binders = find_theorem_binders(original_content, bare_name)
-    if not binders:
+    if not theorem_declared(original_content, bare_name):
         raise server.LeanToolError(
-            f"Could not find theorem '{theorem_name}' in {rel_path}, "
-            "or it has no binders before its type."
+            f"Could not find theorem '{theorem_name}' in {rel_path}."
         )
+
+    binders = find_theorem_binders(original_content, bare_name)
     explicit = explicit_hypotheses(binders)
     skipped = len(binders) - len(explicit)
 
+    # Theorem found but nothing explicit to probe (no binders, or only
+    # implicit/instance binders): there is no hypothesis to minimize.
     if not explicit:
         return MinimalHypothesesResult(
             theorem_name=theorem_name,
