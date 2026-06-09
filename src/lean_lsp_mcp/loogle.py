@@ -90,6 +90,7 @@ class LoogleManager:
         self._ready = False
         self._lock = asyncio.Lock()
         self._extra_paths: list[Path] = []
+        self._base_lean_path: str | None = None
 
     @property
     def binary_path(self) -> Path:
@@ -116,10 +117,14 @@ class LoogleManager:
         return True, ""
 
     def _run(
-        self, cmd: list[str], timeout: int = 300, cwd: Path | None = None
+        self,
+        cmd: list[str],
+        timeout: int = 300,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
-        env["LAKE_ARTIFACT_CACHE"] = "false"
+        run_env = env if env is not None else os.environ.copy()
+        run_env["LAKE_ARTIFACT_CACHE"] = "false"
         return subprocess.run(
             cmd,
             capture_output=True,
@@ -127,7 +132,7 @@ class LoogleManager:
             encoding="utf-8",
             timeout=timeout,
             cwd=cwd or self.repo_dir,
-            env=env,
+            env=run_env,
         )
 
     def _clone_repo(self) -> bool:
@@ -294,6 +299,40 @@ class LoogleManager:
             paths.append(project_lib)
         return sorted(paths)
 
+    def _get_base_lean_path(self) -> str:
+        """Loogle's own search path (toolchain core + loogle build + mathlib).
+
+        Captured via `lake env` so it includes the Lean toolchain library (where
+        `Init.olean` lives) and loogle's mathlib closure. Cached after first call.
+        """
+        if self._base_lean_path is None:
+            try:
+                r = self._run(["lake", "env", "printenv", "LEAN_PATH"], timeout=120)
+                self._base_lean_path = r.stdout.strip() if r.returncode == 0 else ""
+            except Exception as e:
+                logger.warning(f"Could not determine loogle base LEAN_PATH: {e}")
+                self._base_lean_path = ""
+        return self._base_lean_path
+
+    def _loogle_env(self) -> dict[str, str]:
+        """Subprocess environment for running the loogle binary.
+
+        Project library paths are passed via LEAN_PATH (not loogle's `--path`,
+        which *replaces* the whole search path and would drop the toolchain core,
+        causing "unknown module prefix 'Init'"). LEAN_PATH extends loogle's base
+        search path instead. With no extra paths we leave LEAN_PATH unset so
+        loogle uses its built-in compile-time search path.
+        """
+        env = os.environ.copy()
+        env["LAKE_ARTIFACT_CACHE"] = "false"
+        if self._extra_paths:
+            parts: list[str] = []
+            if base := self._get_base_lean_path():
+                parts.append(base)
+            parts.extend(str(p) for p in self._extra_paths)
+            env["LEAN_PATH"] = os.pathsep.join(parts)
+        return env
+
     def _get_index_path(self) -> Path:
         base = f"mathlib-{self._get_mathlib_version()}"
         if self._extra_paths:
@@ -332,11 +371,16 @@ class LoogleManager:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_old_indices()
 
-        # Build command with extra paths
-        cmd = [str(self.binary_path), "--write-index", str(index_path), "--json"]
-        for path in self._extra_paths:
-            cmd.extend(["--path", str(path)])
-        cmd.append("")  # Empty query for index building
+        # Project paths are supplied via LEAN_PATH (see _loogle_env), not --path.
+        cmd = [
+            str(self.binary_path),
+            "--index-mode",
+            "write",
+            "--index-file",
+            str(index_path),
+            "--json",
+            "",  # Empty query: just build the index and exit.
+        ]
 
         if self._extra_paths:
             logger.info(
@@ -345,7 +389,7 @@ class LoogleManager:
         else:
             logger.info("Building search index...")
         try:
-            self._run(cmd, timeout=600)
+            self._run(cmd, timeout=600, env=self._loogle_env())
             return index_path if index_path.exists() else None
         except Exception as e:
             logger.error(f"Index build error: {e}")
@@ -399,12 +443,19 @@ class LoogleManager:
                 # Build new index if paths changed
                 self._build_index()
 
-        cmd = [str(self.binary_path), "--json", "--interactive"]
-        if (idx := self._get_index_path()).exists():
-            cmd.extend(["--read-index", str(idx)])
-        # Add extra paths for runtime search (in case not all are indexed)
-        for path in self._extra_paths:
-            cmd.extend(["--path", str(path)])
+        # `use` mode loads the on-disk index if present and fresh, otherwise
+        # builds and writes it. Project paths are supplied via LEAN_PATH (see
+        # _loogle_env), never --path.
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            str(self.binary_path),
+            "--json",
+            "--interactive",
+            "--index-mode",
+            "use",
+            "--index-file",
+            str(self._get_index_path()),
+        ]
 
         if self._extra_paths:
             logger.info(f"Starting loogle with {len(self._extra_paths)} extra paths...")
@@ -417,8 +468,12 @@ class LoogleManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self.repo_dir,
+                env=self._loogle_env(),
             )
-            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=120)
+            # Loading a pre-built index is fast (~seconds), but if the index is
+            # missing `--index-mode use` builds it from scratch first, which
+            # over full Mathlib takes a couple of minutes. Allow for that.
+            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=300)
             decoded = line.decode("utf-8", errors="replace")
             if self.READY_SIGNAL in decoded:
                 self._ready = True
