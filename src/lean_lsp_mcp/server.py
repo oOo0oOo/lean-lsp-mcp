@@ -542,6 +542,9 @@ async def lsp_build(
         Optional[str], Field(description="Path to Lean project")
     ] = None,
     clean: Annotated[bool, Field(description="Run lake clean first (slow)")] = False,
+    fetch_cache: Annotated[
+        bool, Field(description="Run lake exe cache get before building (slow)")
+    ] = False,
     output_lines: Annotated[
         int, Field(description="Return last N lines of build log (0=none)")
     ] = 20,
@@ -567,7 +570,9 @@ async def lsp_build(
         )
 
     async def build_factory() -> BuildResult:
-        return await _run_build(ctx, lean_project_path_obj, clean, output_lines)
+        return await _run_build(
+            ctx, lean_project_path_obj, clean, fetch_cache, output_lines
+        )
 
     app_ctx = ctx.request_context.lifespan_context
     coordinator = app_ctx.build_coordinator
@@ -580,6 +585,7 @@ async def _run_build(
     ctx: Context,
     lean_project_path_obj: Path,
     clean: bool,
+    fetch_cache: bool,
     output_lines: int,
 ) -> BuildResult:
     log_lines: List[str] = []
@@ -659,26 +665,26 @@ async def _run_build(
             await _consume_build_output(clean_proc)
             await clean_proc.wait()
 
-        await _safe_report_progress(
-            ctx, progress=2, total=16, message="Running `lake exe cache get`"
-        )
-        cache_proc = await _run_proc(
-            "lake",
-            "exe",
-            "cache",
-            "get",
-            cwd=lean_project_path_obj,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        await _consume_build_output(cache_proc)
-        await cache_proc.wait()
+        if fetch_cache:
+            await _safe_report_progress(
+                ctx, progress=2, total=16, message="Running `lake exe cache get`"
+            )
+            cache_proc = await _run_proc(
+                "lake",
+                "exe",
+                "cache",
+                "get",
+                cwd=lean_project_path_obj,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            await _consume_build_output(cache_proc)
+            await cache_proc.wait()
 
         # Run build with progress reporting
         process = await _run_proc(
             "lake",
             "build",
-            "--verbose",
             cwd=lean_project_path_obj,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,

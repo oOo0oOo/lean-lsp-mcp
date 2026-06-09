@@ -421,4 +421,8 @@ Note: We use a simplified version, [LeanHammer](https://github.com/JOSHCLUNE/Lea
 
 #### lean_build
 
-Rebuild the Lean project and restart the Lean LSP server.
+Run `lake build` and restart the Lean LSP server.
+
+Optional flags:
+- `clean=true`: run `lake clean` before building. This is slow and should only be used when a clean rebuild is needed.
+- `fetch_cache=true`: run `lake exe cache get` before building. This can take a long time and should only be used when fetching missing dependency caches is needed.
