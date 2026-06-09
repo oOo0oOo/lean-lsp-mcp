@@ -45,6 +45,10 @@ If you use Nix, you can install the package directly from GitHub:
 nix profile install github:oOo0oOo/lean-lsp-mcp
 ```
 
+Or run it without installing: `nix run github:oOo0oOo/lean-lsp-mcp`.
+
+This provides the MCP server only. You still need a Lean toolchain (`elan`/`lake`) for your project, same as the `uv` setup below.
+
 ### 2. Run `lake build`
 
 `lean-lsp-mcp` will run `lake serve` in the project root to use the language server (for most tools). Some clients (e.g. Cursor) might timeout during this process. Therefore, it is recommended to run `lake build` manually before starting the MCP. This ensures a faster build time and avoids timeouts.

@@ -4,6 +4,22 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    uv2nix = {
+      url = "github:pyproject-nix/uv2nix";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    pyproject-build-systems = {
+      url = "github:pyproject-nix/build-system-pkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.uv2nix.follows = "uv2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -11,90 +27,61 @@
       self,
       nixpkgs,
       flake-utils,
+      pyproject-nix,
+      uv2nix,
+      pyproject-build-systems,
     }:
+    let
+      inherit (nixpkgs) lib;
+
+      # Read the workspace (pyproject.toml + uv.lock) — the single source of
+      # truth for dependencies. Bumping a dep is `uv lock` + commit; the flake
+      # follows automatically, no hand-pinned versions or hashes here.
+      workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
+      overlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
+
+      # Escape hatch for packages whose Nix build needs extra fixups. Empty for
+      # now — add overrides here if a future dependency needs them.
+      pyprojectOverrides = _final: _prev: { };
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        pythonEnv = pkgs.python3;
+        python = pkgs.python3;
 
-        leanclient = pythonEnv.pkgs.buildPythonPackage rec {
-          pname = "leanclient";
-          version = "0.10.0";
-          src = pythonEnv.pkgs.fetchPypi {
-            inherit pname version;
-            sha256 = "sha256-VgppQRKXxIHsI6ZQZQJbS1VdzC/erJI5v9wrKSyLuyw=";
-          };
-          doCheck = false;
-          pyproject = true;
-          nativeBuildInputs = [ pythonEnv.pkgs.hatchling ];
-          propagatedBuildInputs = with pythonEnv.pkgs; [
-            orjson
-            psutil
-            tqdm
-          ];
-        };
+        pythonSet =
+          (pkgs.callPackage pyproject-nix.build.packages { inherit python; }).overrideScope
+            (lib.composeManyExtensions [
+              pyproject-build-systems.overlays.default
+              overlay
+              pyprojectOverrides
+            ]);
 
-        mcp = pythonEnv.pkgs.buildPythonPackage rec {
-          pname = "mcp";
-          version = "1.27.0";
-          src = pythonEnv.pkgs.fetchPypi {
-            inherit pname version;
-            sha256 = "d3dc35a7eec0d458c1da4976a48f982097ddaab87e278c5511d5a4a56e852b83";
-          };
-          doCheck = false;
-          pyproject = true;
-          nativeBuildInputs = [ pythonEnv.pkgs.hatchling pythonEnv.pkgs.uv-dynamic-versioning ];
-          propagatedBuildInputs = with pythonEnv.pkgs; [
-            anyio
-            httpx
-            httpx-sse
-            jsonschema
-            pydantic
-            pydantic-settings
-            pyjwt
-            python-multipart
-            sse-starlette
-            starlette
-            typing-extensions
-            click
-            rich
-            typer
-            uvicorn
-          ];
+        venv = pythonSet.mkVirtualEnv "lean-lsp-mcp-env" workspace.deps.default;
+
+        # mkApplication lives in pyproject-nix.build.util, which is a
+        # `{ stdenv, python3 }`-style module — instantiate it via callPackage.
+        inherit (pkgs.callPackage pyproject-nix.build.util { }) mkApplication;
+
+        # Expose only this project's entry point (lean-lsp-mcp), not every
+        # dependency's console script, so `nix profile install` stays clean.
+        app = mkApplication {
+          inherit venv;
+          package = pythonSet."lean-lsp-mcp";
         };
       in
       {
-        packages.default = pythonEnv.pkgs.buildPythonApplication {
-          pname = "lean-lsp-mcp";
-          version = "0.26.1";
-          format = "pyproject";
+        packages.default = app;
 
-          src = ./.;
-
-          nativeBuildInputs = [
-            pythonEnv.pkgs.setuptools
-          ];
-
-          propagatedBuildInputs = with pythonEnv.pkgs; [
-            leanclient
-            mcp
-            orjson
-            certifi
-          ];
-
-          # pyproject = true;
-          meta = {
-            description = "Lean Theorem Prover MCP";
-            homepage = "https://github.com/oOo0oOo/lean-lsp-mcp";
-            license = pkgs.lib.licenses.mit;
-            mainProgram = "lean-lsp-mcp";
-          };
+        apps.default = {
+          type = "app";
+          program = "${app}/bin/lean-lsp-mcp";
         };
 
         devShells.default = pkgs.mkShell {
           packages = [
-            pythonEnv
+            python
             pkgs.uv
           ];
         };
