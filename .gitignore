@@ -18,3 +18,7 @@ lean-training-data/
 references/
 
 .github/copilot-instructions.md
+
+# nix build output
+result
+result-*
