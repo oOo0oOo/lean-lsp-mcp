@@ -238,6 +238,42 @@ Check theorem soundness: returns axioms used + optional source pattern scan for 
 ```
 </details>
 
+#### lean_minimal_hypotheses
+
+For each explicit `(h : T)` hypothesis of a theorem, drop it and re-elaborate the file via the LSP. Reports which hypotheses are load-bearing and which are actually unused. For load-bearing hypotheses, the verdict includes a list of `breaks` — every new error caused by removing the binder, with line, column, and message — so you can see *where* in the proof the dropped hypothesis was used. Useful for "minimum hypotheses needed" / counterfactual reasoning when sharpening a result.
+
+Skips implicit `{x : α}` and instance `[inst : C]` binders. Does not rewrite the proof body — a body that names `h` will fail to elaborate without the binder, which is the truthful answer (load-bearing).
+
+Slow: each hypothesis triggers a full re-elaboration capped at `inactivity_timeout` (default 60 s). The original file content is restored before the tool returns.
+
+<details>
+<summary>Example output (one of two hypotheses unused)</summary>
+
+```json
+{
+  "theorem_name": "minhyp_one_unused",
+  "file": "MinimalHypothesesTest.lean",
+  "verdicts": [
+    {
+      "binder": "(h1 : 1 + 1 = 2)",
+      "status": "load-bearing",
+      "breaks": [
+        {"severity": "error", "message": "unknown identifier 'h1'", "line": 7, "column": 3}
+      ],
+      "detail": ""
+    },
+    {
+      "binder": "(h2 : 2 + 2 = 4)",
+      "status": "removable",
+      "breaks": [],
+      "detail": ""
+    }
+  ],
+  "skipped_implicit": 0
+}
+```
+</details>
+
 ### Local Search Tools
 
 #### lean_local_search
@@ -314,21 +350,25 @@ Semantic search for Mathlib theorems using [Lean Finder](https://huggingface.co/
 
 - Supports informal descriptions, user questions, proof states, and statement fragments.
 - Examples: `algebraic elements x,y over K with same minimal polynomial`, `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`, `⊢ |re z| ≤ ‖z‖` + `transform to squared norm inequality`, `theorem restrict Ioi: restrict Ioi e = restrict Ici e`
+- Optional `version`: `v4.19.0`, `v4.24.0`, or `v4.28.0` (default). Selects which mathlib snapshot is searched.
 
 <details>
 <summary>Example output</summary>
 
-Query: `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`
+Query: `fundamental theorem of calculus` (version `v4.28.0`)
 
 ```json
-  [
-    [
-      "/-- If `y : L` is a root of `minpoly K x`, then `minpoly K y = minpoly K x`. -/\ntheorem eq_of_root {x y : L} (hx : IsAlgebraic K x)\n    (h_ev : Polynomial.aeval y (minpoly K x) = 0) : minpoly K y = minpoly K x :=\n  ((eq_iff_aeval_minpoly_eq_zero hx.isIntegral).mpr h_ev).symm",
-      
-      "Let $L/K$ be a field extension, and let $x, y \\in L$ be elements such that $y$ is a root of the minimal polynomial of $x$ over $K$. If $x$ is algebraic over $K$, then the minimal polynomial of $y$ over $K$ is equal to the minimal polynomial of $x$ over $K$, i.e., $\\text{minpoly}_K(y) = \\text{minpoly}_K(x)$. This means that if $y$ satisfies the polynomial equation defined by $x$, then $y$ shares the same minimal polynomial as $x$."
-    ],
-    ...
-  ]
+[
+  {
+    "formal_name": "intervalIntegral.integral_eq_sub_of_hasDerivAt",
+    "informal_name": "Fundamental Theorem of Calculus for Functions with Pointwise Derivatives on $[a, b]$",
+    "kind": "theorem",
+    "type": "∀ {E : Type u_3} [inst : NormedAddCommGroup E] [inst_1 : NormedSpace ℝ E] {a b : ℝ} [CompleteSpace E] {f f' : ℝ → E},\n  (∀ x ∈ Set.uIcc a b, HasDerivAt f (f' x) x) →\n    IntervalIntegrable f' MeasureTheory.volume a b → ∫ (y : ℝ) in a..b, f' y = f b - f a",
+    "informal_description": "Let $f : \\mathbb{R} \\to E$ be a function and $f'$ its derivative. If $f$ has a derivative $f'(x)$ at every point $x$ in the closed interval $[a \\sqcap b, a \\sqcup b]$, and $f'$ is integrable on $[a, b]$, then the integral of $f'$ over $[a, b]$ equals $f(b) - f(a)$.",
+    "path": "Mathlib.MeasureTheory.Integral.IntervalIntegral.FundThmCalculus"
+  },
+  ...
+]
 ```
 </details>
 
@@ -385,4 +425,8 @@ Note: We use a simplified version, [LeanHammer](https://github.com/JOSHCLUNE/Lea
 
 #### lean_build
 
-Rebuild the Lean project and restart the Lean LSP server.
+Run `lake build` and restart the Lean LSP server.
+
+Optional flags:
+- `clean=true`: run `lake clean` before building. This is slow and should only be used when a clean rebuild is needed.
+- `fetch_cache=true`: run `lake exe cache get` before building. This can take a long time and should only be used when fetching missing dependency caches is needed.

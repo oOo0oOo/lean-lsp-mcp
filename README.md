@@ -260,9 +260,35 @@ uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at ht
 uvx lean-lsp-mcp --version # Print the installed version
 ```
 
+### OpenAI Secure MCP Tunnel
+
+For ChatGPT, Codex, Responses API, or other OpenAI surfaces, use [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) instead of exposing `lean-lsp-mcp` to the public internet. Create a tunnel in [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels), then run `tunnel-client` on a host that can reach your Lean project:
+
+```bash
+export CONTROL_PLANE_API_KEY="sk-..."
+
+tunnel-client init \
+  --sample sample_mcp_stdio_local \
+  --profile lean-lsp-local \
+  --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
+  --mcp-command "uvx lean-lsp-mcp --transport stdio --lean-project-path /path/to/lean/project"
+
+tunnel-client doctor --profile lean-lsp-local --explain
+tunnel-client run --profile lean-lsp-local
+```
+
+Use `--lean-project-path` so relative `file_path` arguments resolve inside the intended Lean project. For HTTP, bind `lean-lsp-mcp` to loopback and use `--mcp-server-url http://127.0.0.1:8000/mcp` in the tunnel profile:
+
+```bash
+export LEAN_PROJECT_PATH="/path/to/lean/project"
+uvx lean-lsp-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+Keep `tunnel-client run` healthy while testing connector discovery or tool calls. In ChatGPT connector settings, choose **Tunnel** as the connection type.
+
 ### Bearer Token Authentication
 
-Transport via `streamable-http` and `sse` supports bearer token authentication. This allows publicly accessible MCP servers to restrict access to authorized clients.
+Transport via `streamable-http` and `sse` supports bearer token authentication. For private OpenAI access, prefer OpenAI Secure MCP Tunnel; bearer auth remains available for HTTP/SSE deployments that clients reach directly.
 
 Set the `LEAN_LSP_MCP_TOKEN` environment variable (or see section 3 for setting env variables in MCP config) to a secret token before starting the server. If this variable is set, requests without a matching `Authorization: Bearer ...` header are rejected before tool dispatch.
 
@@ -376,6 +402,8 @@ Notes:
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
 
 ## Development
+
+See [Adding a new tool](docs/adding-a-tool.md) for a step-by-step guide to implementing a new MCP tool (return models, helper modules, registration, tests, and docs).
 
 ### MCP Inspector
 

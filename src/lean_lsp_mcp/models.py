@@ -33,9 +33,18 @@ class LoogleResult(BaseModel):
 
 
 class LeanFinderResult(BaseModel):
-    full_name: str = Field(description="Full qualified name")
-    formal_statement: str = Field(description="Lean type signature")
-    informal_statement: str = Field(description="Natural language description")
+    formal_name: str = Field(description="Fully qualified Lean declaration name")
+    informal_name: str = Field(
+        description="Short natural-language name for the statement"
+    )
+    kind: str = Field(description="Declaration kind (theorem, def, instance, etc.)")
+    type: str = Field(description="Lean type signature / formal statement")
+    informal_description: str = Field(
+        description="Natural-language description of the statement"
+    )
+    path: str = Field(
+        description="Mathlib module path, dot-separated (e.g. Mathlib.Data.Nat.Basic)"
+    )
 
 
 class StateSearchResult(BaseModel):
@@ -353,4 +362,46 @@ class VerifyResult(BaseModel):
     warnings: List[SourceWarning] = Field(
         default_factory=list,
         description="Suspicious source patterns (if enabled)",
+    )
+
+
+class HypothesisStatus(str, Enum):
+    load_bearing = "load-bearing"
+    removable = "removable"
+    error = "error"
+
+
+class HypothesisVerdict(BaseModel):
+    binder: str = Field(description="Lean source of the binder, e.g. '(h : P)'")
+    status: HypothesisStatus = Field(
+        description=(
+            "load-bearing: removing this binder caused new errors. "
+            "removable: the file still elaborated cleanly without it. "
+            "error: probing this binder failed (e.g. LSP timeout)."
+        )
+    )
+    breaks: List[DiagnosticMessage] = Field(
+        default_factory=list,
+        description=(
+            "New errors caused by removing this binder (empty when removable). "
+            "Each entry has line/column/message — useful for finding where in "
+            "the proof body the dropped hypothesis was used."
+        ),
+    )
+    detail: str = Field(
+        default="",
+        description="Free-text status detail (e.g. timeout reason)",
+    )
+
+
+class MinimalHypothesesResult(BaseModel):
+    theorem_name: str = Field(description="Theorem analyzed")
+    file: str = Field(description="Relative file path")
+    verdicts: List[HypothesisVerdict] = Field(
+        default_factory=list,
+        description="One verdict per explicit (h : T) binder, in source order",
+    )
+    skipped_implicit: int = Field(
+        default=0,
+        description="Count of implicit {x : α} / instance [inst] binders not probed",
     )
