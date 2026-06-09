@@ -22,6 +22,10 @@ from lean_lsp_mcp.models import LoogleResult
 
 logger = logging.getLogger(__name__)
 
+# Public shared loogle instance. Rate limits only apply to this default; a
+# custom LOOGLE_URL (self-hosted backend) is not rate limited.
+DEFAULT_LOOGLE_URL = "https://loogle.lean-lang.org"
+
 
 def get_cache_dir() -> Path:
     if d := os.environ.get("LEAN_LOOGLE_CACHE_DIR"):
@@ -39,7 +43,7 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     Set LOOGLE_URL to override the default endpoint.
     Set LOOGLE_HEADERS to a JSON object of extra headers (e.g. '{"X-API-Key": "..."}').
     """
-    base = os.environ.get("LOOGLE_URL", "https://loogle.lean-lang.org")
+    base = os.environ.get("LOOGLE_URL", DEFAULT_LOOGLE_URL)
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1"}
         if extra := os.environ.get("LOOGLE_HEADERS"):

@@ -297,6 +297,39 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rate_limit["test"] == [100]
 
 
+def test_rate_limited_bypass_skips_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When bypass() is true (custom backend), the limit is not applied."""
+    times = iter([100, 101, 102])
+    monkeypatch.setattr(server.time, "time", lambda: next(times))
+
+    @server.rate_limited("test", max_requests=1, per_seconds=10, bypass=lambda: True)
+    def wrapped(*, ctx: types.SimpleNamespace) -> str:
+        """Test helper"""
+        return "ok"
+
+    ctx = _make_ctx()
+    assert wrapped(ctx=ctx) == "ok"
+    assert wrapped(ctx=ctx) == "ok"
+    assert wrapped(ctx=ctx) == "ok"
+
+
+def test_custom_backend_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+    default = "https://premise-search.com"
+
+    monkeypatch.delenv("LEAN_STATE_SEARCH_URL", raising=False)
+    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is False
+
+    monkeypatch.setenv("LEAN_STATE_SEARCH_URL", default)
+    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is False
+
+    # Trailing-slash difference should still count as the default.
+    monkeypatch.setenv("LEAN_STATE_SEARCH_URL", default + "/")
+    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is False
+
+    monkeypatch.setenv("LEAN_STATE_SEARCH_URL", "http://localhost:8000")
+    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is True
+
+
 def test_parse_disabled_tools() -> None:
     assert server._parse_disabled_tools(None) == set()
     assert server._parse_disabled_tools("") == set()

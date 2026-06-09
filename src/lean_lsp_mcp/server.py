@@ -44,7 +44,7 @@ from lean_lsp_mcp.file_utils import (
     require_lean_project_path,
 )
 from lean_lsp_mcp.instructions import INSTRUCTIONS
-from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
+from lean_lsp_mcp.loogle import DEFAULT_LOOGLE_URL, LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
@@ -463,9 +463,33 @@ if auth_token:
 mcp = FastMCP(**mcp_kwargs)
 
 
-def rate_limited(category: str, max_requests: int, per_seconds: int):
+# Default (shared, public) backends for the configurable search tools. Rate
+# limits exist to be a polite citizen of these shared services; when a user
+# points a tool at their own backend they are not rate limited.
+DEFAULT_STATE_SEARCH_URL = "https://premise-search.com"
+DEFAULT_HAMMER_URL = "http://leanpremise.net"
+
+
+def _custom_backend(env_var: str, default_url: str) -> bool:
+    """True when the user configured a self-hosted backend for a tool.
+
+    A custom (non-default) URL means requests do not hit the shared public
+    service, so the rate limit no longer applies.
+    """
+    configured = os.environ.get(env_var, "").strip()
+    return bool(configured) and configured.rstrip("/") != default_url.rstrip("/")
+
+
+def rate_limited(
+    category: str,
+    max_requests: int,
+    per_seconds: int,
+    bypass: Optional[Callable[[], bool]] = None,
+):
     def decorator(func):
         def _apply_rate_limit(args, kwargs):
+            if bypass is not None and bypass():
+                return True, None
             ctx = kwargs.get("ctx")
             if ctx is None:
                 if not args:
@@ -2207,7 +2231,11 @@ async def local_search(
         openWorldHint=True,
     ),
 )
-@rate_limited("leansearch", max_requests=3, per_seconds=30)
+# leansearch.net raised capacity to ~40 req/s (per-IP ~120 req/min) and asked
+# us to lift our previously very conservative 3 req/30s. This client-side
+# throttle mainly guards against runaway loops; the server enforces its own
+# per-IP limit, which the maintainers adjust dynamically as capacity allows.
+@rate_limited("leansearch", max_requests=90, per_seconds=30)
 async def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
@@ -2295,15 +2323,17 @@ async def loogle(
         except Exception as e:
             logger.warning(f"Local loogle failed: {e}, falling back to remote")
 
-    # Fall back to remote (with rate limiting)
-    rate_limit = app_ctx.rate_limit["loogle"]
-    now = int(time.time())
-    rate_limit[:] = [t for t in rate_limit if now - t < 30]
-    if len(rate_limit) >= 3:
-        raise LeanToolError(
-            "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
-        )
-    rate_limit.append(now)
+    # Fall back to remote. Rate limit only the default public instance; a
+    # custom LOOGLE_URL (self-hosted backend) is not rate limited.
+    if not _custom_backend("LOOGLE_URL", DEFAULT_LOOGLE_URL):
+        rate_limit = app_ctx.rate_limit["loogle"]
+        now = int(time.time())
+        rate_limit[:] = [t for t in rate_limit if now - t < 30]
+        if len(rate_limit) >= 3:
+            raise LeanToolError(
+                "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+            )
+        rate_limit.append(now)
 
     await _safe_report_progress(
         ctx,
@@ -2388,7 +2418,12 @@ async def leanfinder(
         openWorldHint=True,
     ),
 )
-@rate_limited("lean_state_search", max_requests=6, per_seconds=30)
+@rate_limited(
+    "lean_state_search",
+    max_requests=6,
+    per_seconds=30,
+    bypass=lambda: _custom_backend("LEAN_STATE_SEARCH_URL", DEFAULT_STATE_SEARCH_URL),
+)
 async def state_search(
     ctx: Context,
     file_path: Annotated[
@@ -2414,7 +2449,7 @@ async def state_search(
 
     goal_str = urllib.parse.quote(goal["goals"][0])
 
-    url = os.getenv("LEAN_STATE_SEARCH_URL", "https://premise-search.com")
+    url = os.getenv("LEAN_STATE_SEARCH_URL", DEFAULT_STATE_SEARCH_URL)
     req = urllib.request.Request(
         f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
         headers={"User-Agent": "lean-lsp-mcp/0.1"},
@@ -2439,7 +2474,12 @@ async def state_search(
         openWorldHint=True,
     ),
 )
-@rate_limited("hammer_premise", max_requests=6, per_seconds=30)
+@rate_limited(
+    "hammer_premise",
+    max_requests=6,
+    per_seconds=30,
+    bypass=lambda: _custom_backend("LEAN_HAMMER_URL", DEFAULT_HAMMER_URL),
+)
 async def hammer_premise(
     ctx: Context,
     file_path: Annotated[
@@ -2472,7 +2512,7 @@ async def hammer_premise(
         "k": num_results,
     }
 
-    url = os.getenv("LEAN_HAMMER_URL", "http://leanpremise.net")
+    url = os.getenv("LEAN_HAMMER_URL", DEFAULT_HAMMER_URL)
     req = urllib.request.Request(
         url + "/retrieve",
         headers={
