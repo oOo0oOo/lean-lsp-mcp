@@ -2324,20 +2324,28 @@ async def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept or proof state")],
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
+    version: Annotated[
+        Literal["v4.19.0", "v4.24.0", "v4.28.0"],
+        Field(description="Mathlib version index to search"),
+    ] = "v4.28.0",
 ) -> LeanFinderResults:
     """Semantic search by mathematical meaning via Lean Finder.
 
     Examples: "commutativity of addition on natural numbers",
     "I have h : n < m and need n + 1 < m + 1", proof state text.
+
+    The `version` argument selects which mathlib snapshot to query
+    (v4.19.0, v4.24.0, or v4.28.0). Default: v4.28.0.
     """
     headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
     request_url = "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
-    payload = orjson.dumps({"inputs": query, "top_k": int(num_results)})
+    payload = orjson.dumps(
+        {"inputs": query, "top_k": int(num_results), "version": version}
+    )
     req = urllib.request.Request(
         request_url, data=payload, headers=headers, method="POST"
     )
 
-    results: List[LeanFinderResult] = []
     await _safe_report_progress(
         ctx,
         progress=1,
@@ -2345,20 +2353,21 @@ async def leanfinder(
         message="Awaiting response from Lean Finder (Hugging Face)",
     )
     data = await _urlopen_json(req, timeout=10)
-    for result in data["results"]:
-        if (
-            "https://leanprover-community.github.io/mathlib4_docs" not in result["url"]
-        ):  # Only include mathlib4 results
-            continue
-        match = re.search(r"pattern=(.*?)#doc", result["url"])
-        if match:
-            results.append(
-                LeanFinderResult(
-                    full_name=match.group(1),
-                    formal_statement=result["formal_statement"],
-                    informal_statement=result["informal_statement"],
-                )
+    if isinstance(data, dict) and "error" in data:
+        raise LeanToolError(str(data["error"]))
+
+    results: List[LeanFinderResult] = []
+    for r in data.get("results", []):
+        results.append(
+            LeanFinderResult(
+                formal_name=r.get("formal_name", ""),
+                informal_name=r.get("informal_name", ""),
+                kind=r.get("kind", ""),
+                type=r.get("type", ""),
+                informal_description=r.get("informal_description", ""),
+                path=r.get("path", "").replace("/", "."),
             )
+        )
 
     return LeanFinderResults(items=results)
 

@@ -150,10 +150,15 @@ async def test_search_tools(
         )
         finder_results = _first_result_item(finder_informal)
         if finder_results:
-            assert isinstance(finder_results, dict) and len(finder_results.keys()) == 3
-            assert {"full_name", "formal_statement", "informal_statement"} <= set(
-                finder_results.keys()
-            )
+            assert isinstance(finder_results, dict) and len(finder_results.keys()) == 6
+            assert {
+                "formal_name",
+                "informal_name",
+                "kind",
+                "type",
+                "informal_description",
+                "path",
+            } <= set(finder_results.keys())
         else:
             finder_text = result_text(finder_informal)
             assert finder_text and len(finder_text) > 0
