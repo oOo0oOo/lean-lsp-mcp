@@ -66,7 +66,6 @@ from lean_lsp_mcp.models import (
     DiagnosticsResult,
     InteractiveDiagnosticsResult,
     FileOutline,
-    GoalState,
     HoverInfo,
     LeanFinderResult,
     LeanFinderResults,
@@ -84,15 +83,12 @@ from lean_lsp_mcp.models import (
     ReferenceLocation,
     ReferencesResult,
     RunResult,
-    WidgetSourceResult,
-    WidgetsResult,
     HypothesisStatus,
     HypothesisVerdict,
     SourceWarning,
     StateSearchResult,
     StateSearchResults,
     StructuredGoal,
-    TermGoalState,
     VerifyResult,
 )
 
@@ -539,61 +535,6 @@ async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
         logger.exception("REPL close failed during project switch")
 
 
-@mcp.tool(
-    "lean_build",
-    annotations=ToolAnnotations(
-        title="Build Project",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-async def lsp_build(
-    ctx: Context,
-    lean_project_path: Annotated[
-        Optional[str], Field(description="Path to Lean project")
-    ] = None,
-    clean: Annotated[bool, Field(description="Run lake clean first (slow)")] = False,
-    fetch_cache: Annotated[
-        bool, Field(description="Run lake exe cache get before building (slow)")
-    ] = False,
-    output_lines: Annotated[
-        int, Field(description="Return last N lines of build log (0=none)")
-    ] = 20,
-) -> BuildResult:
-    """Build the Lean project and restart LSP. Use only if needed (e.g. new imports)."""
-    lifespan = ctx.request_context.lifespan_context
-    configured_root = lifespan.lean_project_path
-
-    if not lean_project_path:
-        lean_project_path_obj = configured_root
-    else:
-        previous_root = configured_root
-        try:
-            lean_project_path_obj = bind_lean_project_path(ctx, lean_project_path)
-        except ValueError as exc:
-            raise LeanToolError(str(exc)) from exc
-        if previous_root is not None and previous_root != lean_project_path_obj:
-            await _close_repl_for_project_switch(lifespan)
-
-    if lean_project_path_obj is None:
-        raise LeanToolError(
-            "Lean project path not known yet. Provide `lean_project_path` explicitly or call another tool first."
-        )
-
-    async def build_factory() -> BuildResult:
-        return await _run_build(
-            ctx, lean_project_path_obj, clean, fetch_cache, output_lines
-        )
-
-    app_ctx = ctx.request_context.lifespan_context
-    coordinator = app_ctx.build_coordinator
-    if coordinator is None or coordinator.mode == "allow":
-        return await build_factory()
-    return await coordinator.run(build_factory)
-
-
 async def _run_build(
     ctx: Context,
     lean_project_path_obj: Path,
@@ -937,81 +878,6 @@ def diagnostic_messages(
     )
 
 
-@mcp.tool(
-    "lean_goal",
-    annotations=ToolAnnotations(
-        title="Proof Goals",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def goal(
-    ctx: Context,
-    file_path: Annotated[
-        str, Field(description="Absolute or project-root-relative path to Lean file")
-    ],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[
-        Optional[int],
-        Field(description="Column (1-indexed). Omit for before/after", ge=1),
-    ] = None,
-    format: Annotated[
-        Literal["text", "structured"],
-        Field(description="Output format: 'text' (default) or 'structured'"),
-    ] = "text",
-) -> GoalState:
-    """Get proof goals at a position. MOST IMPORTANT tool - use often!
-
-    Omit column to see goals_before (line start) and goals_after (line end),
-    showing how the tactic transforms the state. "no goals" = proof complete.
-    """
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    content = client.get_file_content(rel_path)
-    lines = content.splitlines()
-
-    if line < 1 or line > len(lines):
-        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
-
-    line_context = lines[line - 1]
-
-    if column is None:
-        column_end = len(line_context)
-        column_start = next(
-            (i for i, c in enumerate(line_context) if not c.isspace()), 0
-        )
-        goal_start = _get_goal_response(client, rel_path, line - 1, column_start)
-        check_lsp_response(goal_start, "get_goal", allow_none=True)
-        goal_end = _get_goal_response(client, rel_path, line - 1, column_end)
-        goals_before = extract_goals_list(goal_start)
-        goals_after = extract_goals_list(goal_end)
-
-        if format == "structured":
-            goals_before = [_goal_to_structured(g) for g in goals_before]
-            goals_after = [_goal_to_structured(g) for g in goals_after]
-
-        return GoalState(
-            line_context=line_context,
-            goals_before=goals_before,
-            goals_after=goals_after,
-        )
-    else:
-        goal_result = _get_goal_response(client, rel_path, line - 1, column - 1)
-        check_lsp_response(goal_result, "get_goal", allow_none=True)
-        goals = extract_goals_list(goal_result)
-        if format == "structured":
-            goals = [_goal_to_structured(g) for g in goals]
-        return GoalState(
-            line_context=line_context,
-            goals=goals,
-        )
-
-
 def _goal_to_structured(goal_str: str) -> StructuredGoal:
     goal_str = (goal_str or "").strip()
 
@@ -1233,53 +1099,6 @@ def _prepare_multi_attempt_edit(
         goal_column = len(payload_lines[-1])
 
     return snippet_str, change, goal_line, goal_column, line_delta
-
-
-@mcp.tool(
-    "lean_term_goal",
-    annotations=ToolAnnotations(
-        title="Term Goal",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def term_goal(
-    ctx: Context,
-    file_path: Annotated[
-        str, Field(description="Absolute or project-root-relative path to Lean file")
-    ],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[
-        Optional[int], Field(description="Column (defaults to end of line)", ge=1)
-    ] = None,
-) -> TermGoalState:
-    """Get the expected type at a position."""
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    content = client.get_file_content(rel_path)
-    lines = content.splitlines()
-
-    if line < 1 or line > len(lines):
-        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
-
-    line_context = lines[line - 1]
-    if column is None:
-        column = max(len(line_context), 1)
-
-    term_goal_result = client.get_term_goal(rel_path, line - 1, column - 1)
-    check_lsp_response(term_goal_result, "get_term_goal", allow_none=True)
-    expected_type = None
-    if term_goal_result is not None:
-        rendered = term_goal_result.get("goal")
-        if rendered:
-            expected_type = rendered.replace("```lean\n", "").replace("\n```", "")
-
-    return TermGoalState(line_context=line_context, expected_type=expected_type)
 
 
 @mcp.tool(
@@ -2634,61 +2453,6 @@ def code_actions(
 
 
 @mcp.tool(
-    "lean_get_widgets",
-    annotations=ToolAnnotations(
-        title="Get Widgets",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def get_widgets(
-    ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
-) -> WidgetsResult:
-    """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    widgets = client.get_widgets(rel_path, line - 1, column - 1)
-    return WidgetsResult(widgets=widgets)
-
-
-@mcp.tool(
-    "lean_get_widget_source",
-    annotations=ToolAnnotations(
-        title="Widget Source",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-def get_widget_source(
-    ctx: Context,
-    file_path: Annotated[str, Field(description="Absolute path to Lean file")],
-    javascript_hash: Annotated[
-        str, Field(description="javascriptHash from a widget instance")
-    ],
-) -> WidgetSourceResult:
-    """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    source = client.get_widget_source(
-        rel_path, 0, 0, {"javascriptHash": javascript_hash}
-    )
-    return WidgetSourceResult(source=source)
-
-
-@mcp.tool(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",
@@ -2739,6 +2503,19 @@ async def profile_proof(
         )
     except (ValueError, TimeoutError) as e:
         raise LeanToolError(str(e)) from e
+
+
+# Import the tool subpackage last: each submodule registers its tools on `mcp`
+# and references core symbols (helpers, mcp) defined above via this module, so
+# the imports must happen after the core is fully defined. Tool handlers are
+# re-exported below so existing `server.<tool>` references keep working.
+from lean_lsp_mcp import tools as _tools  # noqa: E402
+
+lsp_build = _tools.build.lsp_build
+goal = _tools.goals.goal
+term_goal = _tools.goals.term_goal
+get_widgets = _tools.widgets.get_widgets
+get_widget_source = _tools.widgets.get_widget_source
 
 
 if __name__ == "__main__":
