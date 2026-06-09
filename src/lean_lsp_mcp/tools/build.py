@@ -9,6 +9,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
+from lean_lsp_mcp.client_utils import bind_lean_project_path
 from lean_lsp_mcp.models import BuildResult
 
 
@@ -44,9 +45,7 @@ async def lsp_build(
     else:
         previous_root = configured_root
         try:
-            lean_project_path_obj = server.bind_lean_project_path(
-                ctx, lean_project_path
-            )
+            lean_project_path_obj = bind_lean_project_path(ctx, lean_project_path)
         except ValueError as exc:
             raise server.LeanToolError(str(exc)) from exc
         if previous_root is not None and previous_root != lean_project_path_obj:
