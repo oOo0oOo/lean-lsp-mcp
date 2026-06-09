@@ -238,6 +238,42 @@ Check theorem soundness: returns axioms used + optional source pattern scan for 
 ```
 </details>
 
+#### lean_minimal_hypotheses
+
+For each explicit `(h : T)` hypothesis of a theorem, drop it and re-elaborate the file via the LSP. Reports which hypotheses are load-bearing and which are actually unused. For load-bearing hypotheses, the verdict includes a list of `breaks` — every new error caused by removing the binder, with line, column, and message — so you can see *where* in the proof the dropped hypothesis was used. Useful for "minimum hypotheses needed" / counterfactual reasoning when sharpening a result.
+
+Skips implicit `{x : α}` and instance `[inst : C]` binders. Does not rewrite the proof body — a body that names `h` will fail to elaborate without the binder, which is the truthful answer (load-bearing).
+
+Slow: each hypothesis triggers a full re-elaboration capped at `inactivity_timeout` (default 60 s). The original file content is restored before the tool returns.
+
+<details>
+<summary>Example output (one of two hypotheses unused)</summary>
+
+```json
+{
+  "theorem_name": "minhyp_one_unused",
+  "file": "MinimalHypothesesTest.lean",
+  "verdicts": [
+    {
+      "binder": "(h1 : 1 + 1 = 2)",
+      "status": "load-bearing",
+      "breaks": [
+        {"severity": "error", "message": "unknown identifier 'h1'", "line": 7, "column": 3}
+      ],
+      "detail": ""
+    },
+    {
+      "binder": "(h2 : 2 + 2 = 4)",
+      "status": "removable",
+      "breaks": [],
+      "detail": ""
+    }
+  ],
+  "skipped_implicit": 0
+}
+```
+</details>
+
 ### Local Search Tools
 
 #### lean_local_search
