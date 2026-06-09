@@ -18,6 +18,8 @@ from lean_lsp_mcp.models import (
     FileOutline,
     InteractiveDiagnosticsResult,
 )
+from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.utils import get_declaration_range
 
 
 @server.mcp.tool(
@@ -44,7 +46,7 @@ def file_outline(
         server._raise_invalid_path(file_path)
 
     client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return server.generate_outline_data(client, rel_path, max_declarations)
+    return generate_outline_data(client, rel_path, max_declarations)
 
 
 @server.mcp.tool(
@@ -99,7 +101,7 @@ def diagnostic_messages(
 
     # If declaration_name is provided, get its range and use that for filtering
     if declaration_name:
-        decl_range = server.get_declaration_range(client, rel_path, declaration_name)
+        decl_range = get_declaration_range(client, rel_path, declaration_name)
         if decl_range is None:
             raise server.LeanToolError(
                 f"Declaration '{declaration_name}' not found in file."
