@@ -44,7 +44,13 @@ from lean_lsp_mcp.file_utils import (
     require_lean_project_path,
 )
 from lean_lsp_mcp.instructions import INSTRUCTIONS
-from lean_lsp_mcp.loogle import DEFAULT_LOOGLE_URL, LoogleManager, loogle_remote
+from lean_lsp_mcp import config
+from lean_lsp_mcp.config import (
+    DEFAULT_HAMMER_URL,
+    DEFAULT_LOOGLE_URL,
+    DEFAULT_STATE_SEARCH_URL,
+)
+from lean_lsp_mcp.loogle import LoogleManager, loogle_remote
 from lean_lsp_mcp.repl import Repl, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
@@ -164,7 +170,7 @@ def _parse_disabled_tools(raw_value: str | None) -> set[str]:
 def _load_tool_description_overrides() -> dict[str, str]:
     overrides: dict[str, str] = {}
 
-    inline = os.environ.get(_TOOL_DESCRIPTIONS_ENV, "").strip()
+    inline = config.tool_descriptions_raw()
     if inline:
         try:
             payload = json.loads(inline)
@@ -183,7 +189,7 @@ def _load_tool_description_overrides() -> dict[str, str]:
 
 def apply_tool_configuration(server: FastMCP) -> None:
     """Apply optional runtime tool configuration from environment variables."""
-    disabled = _parse_disabled_tools(os.environ.get(_DISABLED_TOOLS_ENV))
+    disabled = _parse_disabled_tools(config.disabled_tools_raw())
     for name in sorted(disabled):
         tool = server._tool_manager.get_tool(name)
         if tool is None:
@@ -192,7 +198,7 @@ def apply_tool_configuration(server: FastMCP) -> None:
         server.remove_tool(name)
         logger.info("Disabled tool '%s' via %s", name, _DISABLED_TOOLS_ENV)
 
-    instructions_override = os.environ.get(_INSTRUCTIONS_ENV)
+    instructions_override = config.instructions_override()
     if instructions_override is not None:
         server._mcp_server.instructions = instructions_override
         logger.info("Overrode server instructions via %s", _INSTRUCTIONS_ENV)
@@ -208,15 +214,11 @@ def apply_tool_configuration(server: FastMCP) -> None:
 
 
 def _get_build_concurrency_mode() -> str:
-    mode = os.environ.get("LEAN_BUILD_CONCURRENCY", "allow").strip().lower()
-    if mode not in {"allow", "cancel", "share"}:
-        logger.warning("Invalid LEAN_BUILD_CONCURRENCY=%s, defaulting to allow.", mode)
-        mode = "allow"
-    return mode
+    return config.build_concurrency()
 
 
-_LOG_FILE_CONFIG = os.environ.get("LEAN_LOG_FILE_CONFIG", None)
-_LOG_LEVEL = os.environ.get("LEAN_LOG_LEVEL", "INFO")
+_LOG_FILE_CONFIG = config.log_file_config()
+_LOG_LEVEL = config.log_level()
 if _LOG_FILE_CONFIG:
     try:
         if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
@@ -317,11 +319,7 @@ async def _ensure_shared_loogle(
         if _shared_loogle_init_done:
             return _shared_loogle_manager, _shared_loogle_available
 
-        if os.environ.get("LEAN_LOOGLE_LOCAL", "").lower() not in (
-            "1",
-            "true",
-            "yes",
-        ):
+        if not config.loogle_local_enabled():
             _shared_loogle_init_done = True
             return None, False
 
@@ -370,7 +368,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     try:
         active_transport = _active_transport()
         project_switching_allowed = _project_switching_allowed()
-        lean_project_path_str = os.environ.get("LEAN_PROJECT_PATH", "").strip()
+        lean_project_path_str = config.project_path()
         if not lean_project_path_str:
             if not project_switching_allowed:
                 raise ValueError(
@@ -452,7 +450,7 @@ mcp_kwargs = dict(
     lifespan=app_lifespan,
 )
 
-auth_token = os.environ.get("LEAN_LSP_MCP_TOKEN")
+auth_token = config.auth_token()
 if auth_token:
     mcp_kwargs["auth"] = AuthSettings(
         issuer_url="http://localhost/dummy-issuer",
@@ -463,21 +461,13 @@ if auth_token:
 mcp = FastMCP(**mcp_kwargs)
 
 
-# Default (shared, public) backends for the configurable search tools. Rate
-# limits exist to be a polite citizen of these shared services; when a user
-# points a tool at their own backend they are not rate limited.
-DEFAULT_STATE_SEARCH_URL = "https://premise-search.com"
-DEFAULT_HAMMER_URL = "http://leanpremise.net"
-
-
 def _custom_backend(env_var: str, default_url: str) -> bool:
     """True when the user configured a self-hosted backend for a tool.
 
     A custom (non-default) URL means requests do not hit the shared public
     service, so the rate limit no longer applies.
     """
-    configured = os.environ.get(env_var, "").strip()
-    return bool(configured) and configured.rstrip("/") != default_url.rstrip("/")
+    return config.is_custom_backend(env_var, default_url)
 
 
 def rate_limited(
@@ -2449,7 +2439,7 @@ async def state_search(
 
     goal_str = urllib.parse.quote(goal["goals"][0])
 
-    url = os.getenv("LEAN_STATE_SEARCH_URL", DEFAULT_STATE_SEARCH_URL)
+    url = config.state_search_url()
     req = urllib.request.Request(
         f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
         headers={"User-Agent": "lean-lsp-mcp/0.1"},
@@ -2512,7 +2502,7 @@ async def hammer_premise(
         "k": num_results,
     }
 
-    url = os.getenv("LEAN_HAMMER_URL", DEFAULT_HAMMER_URL)
+    url = config.hammer_url()
     req = urllib.request.Request(
         url + "/retrieve",
         headers={
@@ -2753,5 +2743,5 @@ async def profile_proof(
 
 if __name__ == "__main__":
     apply_tool_configuration(mcp)
-    os.environ.setdefault("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
+    os.environ.setdefault(config.ACTIVE_TRANSPORT_ENV, "stdio")
     mcp.run()

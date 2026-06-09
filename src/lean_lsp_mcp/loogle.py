@@ -19,16 +19,16 @@ import certifi
 import orjson
 
 from lean_lsp_mcp.models import LoogleResult
+from lean_lsp_mcp import config
+
+# Re-exported for backward compatibility; canonical definition lives in config.
+DEFAULT_LOOGLE_URL = config.DEFAULT_LOOGLE_URL
 
 logger = logging.getLogger(__name__)
 
-# Public shared loogle instance. Rate limits only apply to this default; a
-# custom LOOGLE_URL (self-hosted backend) is not rate limited.
-DEFAULT_LOOGLE_URL = "https://loogle.lean-lang.org"
-
 
 def get_cache_dir() -> Path:
-    if d := os.environ.get("LEAN_LOOGLE_CACHE_DIR"):
+    if d := config.loogle_cache_dir():
         return Path(d)
     if os.name == "nt":
         xdg = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -43,10 +43,10 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     Set LOOGLE_URL to override the default endpoint.
     Set LOOGLE_HEADERS to a JSON object of extra headers (e.g. '{"X-API-Key": "..."}').
     """
-    base = os.environ.get("LOOGLE_URL", DEFAULT_LOOGLE_URL)
+    base = config.loogle_url()
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1"}
-        if extra := os.environ.get("LOOGLE_HEADERS"):
+        if extra := config.loogle_headers_raw():
             headers.update(json.loads(extra))
         req = urllib.request.Request(
             f"{base}/json?q={urllib.parse.quote(query)}",

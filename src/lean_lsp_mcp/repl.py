@@ -9,6 +9,8 @@ import platform
 from dataclasses import dataclass, field
 from typing import Any
 
+from lean_lsp_mcp import config
+
 if platform.system() != "Windows":
     import resource
 
@@ -26,7 +28,7 @@ class SnippetResult:
 
 
 def repl_enabled() -> bool:
-    return os.environ.get("LEAN_REPL", "").lower() in ("1", "true", "yes")
+    return config.repl_enabled()
 
 
 def find_repl_binary(project_dir: str | None = None) -> str | None:
@@ -35,7 +37,7 @@ def find_repl_binary(project_dir: str | None = None) -> str | None:
     from pathlib import Path
 
     # 1. Explicit env var
-    if path := os.environ.get("LEAN_REPL_PATH"):
+    if path := config.repl_path():
         return path if Path(path).exists() or shutil.which(path) else None
 
     # 2. Auto-detect from .lake/packages (common location after `lake build`)
@@ -81,8 +83,8 @@ class Repl:
     def __init__(self, project_dir: str, repl_path: str | None = None):
         self.project_dir = project_dir
         self.repl_path = repl_path or find_repl_binary(project_dir) or "repl"
-        self.timeout = int(os.environ.get("LEAN_REPL_TIMEOUT", "60"))
-        self.mem_mb = int(os.environ.get("LEAN_REPL_MEM_MB", "8192"))
+        self.timeout = config.repl_timeout()
+        self.mem_mb = config.repl_mem_mb()
         self._proc: asyncio.subprocess.Process | None = None
         self._header: str | None = None
         self._header_env: int | None = None

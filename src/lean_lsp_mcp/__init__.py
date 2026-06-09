@@ -5,6 +5,7 @@ from contextlib import suppress
 from importlib.metadata import version
 
 import anyio
+from lean_lsp_mcp import config
 from lean_lsp_mcp.client_utils import close_shared_client, infer_project_path
 from lean_lsp_mcp.server import apply_tool_configuration, mcp
 
@@ -134,22 +135,22 @@ def main():
         project_path = infer_project_path(args.lean_project_path)
         if project_path is None:
             parser.error(f"No lean-toolchain found for: {args.lean_project_path}")
-        os.environ["LEAN_PROJECT_PATH"] = str(project_path)
+        os.environ[config.PROJECT_PATH_ENV] = str(project_path)
     if args.disable_tools:
-        os.environ["LEAN_MCP_DISABLED_TOOLS"] = args.disable_tools
+        os.environ[config.DISABLED_TOOLS_ENV] = args.disable_tools
     if args.tool_descriptions:
-        os.environ["LEAN_MCP_TOOL_DESCRIPTIONS"] = args.tool_descriptions
+        os.environ[config.TOOL_DESCRIPTIONS_ENV] = args.tool_descriptions
     if args.instructions:
-        os.environ["LEAN_MCP_INSTRUCTIONS"] = args.instructions
+        os.environ[config.INSTRUCTIONS_ENV] = args.instructions
     if args.loogle_local:
-        os.environ["LEAN_LOOGLE_LOCAL"] = "true"
+        os.environ[config.LOOGLE_LOCAL_ENV] = "true"
     if args.loogle_cache_dir:
-        os.environ["LEAN_LOOGLE_CACHE_DIR"] = args.loogle_cache_dir
+        os.environ[config.LOOGLE_CACHE_DIR_ENV] = args.loogle_cache_dir
     if args.repl:
-        os.environ["LEAN_REPL"] = "true"
+        os.environ[config.REPL_ENV] = "true"
     if args.repl_timeout:
-        os.environ["LEAN_REPL_TIMEOUT"] = str(args.repl_timeout)
-    os.environ["LEAN_LSP_MCP_ACTIVE_TRANSPORT"] = args.transport
+        os.environ[config.REPL_TIMEOUT_ENV] = str(args.repl_timeout)
+    os.environ[config.ACTIVE_TRANSPORT_ENV] = args.transport
 
     apply_tool_configuration(mcp)
     mcp.settings.host = args.host

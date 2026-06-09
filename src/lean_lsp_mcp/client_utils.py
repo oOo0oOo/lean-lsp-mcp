@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from threading import Lock
 
@@ -14,11 +13,11 @@ from lean_lsp_mcp.file_utils import (
     valid_lean_project_path,
 )
 from lean_lsp_mcp.utils import OutputCapture
+from lean_lsp_mcp import config
 
 
 logger = get_logger(__name__)
 CLIENT_LOCK = Lock()
-_ACTIVE_TRANSPORT_ENV = "LEAN_LSP_MCP_ACTIVE_TRANSPORT"
 _shared_clients: dict[Path, LeanLSPClient] = {}
 _builds_in_progress: set[Path] = set()
 
@@ -32,7 +31,7 @@ def _active_transport(ctx: Context | None = None) -> str:
         transport = getattr(lifespan, "active_transport", None)
         if isinstance(transport, str) and transport:
             return transport
-    return os.environ.get(_ACTIVE_TRANSPORT_ENV, "stdio").strip().lower() or "stdio"
+    return config.active_transport()
 
 
 def _project_switching_allowed(ctx: Context | None = None) -> bool:
@@ -45,20 +44,7 @@ def _project_switching_allowed(ctx: Context | None = None) -> bool:
 
 
 def _max_opened_files() -> int:
-    raw_value = os.environ.get("LEAN_LSP_MAX_OPEN_FILES", "4")
-    try:
-        value = int(raw_value)
-    except ValueError:
-        logger.warning(
-            "Invalid LEAN_LSP_MAX_OPEN_FILES=%s, defaulting to 4.", raw_value
-        )
-        return 4
-    if value < 1:
-        logger.warning(
-            "Invalid LEAN_LSP_MAX_OPEN_FILES=%s, defaulting to 4.", raw_value
-        )
-        return 4
-    return value
+    return config.max_open_files()
 
 
 def _client_is_alive(client: LeanLSPClient) -> bool:
@@ -121,7 +107,7 @@ def get_path_policy(ctx: Context, project_path: Path | None = None) -> LeanPathP
 
 
 def _start_client(project_path: Path) -> LeanLSPClient:
-    prevent_cache = bool(os.environ.get("LEAN_LSP_TEST_MODE"))
+    prevent_cache = config.test_mode()
     try:
         with OutputCapture() as output:
             client = LeanLSPClient(
