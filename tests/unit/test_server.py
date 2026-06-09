@@ -783,6 +783,40 @@ def test_process_diagnostics_build_failure_excluded_regardless_of_filter() -> No
     assert result.success is False
 
 
+def test_process_diagnostics_accepts_plain_string_severity() -> None:
+    """The tool now passes severity as a plain string (Literal), not an enum.
+
+    See issue #185: the parameter type changed from a str-Enum to a Literal so
+    the emitted JSON schema is Gemini/Vertex compatible.
+    """
+    result = server._process_diagnostics(
+        _MIXED_DIAGNOSTICS, build_success=True, severity="warning"
+    )
+    assert len(result.items) == 1
+    assert result.items[0].severity == "warning"
+
+
+def test_diagnostic_messages_severity_schema_is_vertex_compatible() -> None:
+    """Regression test for #185.
+
+    Google Gemini/Vertex function-calling rejects a parameter schema that lacks
+    an explicit top-level ``type`` field, and cannot resolve JSON-Schema
+    ``$ref``/``$defs``. The ``severity`` parameter of ``lean_diagnostic_messages``
+    must therefore expose a top-level ``type`` and contain no ``$ref`` while
+    still constraining the value to the four severity levels.
+    """
+    tools = asyncio.run(server.mcp.list_tools())
+    tool = next(t for t in tools if t.name == "lean_diagnostic_messages")
+    severity = tool.inputSchema["properties"]["severity"]
+    severity_json = json.dumps(severity)
+
+    assert severity.get("type") == "string"
+    assert "$ref" not in severity_json
+    assert "DiagnosticSeverity" not in json.dumps(tool.inputSchema.get("$defs", {}))
+    for level in ("error", "warning", "info", "hint"):
+        assert level in severity_json
+
+
 def test_diagnostic_messages_passes_severity_to_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

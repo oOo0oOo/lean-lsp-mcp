@@ -56,7 +56,6 @@ from lean_lsp_mcp.models import (
     CompletionsResult,
     DeclarationInfo,
     DiagnosticMessage,
-    DiagnosticSeverity,
     # Wrapper models for list-returning tools
     DiagnosticsResult,
     InteractiveDiagnosticsResult,
@@ -793,7 +792,7 @@ def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
 def _process_diagnostics(
     diagnostics: List[Dict],
     build_success: bool,
-    severity: Optional[DiagnosticSeverity] = None,
+    severity: Optional[str] = None,
     timed_out: bool = False,
 ) -> DiagnosticsResult:
     """Process diagnostics, extracting dependency paths from build stderr.
@@ -823,7 +822,7 @@ def _process_diagnostics(
 
         # Normal diagnostic from the queried file
         severity_str = DIAGNOSTIC_SEVERITY.get(severity_int, f"unknown({severity_int})")
-        if severity is not None and severity_str != severity.value:
+        if severity is not None and severity_str != severity:
             continue
         items.append(
             DiagnosticMessage(
@@ -872,8 +871,16 @@ def diagnostic_messages(
         ),
     ] = False,
     severity: Annotated[
-        Optional[DiagnosticSeverity],
-        Field(description="Filter by severity level. Returns all levels when omitted."),
+        Optional[Literal["error", "warning", "info", "hint"]],
+        # json_schema_extra forces an explicit top-level `type` onto the
+        # property schema. Without it the emitted schema is a bare
+        # anyOf/enum union with no `type`, which Google Gemini/Vertex
+        # function-calling rejects ("schema didn't specify the schema type
+        # field"). See issue #185.
+        Field(
+            description="Filter by severity level. Returns all levels when omitted.",
+            json_schema_extra={"type": "string"},
+        ),
     ] = None,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
