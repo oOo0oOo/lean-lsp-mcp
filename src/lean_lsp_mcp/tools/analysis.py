@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Iterable
 from typing import Annotated, Dict, List, Optional
 
 from leanclient import DocumentContentChange, LeanLSPClient
@@ -96,7 +97,7 @@ def run_code(
         raise server.LeanToolError(f"Error writing code snippet: {e}")
 
     client: LeanLSPClient | None = lifespan_context.client
-    raw_diagnostics: List[Dict] = []
+    raw_diagnostics: Iterable[Dict] = []
     opened_file = False
 
     try:
@@ -190,8 +191,8 @@ def verify_theorem(
     try:
         change = DocumentContentChange(
             snippet,
-            [appended_line, 0],
-            [appended_line, 0],
+            (appended_line, 0),
+            (appended_line, 0),
         )
         client.update_file(rel_path, [change])
         raw = client.get_diagnostics(
@@ -223,7 +224,7 @@ def verify_theorem(
     if scan_source:
         if server._RG_AVAILABLE:
             w = [
-                SourceWarning(line=w["line"], pattern=w["pattern"])
+                SourceWarning(line=int(w["line"]), pattern=str(w["pattern"]))
                 for w in scan_warnings(abs_path)
             ]
         else:

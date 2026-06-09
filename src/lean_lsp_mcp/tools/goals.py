@@ -10,7 +10,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.models import GoalState, TermGoalState
+from lean_lsp_mcp.models import GoalState, StructuredGoal, TermGoalState
 
 
 @server.mcp.tool(
@@ -66,12 +66,15 @@ def goal(
         goal_start = server._get_goal_response(client, rel_path, line - 1, column_start)
         server.check_lsp_response(goal_start, "get_goal", allow_none=True)
         goal_end = server._get_goal_response(client, rel_path, line - 1, column_end)
-        goals_before = server.extract_goals_list(goal_start)
-        goals_after = server.extract_goals_list(goal_end)
-
-        if format == "structured":
-            goals_before = [server._goal_to_structured(g) for g in goals_before]
-            goals_after = [server._goal_to_structured(g) for g in goals_after]
+        structured = format == "structured"
+        goals_before: list[str | StructuredGoal] = [
+            server._goal_to_structured(g) if structured else g
+            for g in server.extract_goals_list(goal_start)
+        ]
+        goals_after: list[str | StructuredGoal] = [
+            server._goal_to_structured(g) if structured else g
+            for g in server.extract_goals_list(goal_end)
+        ]
 
         return GoalState(
             line_context=line_context,
@@ -81,9 +84,11 @@ def goal(
     else:
         goal_result = server._get_goal_response(client, rel_path, line - 1, column - 1)
         server.check_lsp_response(goal_result, "get_goal", allow_none=True)
-        goals = server.extract_goals_list(goal_result)
-        if format == "structured":
-            goals = [server._goal_to_structured(g) for g in goals]
+        structured = format == "structured"
+        goals: list[str | StructuredGoal] = [
+            server._goal_to_structured(g) if structured else g
+            for g in server.extract_goals_list(goal_result)
+        ]
         return GoalState(
             line_context=line_context,
             goals=goals,

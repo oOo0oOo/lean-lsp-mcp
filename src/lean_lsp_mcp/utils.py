@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import re
 import secrets
 import sys
 import tempfile
+from collections.abc import Iterable
 from typing import Any, List, Dict, Optional, Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
@@ -189,7 +192,7 @@ def _utf16_index_to_py_index(text: str, utf16_index: int) -> int | None:
     return None
 
 
-def extract_range(content: str, range: dict) -> str:
+def extract_range(content: str, range: dict | None) -> str:
     """Extract the text from the content based on the range.
 
     Args:
@@ -199,6 +202,8 @@ def extract_range(content: str, range: dict) -> str:
     Returns:
         str: The extracted range text.
     """
+    if not range:
+        return ""
     start_line = range["start"]["line"]
     start_char = range["start"]["character"]
     end_line = range["end"]["line"]
@@ -285,7 +290,7 @@ def format_line(
 
 
 def filter_diagnostics_by_position(
-    diagnostics: List[Dict], line: Optional[int], column: Optional[int]
+    diagnostics: Iterable[Dict], line: Optional[int], column: Optional[int]
 ) -> List[Dict]:
     """Return diagnostics that intersect the requested (0-indexed) position."""
 

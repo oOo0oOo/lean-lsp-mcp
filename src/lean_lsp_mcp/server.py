@@ -7,12 +7,12 @@ import os
 import re
 import ssl
 import time
-import urllib
-from collections.abc import AsyncIterator, Awaitable, Callable
+import urllib.request
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional, cast
 
 import certifi
 import orjson
@@ -49,6 +49,7 @@ from lean_lsp_mcp.models import (
     # Wrapper models for list-returning tools
     DiagnosticsResult,
     MultiAttemptResult,
+    GoalContextEntry,
     StructuredGoal,
 )
 
@@ -72,7 +73,7 @@ _INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
 
 
-def _raise_invalid_path(file_path: str) -> None:
+def _raise_invalid_path(file_path: str) -> NoReturn:
     """Raise a descriptive error when a file can't be resolved to a Lean project."""
     raise LeanToolError(
         f"Invalid Lean file path: '{file_path}' not found in any Lean project "
@@ -172,7 +173,7 @@ _LOG_LEVEL = config.log_level()
 if _LOG_FILE_CONFIG:
     try:
         if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
-            import yaml
+            import yaml  # ty: ignore[unresolved-import]
 
             with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
@@ -187,7 +188,7 @@ if _LOG_FILE_CONFIG:
     except Exception as e:
         # fallback to LEAN_LOG_LEVEL so server still runs
         # use the existing configure_logging helper to set level
-        configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+        configure_logging(cast(Any, "CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL))
         logger = get_logger(__name__)  # temporary to emit the warning
         logger.warning(
             "Failed to load logging config %s: %s. Falling back to LEAN_LOG_LEVEL.",
@@ -195,7 +196,7 @@ if _LOG_FILE_CONFIG:
             e,
         )
 else:
-    configure_logging("CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL)
+    configure_logging(cast(Any, "CRITICAL" if _LOG_LEVEL == "NONE" else _LOG_LEVEL))
 
 logger = get_logger(__name__)
 
@@ -210,7 +211,7 @@ class BuildCoordinator:
         self._current_task: asyncio.Task[BuildResult] | None = None
 
     async def run(
-        self, build_factory: Callable[[], Awaitable[BuildResult]]
+        self, build_factory: Callable[[], Coroutine[Any, Any, BuildResult]]
     ) -> BuildResult:
         if self.mode == "allow":
             return await build_factory()
@@ -393,7 +394,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 logger.exception("REPL close failed during app_lifespan teardown")
 
 
-mcp_kwargs = dict(
+mcp_kwargs: dict[str, Any] = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
     dependencies=["leanclient"],
@@ -403,8 +404,8 @@ mcp_kwargs = dict(
 auth_token = config.auth_token()
 if auth_token:
     mcp_kwargs["auth"] = AuthSettings(
-        issuer_url="http://localhost/dummy-issuer",
-        resource_server_url="http://localhost/dummy-resource",
+        issuer_url=cast(Any, "http://localhost/dummy-issuer"),
+        resource_server_url=cast(Any, "http://localhost/dummy-resource"),
     )
     mcp_kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
 
@@ -625,7 +626,7 @@ async def _run_build(
         # Start LSP client (without initial build since we just did it)
         with OutputCapture():
             client = LeanLSPClient(
-                lean_project_path_obj,
+                lean_project_path_obj,  # ty: ignore[invalid-argument-type]
                 initial_build=False,
                 prevent_cache_get=True,
                 max_opened_files=_max_opened_files(),
@@ -663,7 +664,7 @@ async def _run_build(
                 set_build_in_progress(lean_project_path_obj, False)
 
 
-def _to_diagnostic_messages(diagnostics: List[Dict]) -> List[DiagnosticMessage]:
+def _to_diagnostic_messages(diagnostics: Iterable[Dict]) -> List[DiagnosticMessage]:
     """Convert LSP diagnostics to DiagnosticMessage models."""
     result = []
     for diag in diagnostics:
@@ -759,7 +760,7 @@ def _goal_to_structured(goal_str: str) -> StructuredGoal:
 
     before, after = goal_str.split("⊢", 1)
 
-    context = []
+    context: list[GoalContextEntry] = []
     lines = before.splitlines()
 
     current_name = None
@@ -769,12 +770,10 @@ def _goal_to_structured(goal_str: str) -> StructuredGoal:
         nonlocal current_name, current_type_lines
         if current_name is not None:
             context.append(
-                {
-                    "name": current_name,
-                    "type": " ".join(
-                        line.strip() for line in current_type_lines
-                    ).strip(),
-                }
+                GoalContextEntry(
+                    name=current_name,
+                    type=" ".join(line.strip() for line in current_type_lines).strip(),
+                )
             )
         current_name = None
         current_type_lines = []
@@ -898,7 +897,7 @@ def _shift_baseline_keys(
 
 
 def _filter_diagnostics_by_line_range(
-    diagnostics: List[Dict], start_line: int, end_line: int
+    diagnostics: Iterable[Dict], start_line: int, end_line: int
 ) -> List[Dict]:
     """Return diagnostics that intersect the requested 0-indexed line range."""
     matches: List[Dict] = []
@@ -946,8 +945,8 @@ def _prepare_multi_attempt_edit(
     line_delta = len(payload_lines) - (end_line - (line - 1))
     change = DocumentContentChange(
         payload,
-        [line - 1, target_column],
-        [end_line, 0],
+        (line - 1, target_column),
+        (end_line, 0),
     )
 
     goal_line = line - 1 + len(payload_lines) - 1

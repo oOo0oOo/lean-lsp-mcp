@@ -470,6 +470,7 @@ class LoogleManager:
                 cwd=self.repo_dir,
                 env=self._loogle_env(),
             )
+            assert self.process.stdout is not None and self.process.stderr is not None
             # Loading a pre-built index is fast (~seconds), but if the index is
             # missing `--index-mode use` builds it from scratch first, which
             # over full Mathlib takes a couple of minutes. Allow for that.
@@ -515,6 +516,8 @@ class LoogleManager:
                         raise RuntimeError("Failed to start loogle")
                     continue
 
+                assert self.process.stdin is not None
+                assert self.process.stdout is not None
                 try:
                     self.process.stdin.write(f"{q}\n".encode())
                     await self.process.stdin.drain()
