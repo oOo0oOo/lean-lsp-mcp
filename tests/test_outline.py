@@ -9,6 +9,11 @@ from typing import AsyncContextManager
 
 import pytest
 
+from lean_lsp_mcp.outline_utils import (
+    _OUTLINE_CACHE,
+    _OUTLINE_CACHE_LOCK,
+    generate_outline_data,
+)
 from tests.helpers.mcp_client import MCPClient, result_text
 
 
@@ -16,6 +21,51 @@ def _parse_outline(result) -> dict:
     """Parse the JSON outline result."""
     text = result_text(result)
     return orjson.loads(text)
+
+
+class _FakeOutlineClient:
+    project_path = Path("/tmp/lean-lsp-mcp-outline-cache-test")
+
+    def __init__(self) -> None:
+        self.document_symbols_calls = 0
+
+    def open_file(self, path: str) -> None:
+        self.path = path
+
+    def get_file_content(self, path: str) -> str:
+        return "import Mathlib\nnamespace CacheNs\nend CacheNs\n"
+
+    def get_document_symbols(self, path: str) -> list[dict]:
+        self.document_symbols_calls += 1
+        return [
+            {
+                "name": "CacheNs",
+                "kind": "namespace",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 2, "character": 11},
+                },
+                "children": [],
+            }
+        ]
+
+
+def test_outline_cache_reuses_unchanged_file_symbols() -> None:
+    """Repeated unchanged outlines should avoid another documentSymbol call."""
+    with _OUTLINE_CACHE_LOCK:
+        _OUTLINE_CACHE.clear()
+
+    client = _FakeOutlineClient()
+
+    first = generate_outline_data(client, "Cache.lean")
+    second = generate_outline_data(client, "Cache.lean")
+
+    assert client.document_symbols_calls == 1
+    assert second == first
+
+    first.declarations[0].name = "mutated"
+    third = generate_outline_data(client, "Cache.lean")
+    assert third.declarations[0].name == "CacheNs"
 
 
 @pytest.fixture

@@ -1,4 +1,8 @@
 import re
+from collections import OrderedDict
+from hashlib import sha256
+from pathlib import Path
+from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
 from leanclient import LeanLSPClient
@@ -8,6 +12,58 @@ from lean_lsp_mcp.models import FileOutline, OutlineEntry
 
 METHOD_KIND = {6, "method"}
 KIND_TAGS = {"namespace": "Ns"}
+_OUTLINE_CACHE_MAX_SIZE = 32
+_OUTLINE_CACHE_LOCK = Lock()
+_OUTLINE_CACHE: "OrderedDict[Tuple[str, str, str, int, int], FileOutline]" = (
+    OrderedDict()
+)
+
+
+def _outline_cache_key(
+    client: LeanLSPClient, path: str, content: str
+) -> Tuple[str, str, str, int, int]:
+    project_path = Path(getattr(client, "project_path", ""))
+    digest = sha256(content.encode("utf-8")).hexdigest()
+    try:
+        stat = (project_path / path).stat()
+    except OSError:
+        return (str(project_path), path, digest, -1, -1)
+    return (str(project_path), path, digest, stat.st_mtime_ns, stat.st_size)
+
+
+def _copy_outline(outline: FileOutline) -> FileOutline:
+    return outline.model_copy(deep=True)
+
+
+def _get_cached_outline(
+    key: Tuple[str, str, str, int, int],
+) -> Optional[FileOutline]:
+    with _OUTLINE_CACHE_LOCK:
+        outline = _OUTLINE_CACHE.get(key)
+        if outline is None:
+            return None
+        _OUTLINE_CACHE.move_to_end(key)
+        return outline
+
+
+def _store_cached_outline(
+    key: Tuple[str, str, str, int, int], outline: FileOutline
+) -> None:
+    with _OUTLINE_CACHE_LOCK:
+        _OUTLINE_CACHE[key] = _copy_outline(outline)
+        _OUTLINE_CACHE.move_to_end(key)
+        while len(_OUTLINE_CACHE) > _OUTLINE_CACHE_MAX_SIZE:
+            _OUTLINE_CACHE.popitem(last=False)
+
+
+def _with_max_declarations(
+    outline: FileOutline, max_declarations: int | None
+) -> FileOutline:
+    result = _copy_outline(outline)
+    if max_declarations and len(result.declarations) > max_declarations:
+        result.total_declarations = len(result.declarations)
+        result.declarations = result.declarations[:max_declarations]
+    return result
 
 
 def _get_info_trees(
@@ -230,6 +286,9 @@ def generate_outline_data(
     """Generate structured outline data for a Lean file."""
     client.open_file(path)
     content = client.get_file_content(path)
+    cache_key = _outline_cache_key(client, path, content)
+    if cached := _get_cached_outline(cache_key):
+        return _with_max_declarations(cached, max_declarations)
 
     # Extract imports (handles both 'import X' and 'public import X')
     imports = []
@@ -242,7 +301,9 @@ def generate_outline_data(
 
     symbols = client.get_document_symbols(path)
     if not symbols and not imports:
-        return FileOutline(imports=[], declarations=[])
+        outline = FileOutline(imports=[], declarations=[])
+        _store_cached_outline(cache_key, outline)
+        return _with_max_declarations(outline, max_declarations)
 
     # Flatten symbol tree and extract namespace declarations
     all_symbols = _flatten_symbols(symbols, content=content)
@@ -280,10 +341,8 @@ def generate_outline_data(
                 declarations.append(entry)
 
     outline = FileOutline(imports=imports, declarations=declarations)
-    if max_declarations and len(declarations) > max_declarations:
-        outline.total_declarations = len(declarations)
-        outline.declarations = declarations[:max_declarations]
-    return outline
+    _store_cached_outline(cache_key, outline)
+    return _with_max_declarations(outline, max_declarations)
 
 
 def generate_outline(client: LeanLSPClient, path: str) -> str:
