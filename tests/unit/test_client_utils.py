@@ -54,6 +54,28 @@ class _FailingCloseClient(_MockLeanClient):
         raise PermissionError("operation not permitted")
 
 
+class _Future:
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+        self.observed = False
+        self.callback = None
+
+    def add_done_callback(self, callback) -> None:
+        self.callback = callback
+
+    def exception(self) -> BaseException:
+        self.observed = True
+        return self.exc
+
+
+class _FutureClient:
+    def __init__(self, future) -> None:
+        self.future = future
+
+    def _send_request_async(self, _method: str, _params: dict):
+        return self.future
+
+
 class _LifespanContext:
     def __init__(
         self,
@@ -483,6 +505,25 @@ def test_build_in_progress_blocks_only_same_project(
     finally:
         with CLIENT_LOCK:
             set_build_in_progress(project1, False)
+
+
+def test_wait_for_diagnostics_file_worker_shutdown_future_is_observed() -> None:
+    future = _Future(
+        Exception(
+            "LSP Error: {'code': -32801, 'message': 'The file worker for "
+            "file:///Test.lean has been terminated.'}"
+        )
+    )
+    client = _FutureClient(future)
+
+    client_utils._install_wait_for_diagnostics_drain(client)
+    wrapped = client._send_request_async("textDocument/waitForDiagnostics", {})
+    assert wrapped is future
+
+    assert future.callback is not None
+    future.callback(future)
+
+    assert future.observed
 
 
 def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> None:

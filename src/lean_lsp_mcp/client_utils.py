@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -298,6 +299,52 @@ def _close_client(client: LeanLSPClient, message: str) -> None:
         logger.exception(message)
 
 
+def _is_file_worker_shutdown(exc: BaseException) -> bool:
+    message = str(exc)
+    return (
+        "LSP Error:" in message
+        and "-32801" in message
+        and "file worker" in message
+        and "terminated" in message
+    )
+
+
+def _drain_wait_for_diagnostics_failure(future) -> None:
+    try:
+        exc = future.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.debug("Failed to inspect waitForDiagnostics future", exc_info=True)
+        return
+
+    if exc is None:
+        return
+
+    if _is_file_worker_shutdown(exc):
+        logger.debug("Ignored stale waitForDiagnostics response: %s", exc)
+    else:
+        logger.warning("waitForDiagnostics returned an error: %s", exc)
+
+
+def _install_wait_for_diagnostics_drain(client: LeanLSPClient) -> None:
+    if getattr(client, "_lean_lsp_mcp_wait_diag_drain", False):
+        return
+
+    send_request_async = getattr(client, "_send_request_async", None)
+    if not callable(send_request_async):
+        return
+
+    def _send_request_async(method: str, params: dict):
+        future = send_request_async(method, params)
+        if method == "textDocument/waitForDiagnostics":
+            future.add_done_callback(_drain_wait_for_diagnostics_failure)
+        return future
+
+    setattr(client, "_send_request_async", _send_request_async)
+    setattr(client, "_lean_lsp_mcp_wait_diag_drain", True)
+
+
 def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
     with _routing_lock(ctx):
         lifespan = ctx.request_context.lifespan_context
@@ -347,6 +394,7 @@ def _start_client(project_path: Path) -> LeanLSPClient:
                 prevent_cache_get=prevent_cache,
                 max_opened_files=_max_opened_files(),
             )
+            _install_wait_for_diagnostics_drain(client)
             logger.info("Shared LSP client connected at %s", project_path)
         build_output = output.get_output()
         if build_output:
