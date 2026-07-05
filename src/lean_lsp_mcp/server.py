@@ -22,15 +22,19 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
 
 from lean_lsp_mcp.client_utils import (
-    CLIENT_LOCK,
+    CLIENT_LOCK as CLIENT_LOCK,
+    InvalidLeanFilePathError,
+    _reserved_project_runtime,
     _active_transport,
     _max_opened_files,
     _project_switching_allowed,
-    get_path_policy,
+    get_path_policy as get_path_policy,
     infer_project_path,
-    replace_shared_client,
     resolve_file_path,
-    set_build_in_progress,
+    lsp_client_for_file as lsp_client_for_file,
+    lsp_client_for_project as lsp_client_for_project,
+    replace_shared_client as replace_shared_client,
+    set_build_in_progress as set_build_in_progress,
     setup_client_for_file,
 )
 from lean_lsp_mcp.file_utils import (
@@ -503,6 +507,17 @@ async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
         logger.exception("REPL close failed during project switch")
 
 
+def _set_lifespan_client_for_project(
+    ctx: Context, project_path: Path, client: LeanLSPClient | None
+) -> None:
+    lifespan = ctx.request_context.lifespan_context
+    current_root: Path | None = getattr(lifespan, "lean_project_path", None)
+    if current_root is not None:
+        current_root = current_root.resolve(strict=False)
+    if current_root == project_path.resolve(strict=False):
+        lifespan.client = client
+
+
 async def _run_build(
     ctx: Context,
     lean_project_path_obj: Path,
@@ -553,25 +568,12 @@ async def _run_build(
         if remainder:
             await _handle_build_output_line(remainder)
 
+    runtime = None
     try:
-        clients_to_close: list[LeanLSPClient] = []
-        with CLIENT_LOCK:
-            set_build_in_progress(lean_project_path_obj, True)
+        with _reserved_project_runtime(lean_project_path_obj) as runtime:
+            runtime.detach_for_build()
             build_flag_set = True
-            client = ctx.request_context.lifespan_context.client
-            ctx.request_context.lifespan_context.client = None
-            shared_client = replace_shared_client(lean_project_path_obj, None)
-
-        for candidate in (client, shared_client):
-            if candidate is None or candidate in clients_to_close:
-                continue
-            clients_to_close.append(candidate)
-
-        for client_to_close in clients_to_close:
-            try:
-                client_to_close.close()
-            except Exception:
-                logger.exception("Lean client close failed during lsp_build restart")
+        _set_lifespan_client_for_project(ctx, lean_project_path_obj, None)
 
         if clean:
             await _safe_report_progress(
@@ -633,9 +635,10 @@ async def _run_build(
             )
 
         logger.info("Built project and re-started LSP client")
-        with CLIENT_LOCK:
-            replace_shared_client(lean_project_path_obj, client)
-        ctx.request_context.lifespan_context.client = client
+        if runtime is None:
+            raise RuntimeError("Lean project runtime was not reserved.")
+        runtime.install_restarted_client(client)
+        _set_lifespan_client_for_project(ctx, lean_project_path_obj, client)
 
         return BuildResult(
             success=True,
@@ -660,8 +663,8 @@ async def _run_build(
         )
     finally:
         if build_flag_set:
-            with CLIENT_LOCK:
-                set_build_in_progress(lean_project_path_obj, False)
+            if runtime is not None:
+                runtime.clear_build_in_progress()
 
 
 def _to_diagnostic_messages(diagnostics: Iterable[Dict]) -> List[DiagnosticMessage]:
@@ -1041,142 +1044,153 @@ def _multi_attempt_lsp(
     """Try tactics using LSP file modifications (fallback)."""
     if snippets is None:
         snippets = []
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
     try:
-        original_content = client.get_file_content(rel_path)
-    except Exception:
-        try:
-            policy = get_path_policy(ctx)
-            resolved_path = policy.validate_path(resolve_file_path(ctx, file_path))
-        except (FileNotFoundError, ValueError) as exc:
-            raise LeanToolError(str(exc)) from exc
-        original_content = get_file_contents(resolved_path)
-
-    lines = original_content.splitlines() if original_content is not None else []
-    line_context = _get_line_context(lines, line)
-    target_column = _resolve_multi_attempt_column(line_context, column)
-
-    # Snapshot baseline diagnostics before any edit. The line-range filter
-    # alone misses errors that surface at distant lines (e.g. a `whnf`
-    # heartbeat timeout reported at the leaf-statement line when a snippet's
-    # tactic forces aggressive unfolding) — that would produce a misleading
-    # `goals=[], diagnostics=[]` result indistinguishable from genuine
-    # tactic success. Diff against baseline to surface any *new* diagnostic
-    # the snippet introduced, regardless of its line position. Use
-    # leanclient's default cutoffs so the baseline wait is symmetric with
-    # the per-snippet `get_diagnostics` call below: asymmetric timeouts
-    # would leave the baseline partial while the per-snippet snapshot is
-    # complete, causing pre-existing diagnostics to be reported as
-    # snippet-introduced.
-    try:
-        baseline_diag = client.get_diagnostics(rel_path)
-        check_lsp_response(baseline_diag, "get_diagnostics")
-        if getattr(baseline_diag, "timed_out", False):
-            # Baseline is partial — set-diff would over-report. Disable
-            # it and fall back to local line-range filter only.
-            logger.warning(
-                "_multi_attempt_lsp: baseline diagnostics timed out — "
-                "set-diff disabled for this call (results limited to local "
-                "line-range filter)."
-            )
-            baseline_keys = None
-        else:
-            baseline_keys = {_diagnostic_identity(d) for d in baseline_diag}
-    except Exception:
-        logger.warning(
-            "_multi_attempt_lsp: baseline diagnostics unavailable — "
-            "set-diff disabled; results limited to local line-range filter.",
-            exc_info=True,
-        )
-        baseline_keys = None
-
-    try:
-        results: List[AttemptResult] = []
-        for i, snippet in enumerate(snippets):
-            # Restore original content before each iteration after the first.
-            # ``_prepare_multi_attempt_edit`` computes edit positions from the
-            # ORIGINAL ``line_context`` / ``len(lines)``; if the previous
-            # snippet's edit grew or shrank the file (EOF clamping), those
-            # positions no longer point to the original sorry region — the
-            # next snippet would patch the wrong content and report drifted
-            # diagnostics as snippet-introduced via ``extra_diag``.
-            if i > 0 and original_content is not None:
-                client.update_file_content(rel_path, original_content)
-            (
-                snippet_str,
-                change,
-                goal_line,
-                goal_column,
-                line_delta,
-            ) = _prepare_multi_attempt_edit(
-                line_context, target_column, snippet, len(lines), line
-            )
-            client.update_file(rel_path, [change])
-            diag = client.get_diagnostics(rel_path)
-            check_lsp_response(diag, "get_diagnostics")
-            filtered_diag = _filter_diagnostics_by_line_range(diag, line - 1, goal_line)
-            in_filtered = {id(d) for d in filtered_diag}
-            # Surface any new diagnostic — relative to the pre-edit baseline —
-            # even if outside the local line range. When baseline capture
-            # failed (baseline_keys is None), set-diff is disabled and we
-            # rely on the local filter only — same behavior as the original
-            # (pre-fix) code path.
-            if baseline_keys is None:
-                extra_diag = []
-            else:
-                # Multi-line snippets near end-of-file can grow the file
-                # (replacement range gets clamped). Pre-existing diagnostics
-                # at or past end_line get re-emitted at shifted line numbers
-                # post-edit, so their identity (which keys on line) won't
-                # match baseline_keys without compensating for the shift.
-                if line_delta:
-                    shifted_keys = _shift_baseline_keys(
-                        baseline_keys, edit_start_line=line - 1, line_delta=line_delta
+        with lsp_client_for_file(ctx, file_path) as lsp:
+            client = lsp.client
+            rel_path = lsp.rel_path
+            try:
+                original_content = client.get_file_content(rel_path)
+            except Exception:
+                try:
+                    resolved_path = lsp.path_policy.validate_path(
+                        resolve_file_path(ctx, file_path)
                     )
-                else:
-                    shifted_keys = baseline_keys
-                extra_diag = [
-                    d
-                    for d in diag
-                    if id(d) not in in_filtered
-                    and _diagnostic_identity(d) not in shifted_keys
-                ]
-            goal_result = client.get_goal(rel_path, goal_line, goal_column)
-            check_lsp_response(goal_result, "get_goal", allow_none=True)
-            goals = extract_goals_list(goal_result)
-            results.append(
-                AttemptResult(
-                    snippet=snippet_str,
-                    goals=goals,
-                    diagnostics=_to_diagnostic_messages(filtered_diag + extra_diag),
-                    timed_out=getattr(diag, "timed_out", False),
-                )
-            )
+                except (FileNotFoundError, ValueError) as exc:
+                    raise LeanToolError(str(exc)) from exc
+                original_content = get_file_contents(resolved_path)
 
-        return MultiAttemptResult(items=results)
-    finally:
-        if original_content is not None:
+            lines = (
+                original_content.splitlines() if original_content is not None else []
+            )
+            line_context = _get_line_context(lines, line)
+            target_column = _resolve_multi_attempt_column(line_context, column)
+
+            # Snapshot baseline diagnostics before any edit. The line-range filter
+            # alone misses errors that surface at distant lines (e.g. a `whnf`
+            # heartbeat timeout reported at the leaf-statement line when a snippet's
+            # tactic forces aggressive unfolding) — that would produce a misleading
+            # `goals=[], diagnostics=[]` result indistinguishable from genuine
+            # tactic success. Diff against baseline to surface any *new* diagnostic
+            # the snippet introduced, regardless of its line position. Use
+            # leanclient's default cutoffs so the baseline wait is symmetric with
+            # the per-snippet `get_diagnostics` call below: asymmetric timeouts
+            # would leave the baseline partial while the per-snippet snapshot is
+            # complete, causing pre-existing diagnostics to be reported as
+            # snippet-introduced.
             try:
-                client.update_file_content(rel_path, original_content)
-            except Exception as exc:
+                baseline_diag = client.get_diagnostics(rel_path)
+                check_lsp_response(baseline_diag, "get_diagnostics")
+                if getattr(baseline_diag, "timed_out", False):
+                    # Baseline is partial — set-diff would over-report. Disable
+                    # it and fall back to local line-range filter only.
+                    logger.warning(
+                        "_multi_attempt_lsp: baseline diagnostics timed out — "
+                        "set-diff disabled for this call (results limited to local "
+                        "line-range filter)."
+                    )
+                    baseline_keys = None
+                else:
+                    baseline_keys = {_diagnostic_identity(d) for d in baseline_diag}
+            except Exception:
                 logger.warning(
-                    "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+                    "_multi_attempt_lsp: baseline diagnostics unavailable — "
+                    "set-diff disabled; results limited to local line-range filter.",
+                    exc_info=True,
                 )
+                baseline_keys = None
+
             try:
-                # Force a disk resync so transient snippet edits do not leak
-                # into subsequent tool calls for already-open documents.
-                client.open_file(rel_path, force_reopen=True)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to force-reopen `%s` after multi_attempt: %s",
-                    rel_path,
-                    exc,
-                )
+                results: List[AttemptResult] = []
+                for i, snippet in enumerate(snippets):
+                    # Restore original content before each iteration after the first.
+                    # ``_prepare_multi_attempt_edit`` computes edit positions from the
+                    # ORIGINAL ``line_context`` / ``len(lines)``; if the previous
+                    # snippet's edit grew or shrank the file (EOF clamping), those
+                    # positions no longer point to the original sorry region — the
+                    # next snippet would patch the wrong content and report drifted
+                    # diagnostics as snippet-introduced via ``extra_diag``.
+                    if i > 0 and original_content is not None:
+                        client.update_file_content(rel_path, original_content)
+                    (
+                        snippet_str,
+                        change,
+                        goal_line,
+                        goal_column,
+                        line_delta,
+                    ) = _prepare_multi_attempt_edit(
+                        line_context, target_column, snippet, len(lines), line
+                    )
+                    client.update_file(rel_path, [change])
+                    diag = client.get_diagnostics(rel_path)
+                    check_lsp_response(diag, "get_diagnostics")
+                    filtered_diag = _filter_diagnostics_by_line_range(
+                        diag, line - 1, goal_line
+                    )
+                    in_filtered = {id(d) for d in filtered_diag}
+                    # Surface any new diagnostic — relative to the pre-edit baseline —
+                    # even if outside the local line range. When baseline capture
+                    # failed (baseline_keys is None), set-diff is disabled and we
+                    # rely on the local filter only — same behavior as the original
+                    # (pre-fix) code path.
+                    if baseline_keys is None:
+                        extra_diag = []
+                    else:
+                        # Multi-line snippets near end-of-file can grow the file
+                        # (replacement range gets clamped). Pre-existing diagnostics
+                        # at or past end_line get re-emitted at shifted line numbers
+                        # post-edit, so their identity (which keys on line) won't
+                        # match baseline_keys without compensating for the shift.
+                        if line_delta:
+                            shifted_keys = _shift_baseline_keys(
+                                baseline_keys,
+                                edit_start_line=line - 1,
+                                line_delta=line_delta,
+                            )
+                        else:
+                            shifted_keys = baseline_keys
+                        extra_diag = [
+                            d
+                            for d in diag
+                            if id(d) not in in_filtered
+                            and _diagnostic_identity(d) not in shifted_keys
+                        ]
+                    goal_result = client.get_goal(rel_path, goal_line, goal_column)
+                    check_lsp_response(goal_result, "get_goal", allow_none=True)
+                    goals = extract_goals_list(goal_result)
+                    results.append(
+                        AttemptResult(
+                            snippet=snippet_str,
+                            goals=goals,
+                            diagnostics=_to_diagnostic_messages(
+                                filtered_diag + extra_diag
+                            ),
+                            timed_out=getattr(diag, "timed_out", False),
+                        )
+                    )
+
+                return MultiAttemptResult(items=results)
+            finally:
+                if original_content is not None:
+                    try:
+                        client.update_file_content(rel_path, original_content)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to restore `%s` after multi_attempt: %s",
+                            rel_path,
+                            exc,
+                        )
+                    try:
+                        # Force a disk resync so transient snippet edits do not leak
+                        # into subsequent tool calls for already-open documents.
+                        client.open_file(rel_path, force_reopen=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to force-reopen `%s` after multi_attempt: %s",
+                            rel_path,
+                            exc,
+                        )
+    except InvalidLeanFilePathError:
+        _raise_invalid_path(file_path)
 
 
 # Register the tool subpackage last: each submodule's @mcp.tool decorators run

@@ -11,6 +11,7 @@ unreproducible in the live integration test).
 from __future__ import annotations
 
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,17 @@ class _Ctx:
         self.request_context = _ReqCtx(client)
 
 
+@contextmanager
+def _fake_lsp_file(client, rel_path):
+    client.open_file(rel_path)
+    yield types.SimpleNamespace(
+        client=client,
+        rel_path=rel_path,
+        project_path=Path("/tmp"),
+        path_policy=types.SimpleNamespace(validate_path=lambda path: path),
+    )
+
+
 @pytest.fixture()
 def lean_file(tmp_path: Path) -> Path:
     p = tmp_path / "Fallback.lean"
@@ -74,7 +86,9 @@ def test_fallback_fires_when_no_diagnostic_yet_actions_exist_at_line_range(
     range_with_action = (3, 0, 3, 7)
     fake_action = {"title": "Try this: simp", "edit": {"documentChanges": []}}
     client = _Client({range_with_action: [fake_action]})
-    monkeypatch.setattr(srv, "setup_client_for_file", lambda c, p: p)
+    monkeypatch.setattr(
+        srv, "lsp_client_for_file", lambda _c, p: _fake_lsp_file(client, p)
+    )
     monkeypatch.setattr(srv, "resolve_file_path", lambda c, p: lean_file)
 
     result = srv.code_actions(_Ctx(client), file_path=str(lean_file), line=4)
@@ -106,7 +120,9 @@ def test_fallback_uses_utf16_length_for_end_column(
     range_with_action = (3, 0, 3, expected_end_utf16)
     fake_action = {"title": "Try this: trivial", "edit": {"documentChanges": []}}
     client = _Client({range_with_action: [fake_action]})
-    monkeypatch.setattr(srv, "setup_client_for_file", lambda c, p: p)
+    monkeypatch.setattr(
+        srv, "lsp_client_for_file", lambda _c, p: _fake_lsp_file(client, p)
+    )
     monkeypatch.setattr(srv, "resolve_file_path", lambda c, p: f)
 
     result = srv.code_actions(_Ctx(client), file_path=str(f), line=4)
@@ -147,7 +163,9 @@ def test_fallback_swallows_resolve_failures_but_logs(
     import logging
 
     client = _Client({})
-    monkeypatch.setattr(srv, "setup_client_for_file", lambda c, p: p)
+    monkeypatch.setattr(
+        srv, "lsp_client_for_file", lambda _c, p: _fake_lsp_file(client, p)
+    )
 
     def _raise(_c, _p):
         # UnicodeDecodeError requires positional args; construct it carefully.

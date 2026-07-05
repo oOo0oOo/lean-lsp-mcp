@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 import importlib
 import json
@@ -86,6 +87,20 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
     return dep_file
 
 
+@contextmanager
+def _fake_lsp_file(
+    client, rel_path: str = "Foo.lean", project_path: Path | None = None
+):
+    if hasattr(client, "open_file"):
+        client.open_file(rel_path)
+    yield types.SimpleNamespace(
+        client=client,
+        rel_path=rel_path,
+        project_path=project_path or Path("/tmp/proj"),
+        path_policy=types.SimpleNamespace(validate_path=lambda path: path),
+    )
+
+
 @pytest.mark.asyncio
 async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
@@ -143,14 +158,11 @@ async def test_app_lifespan_does_not_close_shared_client(
 def test_close_shared_client_closes_client() -> None:
     """close_shared_client() closes the shared singleton and resets state."""
     dummy = DummyClient()
-    client_utils._shared_clients[Path("/tmp/proj")] = dummy
+    client_utils.replace_shared_client(Path("/tmp/proj"), dummy)
 
-    try:
-        client_utils.close_shared_client()
-        assert dummy.closed_calls == 1
-        assert client_utils._shared_clients == {}
-    finally:
-        client_utils._shared_clients.clear()
+    client_utils.close_shared_client()
+    assert dummy.closed_calls == 1
+    assert client_utils._project_runtimes == {}
 
 
 def test_close_shared_client_suppresses_error() -> None:
@@ -165,19 +177,16 @@ def test_close_shared_client_suppresses_error() -> None:
             raise PermissionError("operation not permitted")
 
     dummy = _FailingCloseClient()
-    client_utils._shared_clients[Path("/tmp/proj")] = dummy
+    client_utils.replace_shared_client(Path("/tmp/proj"), dummy)
 
-    try:
-        client_utils.close_shared_client()  # should not raise
-        assert dummy.close_calls == 1
-        assert client_utils._shared_clients == {}
-    finally:
-        client_utils._shared_clients.clear()
+    client_utils.close_shared_client()  # should not raise
+    assert dummy.close_calls == 1
+    assert client_utils._project_runtimes == {}
 
 
 def test_close_shared_client_noop_when_none() -> None:
     """close_shared_client() is safe to call when no client exists."""
-    client_utils._shared_clients.clear()
+    client_utils._project_runtimes.clear()
     client_utils.close_shared_client()  # should not raise
 
 
@@ -560,7 +569,7 @@ def test_multi_attempt_force_reopens_after_restore(
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = fake_client
 
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    client_utils.replace_shared_client(project, fake_client)
     monkeypatch.setattr(server, "get_file_contents", lambda _path: "original")
 
     result = server._multi_attempt_lsp(ctx, str(target), line=1, snippets=[])
@@ -584,7 +593,7 @@ def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = fake_client
 
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    client_utils.replace_shared_client(project, fake_client)
     monkeypatch.setattr(server, "get_file_contents", lambda _path: "disk-content")
 
     result = server._multi_attempt_lsp(ctx, str(target), line=1, snippets=[])
@@ -598,6 +607,7 @@ def test_declaration_file_sanitizes_dependency_path(
 ) -> None:
     project = _make_project(tmp_path / "proj")
     dep_file = _make_dependency(project, tmp_path / "deps" / "mathlib")
+    (project / "Main.lean").write_text("dep\n")
 
     class FakeClient:
         def open_file(self, _path: str) -> None:
@@ -615,8 +625,8 @@ def test_declaration_file_sanitizes_dependency_path(
 
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "Main.lean"
+    client_utils.replace_shared_client(
+        project, ctx.request_context.lifespan_context.client
     )
 
     result = server.declaration_file(
@@ -632,6 +642,7 @@ def test_references_sanitize_paths_and_skip_outside_policy(
 ) -> None:
     project = _make_project(tmp_path / "proj")
     dep_file = _make_dependency(project, tmp_path / "deps" / "mathlib")
+    (project / "Main.lean").write_text("dep\n")
     outside_file = tmp_path / "outside" / "Leak.lean"
     outside_file.parent.mkdir(parents=True)
     outside_file.write_text("def leak : Nat := 0\n")
@@ -673,8 +684,8 @@ def test_references_sanitize_paths_and_skip_outside_policy(
 
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "Main.lean"
+    client_utils.replace_shared_client(
+        project, ctx.request_context.lifespan_context.client
     )
 
     result = server.references(
@@ -884,10 +895,15 @@ def test_diagnostic_messages_passes_severity_to_process(
             return FakeDiagResult()
 
     monkeypatch.setattr(server, "_process_diagnostics", fake_process)
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
 
     ctx = _make_ctx()
-    ctx.request_context.lifespan_context.client = FakeClient()
+    fake_client = FakeClient()
+    ctx.request_context.lifespan_context.client = fake_client
+    monkeypatch.setattr(
+        server,
+        "lsp_client_for_file",
+        lambda _ctx, _path: _fake_lsp_file(fake_client, "Foo.lean"),
+    )
 
     server.diagnostic_messages(
         ctx=ctx, file_path="/abs/Foo.lean", severity=DiagnosticSeverity.warning
@@ -920,10 +936,15 @@ def test_diagnostic_messages_default_severity_is_none(
             return FakeDiagResult()
 
     monkeypatch.setattr(server, "_process_diagnostics", fake_process)
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
 
     ctx = _make_ctx()
-    ctx.request_context.lifespan_context.client = FakeClient()
+    fake_client = FakeClient()
+    ctx.request_context.lifespan_context.client = fake_client
+    monkeypatch.setattr(
+        server,
+        "lsp_client_for_file",
+        lambda _ctx, _path: _fake_lsp_file(fake_client, "Foo.lean"),
+    )
 
     server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean")
 
@@ -959,13 +980,14 @@ def test_goal_retries_after_cold_file_timeout(monkeypatch: pytest.MonkeyPatch) -
             self.diagnostic_calls.append((path, inactivity_timeout))
             return types.SimpleNamespace(diagnostics=[], success=True)
 
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
-    )
-
     ctx = _make_ctx()
     fake_client = FakeClient()
     ctx.request_context.lifespan_context.client = fake_client
+    monkeypatch.setattr(
+        server,
+        "lsp_client_for_file",
+        lambda _ctx, _path: _fake_lsp_file(fake_client, "GoalSample.lean"),
+    )
 
     result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
 
@@ -988,12 +1010,14 @@ def test_goal_structured_format_accepts_structured_goals(
         def get_goal(self, _path: str, _line: int, _column: int) -> dict:
             return {"goals": ["x : Nat\nh : x = 0\n⊢ x = 0"]}
 
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
-    )
-
     ctx = _make_ctx()
-    ctx.request_context.lifespan_context.client = FakeClient()
+    fake_client = FakeClient()
+    ctx.request_context.lifespan_context.client = fake_client
+    monkeypatch.setattr(
+        server,
+        "lsp_client_for_file",
+        lambda _ctx, _path: _fake_lsp_file(fake_client, "GoalSample.lean"),
+    )
 
     result = server.goal(
         ctx,
@@ -1038,13 +1062,14 @@ def test_goal_returns_no_goals_without_retry(monkeypatch: pytest.MonkeyPatch) ->
             self.diagnostic_calls += 1
             return types.SimpleNamespace(diagnostics=[], success=True)
 
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
-    )
-
     ctx = _make_ctx()
     fake_client = FakeClient()
     ctx.request_context.lifespan_context.client = fake_client
+    monkeypatch.setattr(
+        server,
+        "lsp_client_for_file",
+        lambda _ctx, _path: _fake_lsp_file(fake_client, "GoalSample.lean"),
+    )
 
     result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
 

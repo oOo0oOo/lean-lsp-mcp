@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lean_lsp_mcp import client_utils
 from lean_lsp_mcp.server import lsp_build
 
 
@@ -239,8 +240,9 @@ async def test_lsp_build_continues_when_client_close_fails(
     """Pre-build client close failure is logged and does not abort the build."""
     project, ctx, _cache_proc, build_proc = build_mocks
     failing_client = _FailingClient()
-    failing_client.project_path = tmp_path / "old-proj"
+    failing_client.project_path = project
     ctx.request_context.lifespan_context.client = failing_client
+    client_utils.replace_shared_client(project, failing_client)
 
     build_proc.stdout.read = make_read(b"[0/1] Built\nDone\n")
     patch_build.side_effect = [build_proc]

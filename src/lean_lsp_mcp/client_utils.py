@@ -1,5 +1,8 @@
 from pathlib import Path
-from threading import Lock
+from contextlib import contextmanager
+from dataclasses import dataclass
+from threading import Condition, RLock
+from typing import Iterator
 
 from leanclient import LeanLSPClient
 from mcp.server.fastmcp import Context
@@ -17,12 +20,232 @@ from lean_lsp_mcp import config
 
 
 logger = get_logger(__name__)
-CLIENT_LOCK = Lock()
-_shared_clients: dict[Path, LeanLSPClient] = {}
-_builds_in_progress: set[Path] = set()
+CLIENT_LOCK = RLock()
+_RUNTIME_AVAILABLE = Condition(CLIENT_LOCK)
+_project_runtimes: dict[Path, "ProjectRuntime"] = {}
 
 
 _MAX_SHARED_CLIENTS = 8
+
+
+class InvalidLeanFilePathError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class LspClientOperation:
+    client: LeanLSPClient
+    project_path: Path
+
+
+@dataclass(frozen=True)
+class LspFileOperation(LspClientOperation):
+    path_policy: LeanPathPolicy
+    rel_path: str
+
+
+def _project_key(project_path: Path | str) -> Path:
+    return Path(project_path).resolve(strict=False)
+
+
+def _routing_lock(ctx: Context):
+    lifespan = ctx.request_context.lifespan_context
+    lock = getattr(lifespan, "routing_lock", None)
+    if lock is None:
+        lock = RLock()
+        lifespan.routing_lock = lock
+    return lock
+
+
+def _set_lifespan_client_if_current(ctx: Context, op: LspClientOperation) -> None:
+    with _routing_lock(ctx):
+        lifespan = ctx.request_context.lifespan_context
+        current_root: Path | None = getattr(lifespan, "lean_project_path", None)
+        if current_root is not None:
+            current_root = current_root.resolve(strict=False)
+        if current_root == op.project_path:
+            lifespan.client = op.client
+
+
+class ProjectRuntime:
+    def __init__(self, project_path: Path | str) -> None:
+        self.project_path = _project_key(project_path)
+        self._client: LeanLSPClient | None = None
+        self._lock = RLock()
+        self._condition = Condition(self._lock)
+        self._active_operations = 0
+        self._build_in_progress = False
+        self._registry_reservations = 0
+
+    def _start_or_reuse_client(self) -> LeanLSPClient:
+        if self._build_in_progress:
+            raise ValueError(
+                "A project build is in progress. Retry after the build completes."
+            )
+
+        client = self._client
+        if client is not None and _client_is_alive(client):
+            return client
+
+        if client is not None:
+            self._client = None
+            _close_client(client, "Shared Lean client close failed during restart")
+
+        self._client = _start_client(self.project_path)
+        return self._client
+
+    def _acquire_operation(self) -> LeanLSPClient:
+        with self._condition:
+            while self._active_operations:
+                self._condition.wait()
+            if self._build_in_progress:
+                raise ValueError(
+                    "A project build is in progress. Retry after the build completes."
+                )
+            client = self._start_or_reuse_client()
+            self._active_operations = 1
+            return client
+
+    def _release_operation(self) -> None:
+        with self._condition:
+            self._active_operations = 0
+            self._condition.notify_all()
+        with _RUNTIME_AVAILABLE:
+            _RUNTIME_AVAILABLE.notify_all()
+
+    def _reserve_for_registry(self) -> None:
+        with self._condition:
+            self._registry_reservations += 1
+
+    def _release_registry_reservation(self) -> None:
+        with self._condition:
+            self._registry_reservations -= 1
+            self._condition.notify_all()
+        with _RUNTIME_AVAILABLE:
+            _RUNTIME_AVAILABLE.notify_all()
+
+    @contextmanager
+    def operation(self) -> Iterator[LspClientOperation]:
+        client = self._acquire_operation()
+        try:
+            yield LspClientOperation(client=client, project_path=self.project_path)
+        finally:
+            self._release_operation()
+
+    @contextmanager
+    def file_operation(
+        self, path_policy: LeanPathPolicy, rel_path: str
+    ) -> Iterator[LspFileOperation]:
+        client = self._acquire_operation()
+        try:
+            client.open_file(rel_path)
+            yield LspFileOperation(
+                client=client,
+                project_path=self.project_path,
+                path_policy=path_policy,
+                rel_path=rel_path,
+            )
+        finally:
+            self._release_operation()
+
+    def detach_for_build(self) -> None:
+        with self._condition:
+            if self._build_in_progress:
+                raise ValueError(
+                    "A project build is already in progress. Retry after the build completes."
+                )
+            while self._active_operations:
+                self._condition.wait()
+            self._build_in_progress = True
+            client = self._client
+            self._client = None
+        if client is not None:
+            _close_client(client, "Lean client close failed during lsp_build restart")
+
+    def install_restarted_client(self, client: LeanLSPClient) -> None:
+        with self._condition:
+            old_client = self._client
+            self._client = client
+            self._build_in_progress = False
+            self._condition.notify_all()
+        if old_client is not None and old_client is not client:
+            _close_client(old_client, "Replaced Lean client close failed")
+
+    def clear_build_in_progress(self) -> None:
+        with self._condition:
+            self._build_in_progress = False
+            self._condition.notify_all()
+        with _RUNTIME_AVAILABLE:
+            _RUNTIME_AVAILABLE.notify_all()
+
+    def can_evict(self) -> bool:
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            return (
+                not self._build_in_progress
+                and self._active_operations == 0
+                and self._registry_reservations == 0
+            )
+        finally:
+            self._lock.release()
+
+    def close(self) -> None:
+        with self._condition:
+            client = self._client
+            self._client = None
+            self._build_in_progress = False
+            self._condition.notify_all()
+        if client is not None:
+            _close_client(client, "Shared Lean client close failed during shutdown")
+        with _RUNTIME_AVAILABLE:
+            _RUNTIME_AVAILABLE.notify_all()
+
+
+def _select_project_runtime(
+    project_path: Path | str, *, reserve: bool = False
+) -> ProjectRuntime:
+    project_key = _project_key(project_path)
+    evicted_runtime: ProjectRuntime | None = None
+    with CLIENT_LOCK:
+        runtime = _project_runtimes.pop(project_key, None)
+        if runtime is not None:
+            _project_runtimes[project_key] = runtime
+            if reserve:
+                runtime._reserve_for_registry()
+            return runtime
+
+        while len(_project_runtimes) >= _MAX_SHARED_CLIENTS:
+            for candidate_key, candidate in list(_project_runtimes.items()):
+                if candidate.can_evict():
+                    evicted_runtime = _project_runtimes.pop(candidate_key)
+                    break
+            if evicted_runtime is not None:
+                break
+            _RUNTIME_AVAILABLE.wait()
+
+        runtime = ProjectRuntime(project_key)
+        _project_runtimes[project_key] = runtime
+        if reserve:
+            runtime._reserve_for_registry()
+
+    if evicted_runtime is not None:
+        evicted_runtime.close()
+
+    return runtime
+
+
+def get_project_runtime(project_path: Path | str) -> ProjectRuntime:
+    return _select_project_runtime(project_path)
+
+
+@contextmanager
+def _reserved_project_runtime(project_path: Path | str) -> Iterator[ProjectRuntime]:
+    runtime = _select_project_runtime(project_path, reserve=True)
+    try:
+        yield runtime
+    finally:
+        runtime._release_registry_reservation()
 
 
 def _active_transport(ctx: Context | None = None) -> str:
@@ -70,37 +293,39 @@ def _close_client(client: LeanLSPClient, message: str) -> None:
 
 
 def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
-    lifespan = ctx.request_context.lifespan_context
-    resolved_project = require_lean_project_path(project_path)
-    current_root: Path | None = getattr(lifespan, "lean_project_path", None)
-    if current_root is not None:
-        current_root = current_root.resolve(strict=False)
+    with _routing_lock(ctx):
+        lifespan = ctx.request_context.lifespan_context
+        resolved_project = require_lean_project_path(project_path)
+        current_root: Path | None = getattr(lifespan, "lean_project_path", None)
+        if current_root is not None:
+            current_root = current_root.resolve(strict=False)
 
-    if (
-        current_root is not None
-        and current_root != resolved_project
-        and not _project_switching_allowed(ctx)
-    ):
-        raise ValueError(
-            f"Project switching is disabled for `{_active_transport(ctx)}` transport. "
-            "Restart the server with LEAN_PROJECT_PATH set to the desired Lean project root."
-        )
-
-    if current_root != resolved_project:
-        lifespan.lean_project_path = resolved_project
-        current_client: LeanLSPClient | None = getattr(lifespan, "client", None)
         if (
-            current_client is not None
-            and getattr(current_client, "project_path", None) != resolved_project
+            current_root is not None
+            and current_root != resolved_project
+            and not _project_switching_allowed(ctx)
         ):
-            lifespan.client = None
+            raise ValueError(
+                f"Project switching is disabled for `{_active_transport(ctx)}` transport. "
+                "Restart the server with LEAN_PROJECT_PATH set to the desired Lean project root."
+            )
 
-    return resolved_project
+        if current_root != resolved_project:
+            lifespan.lean_project_path = resolved_project
+            current_client: LeanLSPClient | None = getattr(lifespan, "client", None)
+            if (
+                current_client is not None
+                and getattr(current_client, "project_path", None) != resolved_project
+            ):
+                lifespan.client = None
+
+        return resolved_project
 
 
 def get_path_policy(ctx: Context, project_path: Path | None = None) -> LeanPathPolicy:
-    lifespan = ctx.request_context.lifespan_context
-    root = project_path or getattr(lifespan, "lean_project_path", None)
+    with _routing_lock(ctx):
+        lifespan = ctx.request_context.lifespan_context
+        root = project_path or getattr(lifespan, "lean_project_path", None)
     if root is None:
         raise ValueError("lean project path is not set.")
     return build_lean_path_policy(root)
@@ -128,91 +353,76 @@ def _start_client(project_path: Path) -> LeanLSPClient:
     return client
 
 
-def _evict_oldest_client() -> None:
-    """Close and remove the oldest shared client to stay within the cap."""
-    oldest_key = next(iter(_shared_clients))
-    old = _shared_clients.pop(oldest_key)
-    _close_client(old, f"Evicted shared client for {oldest_key}")
-
-
-def _get_or_create_shared_client(lean_project_path: Path) -> LeanLSPClient:
-    project_key = lean_project_path.resolve(strict=False)
-
-    if project_key in _builds_in_progress:
-        raise ValueError(
-            "A project build is in progress. Retry after the build completes."
-        )
-
-    client = _shared_clients.get(project_key)
-    if client is not None and _client_is_alive(client):
-        return client
-
-    if client is not None:
-        _shared_clients.pop(project_key, None)
-        _close_client(client, "Shared Lean client close failed during restart")
-
-    if len(_shared_clients) >= _MAX_SHARED_CLIENTS:
-        _evict_oldest_client()
-
-    client = _start_client(project_key)
-    _shared_clients[project_key] = client
-    return client
-
-
 def set_build_in_progress(project_path: Path | str, value: bool) -> None:
-    project_key = Path(project_path).resolve(strict=False)
+    runtime = _select_project_runtime(project_path)
     if value:
-        _builds_in_progress.add(project_key)
+        runtime.detach_for_build()
     else:
-        _builds_in_progress.discard(project_key)
+        runtime.clear_build_in_progress()
 
 
 def replace_shared_client(
     project_path: Path | str, client: LeanLSPClient | None
 ) -> LeanLSPClient | None:
-    project_key = Path(project_path).resolve(strict=False)
-    previous = _shared_clients.pop(project_key, None)
-    if client is not None:
-        _shared_clients[project_key] = client
-    return previous
+    runtime = _select_project_runtime(project_path)
+    with runtime._condition:
+        previous = runtime._client
+        runtime._client = client
+        if client is not None:
+            runtime._build_in_progress = False
+            runtime._condition.notify_all()
+        return previous
 
 
 def close_shared_client(project_path: Path | str | None = None) -> None:
-    clients: list[LeanLSPClient] = []
-
+    runtimes: list[ProjectRuntime] = []
     with CLIENT_LOCK:
         if project_path is None:
-            clients = list(_shared_clients.values())
-            _shared_clients.clear()
-            _builds_in_progress.clear()
+            runtimes = list(_project_runtimes.values())
+            _project_runtimes.clear()
         else:
-            project_key = Path(project_path).resolve(strict=False)
-            client = _shared_clients.pop(project_key, None)
-            if client is not None:
-                clients.append(client)
-            _builds_in_progress.discard(project_key)
+            project_key = _project_key(project_path)
+            runtime = _project_runtimes.pop(project_key, None)
+            if runtime is not None:
+                runtimes.append(runtime)
 
-    for client in clients:
-        _close_client(client, "Shared Lean client close failed during shutdown")
+    for runtime in runtimes:
+        runtime.close()
 
 
 def startup_client(ctx: Context):
     """Initialize the Lean LSP client if not already set up."""
-    with CLIENT_LOCK:
+    with _routing_lock(ctx):
         configured_root = ctx.request_context.lifespan_context.lean_project_path
         if configured_root is None:
             raise ValueError("lean project path is not set.")
         lean_project_path = bind_lean_project_path(ctx, configured_root)
-        client = _get_or_create_shared_client(lean_project_path)
-        ctx.request_context.lifespan_context.client = client
+    with _reserved_project_runtime(lean_project_path) as runtime:
+        with runtime.operation() as op:
+            _set_lifespan_client_if_current(ctx, op)
+
+
+@contextmanager
+def lsp_client_for_project(ctx: Context) -> Iterator[LspClientOperation]:
+    """Yield the current project's shared LSP client for one serialized operation."""
+    with _routing_lock(ctx):
+        configured_root = ctx.request_context.lifespan_context.lean_project_path
+        if configured_root is None:
+            raise ValueError("lean project path is not set.")
+        project_path = bind_lean_project_path(ctx, configured_root)
+    with _reserved_project_runtime(project_path) as runtime:
+        with runtime.operation() as op:
+            _set_lifespan_client_if_current(ctx, op)
+            yield op
 
 
 def resolve_file_path(
     ctx: Context, file_path: str, *, require_exists: bool = True
 ) -> Path:
     """Resolve a file path with support for project-root-relative inputs."""
-    lifespan = ctx.request_context.lifespan_context
-    project_root: Path | None = getattr(lifespan, "lean_project_path", None)
+    with _routing_lock(ctx):
+        lifespan = ctx.request_context.lifespan_context
+        project_root: Path | None = getattr(lifespan, "lean_project_path", None)
     return resolve_input_path(
         file_path, project_root=project_root, require_exists=require_exists
     )
@@ -242,6 +452,15 @@ def _cacheable_project_dirs(project_path: Path, cache_dirs: list[str]) -> list[s
 
 def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | None:
     """Infer and cache the Lean project path for a file WITHOUT starting the client."""
+    if ctx is not None:
+        with _routing_lock(ctx):
+            return _infer_project_path_locked(file_path, ctx)
+    return _infer_project_path_locked(file_path, None)
+
+
+def _infer_project_path_locked(
+    file_path: str, ctx: Context | None = None
+) -> Path | None:
     if ctx:
         lifespan = ctx.request_context.lifespan_context
         if not hasattr(lifespan, "project_cache"):
@@ -327,5 +546,33 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     if not policy.contains(resolved_file):
         return None
 
-    startup_client(ctx)
+    with _reserved_project_runtime(project_path) as runtime:
+        with runtime.operation() as op:
+            _set_lifespan_client_if_current(ctx, op)
     return policy.client_relative_path(resolved_file)
+
+
+@contextmanager
+def lsp_client_for_file(ctx: Context, file_path: str) -> Iterator[LspFileOperation]:
+    """Yield a file's shared LSP client for one serialized operation."""
+    try:
+        resolved_file = str(resolve_file_path(ctx, file_path))
+    except (FileNotFoundError, OSError) as exc:
+        raise InvalidLeanFilePathError(file_path) from exc
+
+    project_path = infer_project_path(resolved_file, ctx=ctx)
+    if project_path is None:
+        raise InvalidLeanFilePathError(file_path)
+
+    try:
+        policy = build_lean_path_policy(project_path)
+    except ValueError as exc:
+        raise InvalidLeanFilePathError(file_path) from exc
+    if not policy.contains(resolved_file):
+        raise InvalidLeanFilePathError(file_path)
+
+    rel_path = policy.client_relative_path(resolved_file)
+    with _reserved_project_runtime(project_path) as runtime:
+        with runtime.file_operation(path_policy=policy, rel_path=rel_path) as op:
+            _set_lifespan_client_if_current(ctx, op)
+            yield op

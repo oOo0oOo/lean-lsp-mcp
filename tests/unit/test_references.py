@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
+from lean_lsp_mcp import client_utils
 from lean_lsp_mcp import server
 from lean_lsp_mcp.models import ReferencesResult
 
@@ -42,11 +43,12 @@ def _make_raw_ref(
     }
 
 
-@patch("lean_lsp_mcp.server.setup_client_for_file", return_value="Test.lean")
-def test_references_parses_lsp_response(mock_setup: MagicMock, tmp_path: Path) -> None:
+def test_references_parses_lsp_response(tmp_path: Path) -> None:
     project = _make_project(tmp_path / "proj")
     lean_file = project / "Test.lean"
+    lean_file.write_text("theorem test : True := by trivial\n")
     client = MagicMock()
+    client.process = None
     client._uri_to_abs.return_value = lean_file
     client.get_references.return_value = [
         _make_raw_ref(lean_file.as_uri(), 2, 4, 2, 12),
@@ -55,6 +57,7 @@ def test_references_parses_lsp_response(mock_setup: MagicMock, tmp_path: Path) -
     ]
 
     ctx = _make_ctx(client, project)
+    client_utils.replace_shared_client(project, client)
     result = server.references(ctx, str(lean_file), 3, 5)
 
     assert isinstance(result, ReferencesResult)
@@ -69,22 +72,23 @@ def test_references_parses_lsp_response(mock_setup: MagicMock, tmp_path: Path) -
     )
 
 
-@patch("lean_lsp_mcp.server.setup_client_for_file", return_value="Test.lean")
-def test_references_empty_result(mock_setup: MagicMock, tmp_path: Path) -> None:
+def test_references_empty_result(tmp_path: Path) -> None:
     project = _make_project(tmp_path / "proj")
     lean_file = project / "Test.lean"
+    lean_file.write_text("theorem test : True := by trivial\n")
     client = MagicMock()
+    client.process = None
     client.get_references.return_value = None
 
     ctx = _make_ctx(client, project)
+    client_utils.replace_shared_client(project, client)
     result = server.references(ctx, str(lean_file), 1, 1)
 
     assert isinstance(result, ReferencesResult)
     assert len(result.items) == 0
 
 
-@patch("lean_lsp_mcp.server.setup_client_for_file", return_value=None)
-def test_references_invalid_path(mock_setup: MagicMock, tmp_path: Path) -> None:
+def test_references_invalid_path(tmp_path: Path) -> None:
     client = MagicMock()
     project = _make_project(tmp_path / "proj")
     ctx = _make_ctx(client, project)
@@ -93,14 +97,16 @@ def test_references_invalid_path(mock_setup: MagicMock, tmp_path: Path) -> None:
         server.references(ctx, "/nonexistent/Test.lean", 1, 1)
 
 
-@patch("lean_lsp_mcp.server.setup_client_for_file", return_value="Test.lean")
-def test_references_lsp_exception(mock_setup: MagicMock, tmp_path: Path) -> None:
+def test_references_lsp_exception(tmp_path: Path) -> None:
     project = _make_project(tmp_path / "proj")
     lean_file = project / "Test.lean"
+    lean_file.write_text("theorem test : True := by trivial\n")
     client = MagicMock()
+    client.process = None
     client.get_references.side_effect = RuntimeError("LSP timeout")
 
     ctx = _make_ctx(client, project)
+    client_utils.replace_shared_client(project, client)
 
     with pytest.raises(server.LeanToolError, match="Failed to get references"):
         server.references(ctx, str(lean_file), 1, 1)

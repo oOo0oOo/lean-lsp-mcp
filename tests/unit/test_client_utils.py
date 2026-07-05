@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 
+import lean_lsp_mcp.client_utils as client_utils
 from lean_lsp_mcp.client_utils import (
     CLIENT_LOCK,
     bind_lean_project_path,
     close_shared_client,
+    lsp_client_for_file,
     replace_shared_client,
     resolve_file_path,
     set_build_in_progress,
@@ -32,9 +35,13 @@ class _MockLeanClient:
         self.project_path = project_path
         self.process = _MockProcess()
         self.closed = False
+        self.opened_files: list[str] = []
 
     def close(self) -> None:
         self.closed = True
+
+    def open_file(self, path: str) -> None:
+        self.opened_files.append(path)
 
 
 class _FailingCloseClient(_MockLeanClient):
@@ -329,6 +336,130 @@ def test_startup_client_serializes_concurrent_calls(
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+def test_lsp_client_for_file_serializes_same_project_operations(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    file1 = project / "File1.lean"
+    file1.write_text("theorem a : True := by trivial")
+    file2 = project / "File2.lean"
+    file2.write_text("theorem b : True := by trivial")
+    ctx1 = _Context(_LifespanContext(project, None))
+    ctx2 = _Context(_LifespanContext(project, None))
+    first_entered = Event()
+    release_first = Event()
+    second_entered = Event()
+
+    def _hold_first_operation() -> str:
+        with lsp_client_for_file(ctx1, str(file1)) as op:
+            first_entered.set()
+            assert not second_entered.wait(0.05)
+            release_first.wait(timeout=2)
+            return op.rel_path
+
+    def _enter_second_operation() -> str:
+        first_entered.wait(timeout=2)
+        with lsp_client_for_file(ctx2, str(file2)) as op:
+            second_entered.set()
+            return op.rel_path
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(_hold_first_operation)
+        second = executor.submit(_enter_second_operation)
+        assert first_entered.wait(timeout=2)
+        assert not second_entered.wait(0.1)
+        release_first.set()
+        assert first.result(timeout=2) == "File1.lean"
+        assert second.result(timeout=2) == "File2.lean"
+
+    assert len(patched_clients) == 1
+
+
+def test_runtime_cap_waits_for_active_project_to_be_evictable(
+    tmp_path: Path,
+    patched_clients: list[_MockLeanClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_utils, "_MAX_SHARED_CLIENTS", 1)
+    project1 = _make_project(tmp_path / "proj1")
+    file1 = project1 / "File1.lean"
+    file1.write_text("theorem a : True := by trivial")
+    project2 = _make_project(tmp_path / "proj2")
+    file2 = project2 / "File2.lean"
+    file2.write_text("theorem b : True := by trivial")
+    ctx1 = _Context(_LifespanContext(project1, None))
+    ctx2 = _Context(_LifespanContext(project2, None))
+    first_entered = Event()
+    release_first = Event()
+    second_entered = Event()
+
+    def _hold_first_operation() -> str:
+        with lsp_client_for_file(ctx1, str(file1)) as op:
+            first_entered.set()
+            assert not second_entered.wait(0.05)
+            release_first.wait(timeout=2)
+            return op.rel_path
+
+    def _enter_second_operation() -> str:
+        first_entered.wait(timeout=2)
+        with lsp_client_for_file(ctx2, str(file2)) as op:
+            second_entered.set()
+            return op.rel_path
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(_hold_first_operation)
+        second = executor.submit(_enter_second_operation)
+        assert first_entered.wait(timeout=2)
+        assert not second_entered.wait(0.1)
+        release_first.set()
+        assert first.result(timeout=2) == "File1.lean"
+        assert second.result(timeout=2) == "File2.lean"
+
+    assert len(patched_clients) == 2
+    assert patched_clients[0].closed
+    assert not patched_clients[1].closed
+
+
+def test_build_detach_waits_for_active_operation(
+    tmp_path: Path, patched_clients: list[_MockLeanClient]
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    file_path = project / "File.lean"
+    file_path.write_text("theorem a : True := by trivial")
+    ctx = _Context(_LifespanContext(project, None))
+    runtime = client_utils.get_project_runtime(project)
+    operation_entered = Event()
+    release_operation = Event()
+    build_detached = Event()
+
+    def _hold_operation() -> str:
+        with lsp_client_for_file(ctx, str(file_path)) as op:
+            operation_entered.set()
+            assert not build_detached.wait(0.05)
+            release_operation.wait(timeout=2)
+            return op.rel_path
+
+    def _detach_for_build() -> None:
+        operation_entered.wait(timeout=2)
+        runtime.detach_for_build()
+        build_detached.set()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            operation = executor.submit(_hold_operation)
+            build = executor.submit(_detach_for_build)
+            assert operation_entered.wait(timeout=2)
+            assert not build_detached.wait(0.1)
+            release_operation.set()
+            assert operation.result(timeout=2) == "File.lean"
+            assert build.result(timeout=2) is None
+
+        assert build_detached.is_set()
+        assert patched_clients[0].closed
+    finally:
+        runtime.clear_build_in_progress()
 
 
 def test_build_in_progress_blocks_only_same_project(

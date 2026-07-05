@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Annotated, List, Literal, Optional
 
 import orjson
-from leanclient import LeanLSPClient
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -313,13 +312,12 @@ async def state_search(
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> StateSearchResults:
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
+    try:
+        with server.lsp_client_for_file(ctx, file_path) as lsp:
+            rel_path = lsp.rel_path
+            goal = lsp.client.get_goal(rel_path, line - 1, column - 1)
+    except server.InvalidLeanFilePathError:
         server._raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
         raise server.LeanToolError(
@@ -372,13 +370,12 @@ async def hammer_premise(
 
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
     """
-    rel_path = server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
+    try:
+        with server.lsp_client_for_file(ctx, file_path) as lsp:
+            rel_path = lsp.rel_path
+            goal = lsp.client.get_goal(rel_path, line - 1, column - 1)
+    except server.InvalidLeanFilePathError:
         server._raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    goal = client.get_goal(rel_path, line - 1, column - 1)
 
     if not goal or not goal.get("goals"):
         raise server.LeanToolError(
