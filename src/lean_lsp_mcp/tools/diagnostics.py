@@ -192,12 +192,6 @@ def code_actions(
                     ValueError,
                     RuntimeError,
                 ) as exc:
-                    # Path-resolution failures are common for files in
-                    # `.lake/packages/...` (dep paths that `setup_client_for_file`
-                    # accepts but `resolve_file_path(require_exists=True)` rejects).
-                    # `RuntimeError` covers CPython's symlink-loop raise from
-                    # ``Path.resolve(strict=True)``.
-                    # Log so production failures aren't silently invisible.
                     server.logger.debug(
                         "lean_code_actions fallback: could not read line text from %s: %s",
                         file_path,

@@ -58,13 +58,19 @@ def _routing_lock(ctx: Context):
 
 
 def _set_lifespan_client_if_current(ctx: Context, op: LspClientOperation) -> None:
+    set_lifespan_client_for_project(ctx, op.project_path, op.client)
+
+
+def set_lifespan_client_for_project(
+    ctx: Context, project_path: Path | str, client: LeanLSPClient | None
+) -> None:
     with _routing_lock(ctx):
         lifespan = ctx.request_context.lifespan_context
         current_root: Path | None = getattr(lifespan, "lean_project_path", None)
         if current_root is not None:
             current_root = current_root.resolve(strict=False)
-        if current_root == op.project_path:
-            lifespan.client = op.client
+        if current_root == _project_key(project_path):
+            lifespan.client = client
 
 
 class ProjectRuntime:
@@ -73,7 +79,7 @@ class ProjectRuntime:
         self._client: LeanLSPClient | None = None
         self._lock = RLock()
         self._condition = Condition(self._lock)
-        self._active_operations = 0
+        self._operation_active = False
         self._build_in_progress = False
         self._registry_reservations = 0
 
@@ -96,19 +102,19 @@ class ProjectRuntime:
 
     def _acquire_operation(self) -> LeanLSPClient:
         with self._condition:
-            while self._active_operations:
+            while self._operation_active:
                 self._condition.wait()
             if self._build_in_progress:
                 raise ValueError(
                     "A project build is in progress. Retry after the build completes."
                 )
             client = self._start_or_reuse_client()
-            self._active_operations = 1
+            self._operation_active = True
             return client
 
     def _release_operation(self) -> None:
         with self._condition:
-            self._active_operations = 0
+            self._operation_active = False
             self._condition.notify_all()
         with _RUNTIME_AVAILABLE:
             _RUNTIME_AVAILABLE.notify_all()
@@ -154,7 +160,7 @@ class ProjectRuntime:
                 raise ValueError(
                     "A project build is already in progress. Retry after the build completes."
                 )
-            while self._active_operations:
+            while self._operation_active:
                 self._condition.wait()
             self._build_in_progress = True
             client = self._client
@@ -184,7 +190,7 @@ class ProjectRuntime:
         try:
             return (
                 not self._build_in_progress
-                and self._active_operations == 0
+                and not self._operation_active
                 and self._registry_reservations == 0
             )
         finally:

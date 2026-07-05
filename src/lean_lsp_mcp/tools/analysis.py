@@ -14,10 +14,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import (
-    get_path_policy,
-    infer_project_path,
-)
+from lean_lsp_mcp.client_utils import get_path_policy, infer_project_path
 from lean_lsp_mcp.models import (
     HypothesisStatus,
     HypothesisVerdict,
@@ -290,8 +287,7 @@ def minimal_hypotheses(
                 original_content = client.get_file_content(rel_path)
             except Exception:
                 try:
-                    policy = get_path_policy(ctx)
-                    abs_path = policy.validate_path(
+                    abs_path = lsp.path_policy.validate_path(
                         server.resolve_file_path(ctx, file_path)
                     )
                 except (FileNotFoundError, ValueError) as exc:

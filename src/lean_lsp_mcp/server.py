@@ -22,19 +22,16 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
 
 from lean_lsp_mcp.client_utils import (
-    CLIENT_LOCK as CLIENT_LOCK,
     InvalidLeanFilePathError,
     _reserved_project_runtime,
     _active_transport,
     _max_opened_files,
     _project_switching_allowed,
-    get_path_policy as get_path_policy,
     infer_project_path,
     resolve_file_path,
-    lsp_client_for_file as lsp_client_for_file,
-    lsp_client_for_project as lsp_client_for_project,
-    replace_shared_client as replace_shared_client,
-    set_build_in_progress as set_build_in_progress,
+    lsp_client_for_file,
+    lsp_client_for_project,
+    set_lifespan_client_for_project,
     setup_client_for_file,
 )
 from lean_lsp_mcp.file_utils import (
@@ -419,6 +416,9 @@ mcp = FastMCP(**mcp_kwargs)
 # or by tests through monkeypatching. Listing them in __all__ marks them as
 # intentionally exported so they are not pruned as "unused imports".
 __all__ = [
+    "InvalidLeanFilePathError",
+    "lsp_client_for_file",
+    "lsp_client_for_project",
     "setup_client_for_file",
     "resolve_file_path",
     "get_file_contents",
@@ -507,17 +507,6 @@ async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
         logger.exception("REPL close failed during project switch")
 
 
-def _set_lifespan_client_for_project(
-    ctx: Context, project_path: Path, client: LeanLSPClient | None
-) -> None:
-    lifespan = ctx.request_context.lifespan_context
-    current_root: Path | None = getattr(lifespan, "lean_project_path", None)
-    if current_root is not None:
-        current_root = current_root.resolve(strict=False)
-    if current_root == project_path.resolve(strict=False):
-        lifespan.client = client
-
-
 async def _run_build(
     ctx: Context,
     lean_project_path_obj: Path,
@@ -568,12 +557,16 @@ async def _run_build(
         if remainder:
             await _handle_build_output_line(remainder)
 
+    def _detach_runtime_for_build():
+        with _reserved_project_runtime(lean_project_path_obj) as reserved_runtime:
+            reserved_runtime.detach_for_build()
+            return reserved_runtime
+
     runtime = None
     try:
-        with _reserved_project_runtime(lean_project_path_obj) as runtime:
-            runtime.detach_for_build()
-            build_flag_set = True
-        _set_lifespan_client_for_project(ctx, lean_project_path_obj, None)
+        runtime = await asyncio.to_thread(_detach_runtime_for_build)
+        build_flag_set = True
+        set_lifespan_client_for_project(ctx, lean_project_path_obj, None)
 
         if clean:
             await _safe_report_progress(
@@ -638,7 +631,7 @@ async def _run_build(
         if runtime is None:
             raise RuntimeError("Lean project runtime was not reserved.")
         runtime.install_restarted_client(client)
-        _set_lifespan_client_for_project(ctx, lean_project_path_obj, client)
+        set_lifespan_client_for_project(ctx, lean_project_path_obj, client)
 
         return BuildResult(
             success=True,

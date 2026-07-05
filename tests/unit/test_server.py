@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 import importlib
 import json
@@ -14,6 +13,7 @@ import pytest
 from lean_lsp_mcp import client_utils
 from lean_lsp_mcp import server
 from lean_lsp_mcp.models import DiagnosticSeverity
+from tests.helpers.lsp import fake_lsp_file_operation
 
 
 class DummyClient:
@@ -85,20 +85,6 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
     dep_link.parent.mkdir(parents=True)
     dep_link.symlink_to(dep_root, target_is_directory=True)
     return dep_file
-
-
-@contextmanager
-def _fake_lsp_file(
-    client, rel_path: str = "Foo.lean", project_path: Path | None = None
-):
-    if hasattr(client, "open_file"):
-        client.open_file(rel_path)
-    yield types.SimpleNamespace(
-        client=client,
-        rel_path=rel_path,
-        project_path=project_path or Path("/tmp/proj"),
-        path_policy=types.SimpleNamespace(validate_path=lambda path: path),
-    )
 
 
 @pytest.mark.asyncio
@@ -902,7 +888,7 @@ def test_diagnostic_messages_passes_severity_to_process(
     monkeypatch.setattr(
         server,
         "lsp_client_for_file",
-        lambda _ctx, _path: _fake_lsp_file(fake_client, "Foo.lean"),
+        lambda _ctx, _path: fake_lsp_file_operation(fake_client, "Foo.lean"),
     )
 
     server.diagnostic_messages(
@@ -943,7 +929,7 @@ def test_diagnostic_messages_default_severity_is_none(
     monkeypatch.setattr(
         server,
         "lsp_client_for_file",
-        lambda _ctx, _path: _fake_lsp_file(fake_client, "Foo.lean"),
+        lambda _ctx, _path: fake_lsp_file_operation(fake_client, "Foo.lean"),
     )
 
     server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean")
@@ -986,7 +972,7 @@ def test_goal_retries_after_cold_file_timeout(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         server,
         "lsp_client_for_file",
-        lambda _ctx, _path: _fake_lsp_file(fake_client, "GoalSample.lean"),
+        lambda _ctx, _path: fake_lsp_file_operation(fake_client, "GoalSample.lean"),
     )
 
     result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
@@ -1016,7 +1002,7 @@ def test_goal_structured_format_accepts_structured_goals(
     monkeypatch.setattr(
         server,
         "lsp_client_for_file",
-        lambda _ctx, _path: _fake_lsp_file(fake_client, "GoalSample.lean"),
+        lambda _ctx, _path: fake_lsp_file_operation(fake_client, "GoalSample.lean"),
     )
 
     result = server.goal(
@@ -1068,7 +1054,7 @@ def test_goal_returns_no_goals_without_retry(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         server,
         "lsp_client_for_file",
-        lambda _ctx, _path: _fake_lsp_file(fake_client, "GoalSample.lean"),
+        lambda _ctx, _path: fake_lsp_file_operation(fake_client, "GoalSample.lean"),
     )
 
     result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)

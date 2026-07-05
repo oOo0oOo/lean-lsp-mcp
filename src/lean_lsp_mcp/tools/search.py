@@ -37,6 +37,16 @@ class LocalSearchError(Exception):
     pass
 
 
+def _get_goal_for_remote_search(
+    ctx: Context, file_path: str, line: int, column: int
+) -> dict:
+    try:
+        with server.lsp_client_for_file(ctx, file_path) as lsp:
+            return lsp.client.get_goal(lsp.rel_path, line - 1, column - 1)
+    except server.InvalidLeanFilePathError:
+        server._raise_invalid_path(file_path)
+
+
 @server.mcp.tool(
     "lean_local_search",
     annotations=ToolAnnotations(
@@ -312,12 +322,9 @@ async def state_search(
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> StateSearchResults:
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
-    try:
-        with server.lsp_client_for_file(ctx, file_path) as lsp:
-            rel_path = lsp.rel_path
-            goal = lsp.client.get_goal(rel_path, line - 1, column - 1)
-    except server.InvalidLeanFilePathError:
-        server._raise_invalid_path(file_path)
+    goal = await asyncio.to_thread(
+        _get_goal_for_remote_search, ctx, file_path, line, column
+    )
 
     if not goal or not goal.get("goals"):
         raise server.LeanToolError(
@@ -370,12 +377,9 @@ async def hammer_premise(
 
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
     """
-    try:
-        with server.lsp_client_for_file(ctx, file_path) as lsp:
-            rel_path = lsp.rel_path
-            goal = lsp.client.get_goal(rel_path, line - 1, column - 1)
-    except server.InvalidLeanFilePathError:
-        server._raise_invalid_path(file_path)
+    goal = await asyncio.to_thread(
+        _get_goal_for_remote_search, ctx, file_path, line, column
+    )
 
     if not goal or not goal.get("goals"):
         raise server.LeanToolError(

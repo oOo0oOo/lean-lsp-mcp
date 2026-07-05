@@ -11,12 +11,12 @@ unreproducible in the live integration test).
 from __future__ import annotations
 
 import types
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from lean_lsp_mcp import server as srv
+from tests.helpers.lsp import fake_lsp_file_operation
 
 
 class _Client:
@@ -57,17 +57,6 @@ class _Ctx:
         self.request_context = _ReqCtx(client)
 
 
-@contextmanager
-def _fake_lsp_file(client, rel_path):
-    client.open_file(rel_path)
-    yield types.SimpleNamespace(
-        client=client,
-        rel_path=rel_path,
-        project_path=Path("/tmp"),
-        path_policy=types.SimpleNamespace(validate_path=lambda path: path),
-    )
-
-
 @pytest.fixture()
 def lean_file(tmp_path: Path) -> Path:
     p = tmp_path / "Fallback.lean"
@@ -87,7 +76,7 @@ def test_fallback_fires_when_no_diagnostic_yet_actions_exist_at_line_range(
     fake_action = {"title": "Try this: simp", "edit": {"documentChanges": []}}
     client = _Client({range_with_action: [fake_action]})
     monkeypatch.setattr(
-        srv, "lsp_client_for_file", lambda _c, p: _fake_lsp_file(client, p)
+        srv, "lsp_client_for_file", lambda _c, p: fake_lsp_file_operation(client, p)
     )
     monkeypatch.setattr(srv, "resolve_file_path", lambda c, p: lean_file)
 
@@ -121,7 +110,7 @@ def test_fallback_uses_utf16_length_for_end_column(
     fake_action = {"title": "Try this: trivial", "edit": {"documentChanges": []}}
     client = _Client({range_with_action: [fake_action]})
     monkeypatch.setattr(
-        srv, "lsp_client_for_file", lambda _c, p: _fake_lsp_file(client, p)
+        srv, "lsp_client_for_file", lambda _c, p: fake_lsp_file_operation(client, p)
     )
     monkeypatch.setattr(srv, "resolve_file_path", lambda c, p: f)
 
@@ -164,7 +153,7 @@ def test_fallback_swallows_resolve_failures_but_logs(
 
     client = _Client({})
     monkeypatch.setattr(
-        srv, "lsp_client_for_file", lambda _c, p: _fake_lsp_file(client, p)
+        srv, "lsp_client_for_file", lambda _c, p: fake_lsp_file_operation(client, p)
     )
 
     def _raise(_c, _p):
