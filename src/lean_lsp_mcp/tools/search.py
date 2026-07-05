@@ -39,7 +39,7 @@ class LocalSearchError(Exception):
 
 def _get_goal_for_remote_search(
     ctx: Context, file_path: str, line: int, column: int
-) -> dict:
+) -> dict | None:
     try:
         with server.lsp_client_for_file(ctx, file_path) as lsp:
             return lsp.client.get_goal(lsp.rel_path, line - 1, column - 1)
