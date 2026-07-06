@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, List
+from pathlib import Path
+from typing import Annotated, List, Optional
 
-from leanclient import LeanLSPClient
+from leanclient.aio import AsyncLeanLSPClient
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_path_policy
+from lean_lsp_mcp.client_utils import get_path_policy, open_synced
 from lean_lsp_mcp.models import (
     CompletionItem,
     CompletionsResult,
@@ -22,7 +23,6 @@ from lean_lsp_mcp.models import (
 )
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
-    check_lsp_response,
     extract_range,
     filter_diagnostics_by_position,
     find_start_position,
@@ -38,24 +38,25 @@ from lean_lsp_mcp.utils import (
         openWorldHint=False,
     ),
 )
-def hover(
+async def hover(
     ctx: Context,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[int, Field(description="Column at START of identifier", ge=1)],
+    column: Annotated[
+        int, Field(description="Column at START of identifier (1-indexed characters)", ge=1)
+    ],
 ) -> HoverInfo:
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    file_content = client.get_file_content(rel_path)
-    hover_info = client.get_hover(rel_path, line - 1, column - 1)
-    check_lsp_response(hover_info, "get_hover", allow_none=True)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
+    file_content = client.content(rel_path)
+    hover_info = await client.hover(rel_path, line - 1, column - 1)
     if hover_info is None:
         raise server.LeanToolError(
             f"No hover information at line {line}, column {column}"
@@ -68,9 +69,8 @@ def hover(
     info = info.replace("```lean\n", "").replace("\n```", "").strip()
 
     # Add diagnostics if available
-    diagnostics = client.get_diagnostics(rel_path)
-    check_lsp_response(diagnostics, "get_diagnostics")
-    filtered = filter_diagnostics_by_position(diagnostics, line - 1, column - 1)
+    report = await client.diagnostics(rel_path, fresh=False)
+    filtered = filter_diagnostics_by_position(report.items, line - 1, column - 1)
 
     return HoverInfo(
         symbol=symbol,
@@ -88,25 +88,26 @@ def hover(
         openWorldHint=False,
     ),
 )
-def completions(
+async def completions(
     ctx: Context,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
+    column: Annotated[
+        int, Field(description="Column number (1-indexed characters)", ge=1)
+    ],
     max_completions: Annotated[int, Field(description="Max completions", ge=1)] = 32,
 ) -> CompletionsResult:
     """Get IDE autocompletions. Use on INCOMPLETE code (after `.` or partial name)."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    content = client.get_file_content(rel_path)
-    raw_completions = client.get_completions(rel_path, line - 1, column - 1)
-    check_lsp_response(raw_completions, "get_completions")
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
+    content = client.content(rel_path)
+    raw_completions = await client.completions(rel_path, line - 1, column - 1)
 
     # Convert to CompletionItem models
     items: List[CompletionItem] = []
@@ -163,7 +164,7 @@ def completions(
         openWorldHint=False,
     ),
 )
-def declaration_file(
+async def declaration_file(
     ctx: Context,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
@@ -171,15 +172,24 @@ def declaration_file(
     symbol: Annotated[
         str, Field(description="Symbol (case sensitive, must be in file)")
     ],
+    context_lines: Annotated[
+        int,
+        Field(description="Lines of context around the declaration", ge=0),
+    ] = 20,
+    full_file: Annotated[
+        bool, Field(description="Return the entire declaration file (large!)")
+    ] = False,
 ) -> DeclarationInfo:
-    """Get file where a symbol is declared. Symbol must be present in file first."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    """Get the source of a symbol's declaration (declaration slice + context).
+
+    Set full_file=True for the whole file (can be very large)."""
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    orig_file_content = client.get_file_content(rel_path)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
+    orig_file_content = client.content(rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file
     position = find_start_position(orig_file_content, symbol)
@@ -188,20 +198,23 @@ def declaration_file(
             f"Symbol `{symbol}` (case sensitive) not found in file. Add it first."
         )
 
-    declaration = client.get_declarations(
-        rel_path, position["line"], position["column"]
+    locations = await client.goto(
+        "declaration", rel_path, position["line"], position["column"]
     )
-
-    if len(declaration) == 0:
+    if not locations:
         raise server.LeanToolError(f"No declaration available for `{symbol}`.")
 
-    # Load the declaration file
-    decl = declaration[0]
-    uri = decl.get("targetUri") or decl.get("uri")
+    decl = locations[0]
+    uri = decl.get("targetUri") or decl.get("uri") or ""
+    local_path = decl.get("path", "")
 
     try:
         policy = get_path_policy(ctx)
-        abs_path = policy.validate_path(client._uri_to_abs(uri))
+        abs_path = policy.validate_path(
+            Path(local_path)
+            if Path(local_path).is_absolute()
+            else Path(client.project_path) / local_path
+        )
     except ValueError as exc:
         raise server.LeanToolError(str(exc)) from exc
 
@@ -211,10 +224,30 @@ def declaration_file(
         )
 
     file_content = server.get_file_contents(abs_path)
+    file_lines = file_content.splitlines()
+    total_lines = len(file_lines)
+
+    if full_file:
+        return DeclarationInfo(
+            file_path=policy.display_path(abs_path),
+            content=file_content,
+            start_line=1,
+            end_line=total_lines,
+            total_lines=total_lines,
+        )
+
+    target_range = decl.get("targetRange") or decl.get("range") or {}
+    decl_start = target_range.get("start", {}).get("line", 0)
+    decl_end = target_range.get("end", {}).get("line", decl_start)
+    start = max(0, decl_start - context_lines)
+    end = min(total_lines, decl_end + 1 + context_lines)
 
     return DeclarationInfo(
         file_path=policy.display_path(abs_path),
-        content=file_content,
+        content="\n".join(file_lines[start:end]),
+        start_line=start + 1,
+        end_line=end,
+        total_lines=total_lines,
     )
 
 
@@ -227,35 +260,38 @@ def declaration_file(
         openWorldHint=False,
     ),
 )
-def references(
+async def references(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
         int, Field(description="Column at START of identifier (1-indexed)", ge=1)
     ],
+    max_results: Annotated[
+        Optional[int],
+        Field(description="Max locations to return (default 50)", ge=1),
+    ] = 50,
 ) -> ReferencesResult:
     """Find all references to a symbol (including the declaration). Position cursor at the symbol."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         raise server.LeanToolError(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    # Ensure file is elaborated before querying references
-    client.get_diagnostics(rel_path)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
 
     try:
-        raw_refs = client.get_references(
+        raw_refs = await client.references(
             rel_path, line - 1, column - 1, include_declaration=True
         )
     except Exception as e:
         raise server.LeanToolError(f"Failed to get references: {e}")
 
-    if raw_refs is None:
-        raw_refs = []
+    total = len(raw_refs)
+    if max_results is not None:
+        raw_refs = raw_refs[:max_results]
 
     items: List[ReferenceLocation] = []
     try:
@@ -263,17 +299,21 @@ def references(
     except ValueError as exc:
         raise server.LeanToolError(str(exc)) from exc
     for ref in raw_refs:
-        uri = ref.get("uri", "")
         r = ref.get("range", {})
-        abs_path = ""
-        if uri:
+        display = ref.get("path", "")
+        if display:
+            candidate = (
+                Path(display)
+                if Path(display).is_absolute()
+                else Path(client.project_path) / display
+            )
             try:
-                abs_path = policy.display_path(client._uri_to_abs(uri))
+                display = policy.display_path(candidate)
             except ValueError:
                 continue
         items.append(
             ReferenceLocation(
-                file_path=abs_path,
+                file_path=display,
                 line=r.get("start", {}).get("line", 0) + 1,
                 column=r.get("start", {}).get("character", 0) + 1,
                 end_line=r.get("end", {}).get("line", 0) + 1,
@@ -281,4 +321,4 @@ def references(
             )
         )
 
-    return ReferencesResult(items=items)
+    return ReferencesResult(items=items, total=total)

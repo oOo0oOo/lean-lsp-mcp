@@ -5,8 +5,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
-from leanclient import LeanLSPClient
-from leanclient.utils import DocumentContentChange
+from leanclient.aio import AsyncLeanLSPClient, ScratchPool
+from leanclient.utils import SYMBOL_KIND_MAP
 
 from lean_lsp_mcp.models import FileOutline, OutlineEntry
 
@@ -20,7 +20,7 @@ _OUTLINE_CACHE: "OrderedDict[Tuple[str, str, str, int, int], FileOutline]" = (
 
 
 def _outline_cache_key(
-    client: LeanLSPClient, path: str, content: str
+    client: AsyncLeanLSPClient, path: str, content: str
 ) -> Tuple[str, str, str, int, int]:
     project_path = Path(getattr(client, "project_path", ""))
     digest = sha256(content.encode("utf-8")).hexdigest()
@@ -66,40 +66,29 @@ def _with_max_declarations(
     return result
 
 
-def _get_info_trees(
-    client: LeanLSPClient, path: str, symbols: List[Dict]
+async def _get_info_trees(
+    pool: ScratchPool, content: str, symbols: List[Dict]
 ) -> Dict[str, str]:
-    """Insert #info_trees commands, collect diagnostics, then revert changes."""
+    """Run a scratch copy with #info_trees insertions; the real doc is untouched."""
     if not symbols:
         return {}
 
+    lines = content.splitlines()
     symbol_by_line = {}
-    changes = []
     for i, sym in enumerate(sorted(symbols, key=lambda s: s["range"]["start"]["line"])):
-        line = sym["range"]["start"]["line"] + i
-        symbol_by_line[line] = sym["name"]
-        changes.append(DocumentContentChange("#info_trees in\n", (line, 0), (line, 0)))
+        src_line = sym["range"]["start"]["line"]
+        insert_at = src_line + i  # account for previously inserted lines
+        lines.insert(insert_at, "#info_trees in")
+        symbol_by_line[insert_at] = sym["name"]
 
-    client.update_file(path, changes)
-    diagnostics = client.get_diagnostics(path)
+    trial = await pool.run_text("\n".join(lines) + "\n")
 
-    info_trees = {
-        symbol_by_line[diag["range"]["start"]["line"]]: diag["message"]
-        for diag in diagnostics
-        if diag["severity"] == 3 and diag["range"]["start"]["line"] in symbol_by_line
-    }
-
-    # Revert in reverse order
-    client.update_file(
-        path,
-        [
-            DocumentContentChange("", (line, 0), (line + 1, 0))
-            for line in sorted(symbol_by_line.keys(), reverse=True)
-        ],
-    )
-
-    # Force file reload to reset diagnostics after the insert/revert cycle.
-    client.open_file(path, force_reopen=True)
+    info_trees = {}
+    for diag in trial.diagnostics.items:
+        r = diag.get("fullRange") or diag.get("range") or {}
+        diag_line = r.get("start", {}).get("line")
+        if diag.get("severity") == 3 and diag_line in symbol_by_line:
+            info_trees[symbol_by_line[diag_line]] = diag.get("message", "")
 
     return info_trees
 
@@ -218,31 +207,6 @@ def _detect_tag(
     return KIND_TAGS.get(kind, "Def")
 
 
-def _format_symbol(sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int) -> str:
-    """Format a single symbol with its type signature and fields."""
-    name = sym["name"]
-    type_sig = sym.get("_type") or type_sigs.get(name, "")
-    fields = fields_map.get(name, [])
-
-    tag = _detect_tag(
-        name, sym.get("kind", ""), type_sig, bool(fields), sym.get("_keyword")
-    )
-    prefix = "\t" * indent
-
-    start = sym["range"]["start"]["line"] + 1
-    end = sym["range"]["end"]["line"] + 1
-    line_info = f"L{start}" if start == end else f"L{start}-{end}"
-
-    result = f"{prefix}[{tag}: {line_info}] {name}"
-    if type_sig:
-        result += f" : {type_sig}"
-
-    for fname, ftype in fields:
-        result += f"\n{prefix}\t{fname} : {ftype}"
-
-    return result + "\n"
-
-
 def _build_outline_entry(
     sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int
 ) -> Optional[OutlineEntry]:
@@ -280,12 +244,15 @@ def _build_outline_entry(
     )
 
 
-def generate_outline_data(
-    client: LeanLSPClient, path: str, max_declarations: int | None = None
+async def generate_outline_data(
+    client: AsyncLeanLSPClient,
+    pool: ScratchPool,
+    path: str,
+    max_declarations: int | None = None,
 ) -> FileOutline:
     """Generate structured outline data for a Lean file."""
-    client.open_file(path)
-    content = client.get_file_content(path)
+    await client.reload_from_disk(path)
+    content = client.content(path)
     cache_key = _outline_cache_key(client, path, content)
     if cached := _get_cached_outline(cache_key):
         return _with_max_declarations(cached, max_declarations)
@@ -299,7 +266,11 @@ def generate_outline_data(
         elif s.startswith("import "):
             imports.append(s[7:])
 
-    symbols = client.get_document_symbols(path)
+    symbols = await client.document_symbols(path)
+    # Match legacy leanclient behavior: top-level kinds as strings.
+    for symbol in symbols:
+        if isinstance(symbol.get("kind"), int):
+            symbol["kind"] = SYMBOL_KIND_MAP.get(symbol["kind"], "unknown")
     if not symbols and not imports:
         outline = FileOutline(imports=[], declarations=[])
         _store_cached_outline(cache_key, outline)
@@ -314,7 +285,7 @@ def generate_outline_data(
         for s, _ in all_symbols
         if s.get("kind") in METHOD_KIND and "_keyword" not in s
     ]
-    info_trees = _get_info_trees(client, path, lsp_methods)
+    info_trees = await _get_info_trees(pool, content, lsp_methods)
 
     # Extract type signatures and fields from info trees
     type_sigs = {
@@ -343,62 +314,3 @@ def generate_outline_data(
     outline = FileOutline(imports=imports, declarations=declarations)
     _store_cached_outline(cache_key, outline)
     return _with_max_declarations(outline, max_declarations)
-
-
-def generate_outline(client: LeanLSPClient, path: str) -> str:
-    """Generate a concise outline of a Lean file showing structure and signatures."""
-    client.open_file(path)
-    content = client.get_file_content(path)
-
-    # Extract imports (handles both 'import X' and 'public import X')
-    imports = []
-    for line in content.splitlines():
-        s = line.strip()
-        if s.startswith("public import "):
-            imports.append(s[14:])
-        elif s.startswith("import "):
-            imports.append(s[7:])
-
-    symbols = client.get_document_symbols(path)
-    if not symbols and not imports:
-        return f"# {path}\n\n*No symbols or imports found*\n"
-
-    # Flatten symbol tree and extract namespace declarations
-    all_symbols = _flatten_symbols(symbols, content=content)
-
-    # Get info trees only for LSP symbols (not extracted declarations)
-    lsp_methods = [
-        s
-        for s, _ in all_symbols
-        if s.get("kind") in METHOD_KIND and "_keyword" not in s
-    ]
-    info_trees = _get_info_trees(client, path, lsp_methods)
-
-    # Extract type signatures and fields from info trees
-    type_sigs = {
-        name: sig
-        for name, info in info_trees.items()
-        if (sig := _extract_type(info, name))
-    }
-    fields_map = {
-        name: fields
-        for name, info in info_trees.items()
-        if (fields := _extract_fields(info, name))
-    }
-
-    # Build output
-    parts = []
-    if imports:
-        parts.append("## Imports\n" + "\n".join(imports))
-
-    if symbols:
-        declarations = [
-            _format_symbol(sym, type_sigs, fields_map, indent)
-            for sym, indent in all_symbols
-            if sym.get("kind") in METHOD_KIND
-            or sym.get("_keyword")
-            or sym.get("kind") == "namespace"
-        ]
-        parts.append("## Declarations\n" + "".join(declarations).rstrip())
-
-    return "\n\n".join(parts) + "\n"

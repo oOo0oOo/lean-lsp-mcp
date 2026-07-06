@@ -24,18 +24,18 @@ def _parse_outline(result) -> dict:
 
 
 class _FakeOutlineClient:
-    project_path = Path("/tmp/lean-lsp-mcp-outline-cache-test")
+    project_path = "/tmp/lean-lsp-mcp-outline-cache-test"
 
     def __init__(self) -> None:
         self.document_symbols_calls = 0
 
-    def open_file(self, path: str) -> None:
+    async def reload_from_disk(self, path: str, wait: bool = False):
         self.path = path
 
-    def get_file_content(self, path: str) -> str:
+    def content(self, path: str) -> str:
         return "import Mathlib\nnamespace CacheNs\nend CacheNs\n"
 
-    def get_document_symbols(self, path: str) -> list[dict]:
+    async def document_symbols(self, path: str) -> list[dict]:
         self.document_symbols_calls += 1
         return [
             {
@@ -50,21 +50,23 @@ class _FakeOutlineClient:
         ]
 
 
-def test_outline_cache_reuses_unchanged_file_symbols() -> None:
+@pytest.mark.asyncio
+async def test_outline_cache_reuses_unchanged_file_symbols() -> None:
     """Repeated unchanged outlines should avoid another documentSymbol call."""
     with _OUTLINE_CACHE_LOCK:
         _OUTLINE_CACHE.clear()
 
     client = _FakeOutlineClient()
+    pool = None  # no method symbols in the fake -> info trees never requested
 
-    first = generate_outline_data(client, "Cache.lean")
-    second = generate_outline_data(client, "Cache.lean")
+    first = await generate_outline_data(client, pool, "Cache.lean")
+    second = await generate_outline_data(client, pool, "Cache.lean")
 
     assert client.document_symbols_calls == 1
     assert second == first
 
     first.declarations[0].name = "mutated"
-    third = generate_outline_data(client, "Cache.lean")
+    third = await generate_outline_data(client, pool, "Cache.lean")
     assert third.declarations[0].name == "CacheNs"
 
 

@@ -1,7 +1,7 @@
+import asyncio
 from pathlib import Path
-from threading import Lock
 
-from leanclient import LeanLSPClient
+from leanclient.aio import AsyncLeanLSPClient, ScratchPool
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp.utilities.logging import get_logger
 
@@ -12,13 +12,13 @@ from lean_lsp_mcp.file_utils import (
     resolve_input_path,
     valid_lean_project_path,
 )
-from lean_lsp_mcp.utils import OutputCapture
 from lean_lsp_mcp import config
 
 
 logger = get_logger(__name__)
-CLIENT_LOCK = Lock()
-_shared_clients: dict[Path, LeanLSPClient] = {}
+CLIENT_LOCK = asyncio.Lock()
+_shared_clients: dict[Path, AsyncLeanLSPClient] = {}
+_shared_pools: dict[Path, ScratchPool] = {}
 _builds_in_progress: set[Path] = set()
 
 
@@ -47,28 +47,6 @@ def _max_opened_files() -> int:
     return config.max_open_files()
 
 
-def _client_is_alive(client: LeanLSPClient) -> bool:
-    process = getattr(client, "process", None)
-    if process is None:
-        return True
-
-    poll = getattr(process, "poll", None)
-    if callable(poll):
-        try:
-            return poll() is None
-        except Exception:
-            return False
-
-    return getattr(process, "returncode", None) is None
-
-
-def _close_client(client: LeanLSPClient, message: str) -> None:
-    try:
-        client.close()
-    except Exception:
-        logger.exception(message)
-
-
 def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
     lifespan = ctx.request_context.lifespan_context
     resolved_project = require_lean_project_path(project_path)
@@ -88,11 +66,10 @@ def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
 
     if current_root != resolved_project:
         lifespan.lean_project_path = resolved_project
-        current_client: LeanLSPClient | None = getattr(lifespan, "client", None)
-        if (
-            current_client is not None
-            and getattr(current_client, "project_path", None) != resolved_project
-        ):
+        current_client: AsyncLeanLSPClient | None = getattr(lifespan, "client", None)
+        if current_client is not None and Path(
+            getattr(current_client, "project_path", "")
+        ) != resolved_project:
             lifespan.client = None
 
     return resolved_project
@@ -106,20 +83,14 @@ def get_path_policy(ctx: Context, project_path: Path | None = None) -> LeanPathP
     return build_lean_path_policy(root)
 
 
-def _start_client(project_path: Path) -> LeanLSPClient:
-    prevent_cache = config.test_mode()
+async def _start_client(project_path: Path) -> AsyncLeanLSPClient:
     try:
-        with OutputCapture() as output:
-            client = LeanLSPClient(
-                project_path,  # ty: ignore[invalid-argument-type]
-                initial_build=False,
-                prevent_cache_get=prevent_cache,
-                max_opened_files=_max_opened_files(),
-            )
-            logger.info("Shared LSP client connected at %s", project_path)
-        build_output = output.get_output()
-        if build_output:
-            logger.debug("Build output: %s", build_output)
+        client = AsyncLeanLSPClient(
+            str(project_path),
+            max_workers=_max_opened_files(),
+        )
+        await client.start()
+        logger.info("Shared async LSP client connected at %s", project_path)
     except Exception as exc:
         logger.exception("Failed to start shared Lean LSP client")
         raise ValueError(
@@ -128,14 +99,20 @@ def _start_client(project_path: Path) -> LeanLSPClient:
     return client
 
 
-def _evict_oldest_client() -> None:
+async def _evict_oldest_client() -> None:
     """Close and remove the oldest shared client to stay within the cap."""
     oldest_key = next(iter(_shared_clients))
     old = _shared_clients.pop(oldest_key)
-    _close_client(old, f"Evicted shared client for {oldest_key}")
+    _shared_pools.pop(oldest_key, None)
+    try:
+        await old.close()
+    except Exception:
+        logger.exception("Evicted shared client close failed for %s", oldest_key)
 
 
-def _get_or_create_shared_client(lean_project_path: Path) -> LeanLSPClient:
+async def _get_or_create_shared_client(
+    lean_project_path: Path,
+) -> AsyncLeanLSPClient:
     project_key = lean_project_path.resolve(strict=False)
 
     if project_key in _builds_in_progress:
@@ -144,19 +121,50 @@ def _get_or_create_shared_client(lean_project_path: Path) -> LeanLSPClient:
         )
 
     client = _shared_clients.get(project_key)
-    if client is not None and _client_is_alive(client):
+    if client is not None and client.alive:
         return client
 
     if client is not None:
         _shared_clients.pop(project_key, None)
-        _close_client(client, "Shared Lean client close failed during restart")
+        _shared_pools.pop(project_key, None)
+        try:
+            await client.close()
+        except Exception:
+            logger.exception("Shared Lean client close failed during restart")
 
     if len(_shared_clients) >= _MAX_SHARED_CLIENTS:
-        _evict_oldest_client()
+        await _evict_oldest_client()
 
-    client = _start_client(project_key)
+    client = await _start_client(project_key)
     _shared_clients[project_key] = client
     return client
+
+
+def get_scratch_pool(ctx: Context) -> ScratchPool:
+    """Per-project pre-warmed virtual-document pool for snippet trials.
+
+    Slots warm lazily with empty content; the first trial that imports
+    Mathlib pays the import once per slot, later trials reuse the header
+    snapshot (same-prefix didChange).
+    """
+    lifespan = ctx.request_context.lifespan_context
+    project = lifespan.lean_project_path
+    if project is None:
+        raise ValueError("lean project path is not set.")
+    project_key = Path(project).resolve(strict=False)
+    pool = _shared_pools.get(project_key)
+    client = _shared_clients.get(project_key)
+    if client is None:
+        raise ValueError("Lean client is not running for this project.")
+    if pool is None or pool._client is not client:
+        pool = ScratchPool(
+            client,
+            header="",
+            size=config.scratch_pool_size(),
+            name_prefix="_mcp_scratch",
+        )
+        _shared_pools[project_key] = pool
+    return pool
 
 
 def set_build_in_progress(project_path: Path | str, value: bool) -> None:
@@ -167,44 +175,57 @@ def set_build_in_progress(project_path: Path | str, value: bool) -> None:
         _builds_in_progress.discard(project_key)
 
 
-def replace_shared_client(
-    project_path: Path | str, client: LeanLSPClient | None
-) -> LeanLSPClient | None:
+async def detach_shared_client(
+    project_path: Path | str,
+) -> AsyncLeanLSPClient | None:
+    """Remove (without closing) the shared client for a project."""
     project_key = Path(project_path).resolve(strict=False)
-    previous = _shared_clients.pop(project_key, None)
-    if client is not None:
-        _shared_clients[project_key] = client
-    return previous
+    _shared_pools.pop(project_key, None)
+    return _shared_clients.pop(project_key, None)
+
+
+def attach_shared_client(project_path: Path | str, client: AsyncLeanLSPClient) -> None:
+    project_key = Path(project_path).resolve(strict=False)
+    _shared_clients[project_key] = client
 
 
 def close_shared_client(project_path: Path | str | None = None) -> None:
-    clients: list[LeanLSPClient] = []
+    """Terminate shared clients synchronously (process-exit path).
 
-    with CLIENT_LOCK:
-        if project_path is None:
-            clients = list(_shared_clients.values())
-            _shared_clients.clear()
-            _builds_in_progress.clear()
-        else:
-            project_key = Path(project_path).resolve(strict=False)
-            client = _shared_clients.pop(project_key, None)
-            if client is not None:
-                clients.append(client)
-            _builds_in_progress.discard(project_key)
+    Safe to call after the event loop has closed: kills the ``lake serve``
+    process groups directly instead of awaiting a graceful close.
+    """
+    if project_path is None:
+        clients = list(_shared_clients.values())
+        _shared_clients.clear()
+        _shared_pools.clear()
+        _builds_in_progress.clear()
+    else:
+        project_key = Path(project_path).resolve(strict=False)
+        clients = []
+        client = _shared_clients.pop(project_key, None)
+        if client is not None:
+            clients.append(client)
+        _shared_pools.pop(project_key, None)
+        _builds_in_progress.discard(project_key)
 
     for client in clients:
-        _close_client(client, "Shared Lean client close failed during shutdown")
+        try:
+            client._transport._kill_group()
+        except Exception:
+            logger.exception("Shared Lean client terminate failed during shutdown")
 
 
-def startup_client(ctx: Context):
-    """Initialize the Lean LSP client if not already set up."""
-    with CLIENT_LOCK:
+async def startup_client(ctx: Context) -> AsyncLeanLSPClient:
+    """Ensure the shared async Lean client for the session's project is up."""
+    async with CLIENT_LOCK:
         configured_root = ctx.request_context.lifespan_context.lean_project_path
         if configured_root is None:
             raise ValueError("lean project path is not set.")
         lean_project_path = bind_lean_project_path(ctx, configured_root)
-        client = _get_or_create_shared_client(lean_project_path)
+        client = await _get_or_create_shared_client(lean_project_path)
         ctx.request_context.lifespan_context.client = client
+        return client
 
 
 def resolve_file_path(
@@ -309,7 +330,7 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
     return None
 
 
-def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
+async def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     """Ensure the LSP client matches the file's Lean project and return its relative path."""
     try:
         resolved_file = str(resolve_file_path(ctx, file_path))
@@ -327,5 +348,11 @@ def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     if not policy.contains(resolved_file):
         return None
 
-    startup_client(ctx)
+    await startup_client(ctx)
     return policy.client_relative_path(resolved_file)
+
+
+async def open_synced(ctx: Context, rel_path: str, wait: bool = False):
+    """Open the file and sync it with the current on-disk content."""
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    return await client.reload_from_disk(rel_path, wait=wait)

@@ -10,13 +10,17 @@ from pathlib import Path
 from typing import Annotated, List, Literal, Optional
 
 import orjson
-from leanclient import LeanLSPClient
+from leanclient.aio import AsyncLeanLSPClient
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import config, server
-from lean_lsp_mcp.client_utils import bind_lean_project_path, build_lean_path_policy
+from lean_lsp_mcp.client_utils import (
+    bind_lean_project_path,
+    build_lean_path_policy,
+    open_synced,
+)
 from lean_lsp_mcp.loogle import loogle_remote
 from lean_lsp_mcp.models import (
     LeanFinderResult,
@@ -313,20 +317,21 @@ async def state_search(
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> StateSearchResults:
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    goal = client.get_goal(rel_path, line - 1, column - 1)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
+    goal = await client.goal(rel_path, line - 1, column - 1)
 
-    if not goal or not goal.get("goals"):
+    if goal.status != "goals":
         raise server.LeanToolError(
-            f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete."
+            f"No goals found at line {line}, column {column} "
+            f"(status: {goal.status}). Try a different position."
         )
 
-    goal_str = urllib.parse.quote(goal["goals"][0])
+    goal_str = urllib.parse.quote(goal.goals[0])
 
     url = config.state_search_url()
     req = urllib.request.Request(
@@ -372,21 +377,22 @@ async def hammer_premise(
 
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
     """
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    goal = client.get_goal(rel_path, line - 1, column - 1)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
+    goal = await client.goal(rel_path, line - 1, column - 1)
 
-    if not goal or not goal.get("goals"):
+    if goal.status != "goals":
         raise server.LeanToolError(
-            f"No goals found at line {line}, column {column}. Try a different position or check if the proof is complete."
+            f"No goals found at line {line}, column {column} "
+            f"(status: {goal.status}). Try a different position."
         )
 
     data = {
-        "state": goal["goals"][0],
+        "state": goal.goals[0],
         "new_premises": [],
         "k": num_results,
     }

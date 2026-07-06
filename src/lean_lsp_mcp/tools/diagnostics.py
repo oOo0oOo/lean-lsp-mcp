@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from leanclient import LeanLSPClient
+from leanclient.aio import (
+    AsyncLeanLSPClient,
+    LeanRequestTimeout,
+)
+from leanclient.aio.convert import range_from_utf16
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
+from lean_lsp_mcp.client_utils import get_scratch_pool, open_synced
 from lean_lsp_mcp.models import (
     CodeAction,
     CodeActionEdit,
@@ -31,7 +36,7 @@ from lean_lsp_mcp.utils import get_declaration_range
         openWorldHint=False,
     ),
 )
-def file_outline(
+async def file_outline(
     ctx: Context,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
@@ -41,12 +46,13 @@ def file_outline(
     ] = None,
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path, max_declarations)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    pool = get_scratch_pool(ctx)
+    return await generate_outline_data(client, pool, rel_path, max_declarations)
 
 
 @server.mcp.tool(
@@ -58,7 +64,7 @@ def file_outline(
         openWorldHint=False,
     ),
 )
-def diagnostic_messages(
+async def diagnostic_messages(
     ctx: Context,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
@@ -92,44 +98,62 @@ def diagnostic_messages(
     ] = None,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
 
     # If declaration_name is provided, get its range and use that for filtering
     if declaration_name:
-        decl_range = get_declaration_range(client, rel_path, declaration_name)
+        decl_range = await get_declaration_range(client, rel_path, declaration_name)
         if decl_range is None:
             raise server.LeanToolError(
                 f"Declaration '{declaration_name}' not found in file."
             )
         start_line, end_line = decl_range
 
-    # Convert 1-indexed to 0-indexed for leanclient
+    # Convert 1-indexed to 0-indexed
     start_line_0 = (start_line - 1) if start_line is not None else None
     end_line_0 = (end_line - 1) if end_line is not None else None
 
     if interactive:
-        diagnostics = client.get_interactive_diagnostics(
-            rel_path, start_line=start_line_0, end_line=end_line_0
+        line_range = None
+        if start_line_0 is not None or end_line_0 is not None:
+            line_range = {
+                "start": start_line_0 or 0,
+                "end": (end_line_0 + 1) if end_line_0 is not None else 2**30,
+            }
+        diagnostics = await client.rpc_call(
+            rel_path,
+            start_line_0 or 0,
+            0,
+            "Lean.Widget.getInteractiveDiagnostics",
+            {"lineRange": line_range} if line_range else {},
         )
-        return InteractiveDiagnosticsResult(diagnostics=diagnostics)
+        return InteractiveDiagnosticsResult(diagnostics=diagnostics or [])
 
-    result = client.get_diagnostics(
-        rel_path,
-        start_line=start_line_0,
-        end_line=end_line_0,
-        inactivity_timeout=15.0,
-    )
+    timed_out = False
+    try:
+        report = await client.diagnostics(rel_path)
+    except LeanRequestTimeout:
+        timed_out = True
+        report = await client.diagnostics(rel_path, fresh=False)
+
+    items = report.items
+    if start_line_0 is not None or end_line_0 is not None:
+        items = server._filter_diagnostics_by_line_range(
+            items,
+            start_line_0 if start_line_0 is not None else 0,
+            end_line_0 if end_line_0 is not None else 2**30,
+        )
 
     return server._process_diagnostics(
-        result.diagnostics,
-        result.success,
+        items,
+        build_success=not report.has_errors and not report.fatal_error,
         severity=severity,
-        timed_out=getattr(result, "timed_out", False),
+        timed_out=timed_out,
     )
 
 
@@ -142,33 +166,35 @@ def diagnostic_messages(
         openWorldHint=False,
     ),
 )
-def code_actions(
+async def code_actions(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
 ) -> CodeActionsResult:
     """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    await open_synced(ctx, rel_path)
 
-    # Get diagnostics on line to discover code action ranges
-    diags = client.get_diagnostics(
-        rel_path, start_line=line - 1, end_line=line - 1, inactivity_timeout=15.0
+    report = await client.diagnostics(rel_path)
+    line_diags = server._filter_diagnostics_by_line_range(
+        report.items, line - 1, line - 1
     )
 
-    # Query code actions for each diagnostic's range, dedup by title
+    # Query code actions for each diagnostic's range, dedup by title.
+    # Ranges from the aio client are codepoint columns, matching the
+    # codepoint-based code_actions() API.
     seen: set[str] = set()
     raw_actions: list[dict] = []
-    for diag in diags.diagnostics:
+    for diag in line_diags:
         r = diag.get("fullRange", diag.get("range"))
         if not r:
             continue
         s, e = r["start"], r["end"]
-        for action in client.get_code_actions(
+        for action in await client.code_actions(
             rel_path, s["line"], s["character"], e["line"], e["character"]
         ):
             if action.get("title", "") not in seen:
@@ -180,64 +206,46 @@ def code_actions(
     # other `IdeView` quick-actions can be registered without an
     # accompanying diagnostic, so the diagnostic-driven scan misses them.
     if not raw_actions:
-        line_str = ""
-        try:
-            resolved_path = server.resolve_file_path(ctx, file_path)
-            line_text = resolved_path.read_text(encoding="utf-8").splitlines()
-            line_str = line_text[line - 1] if 0 < line <= len(line_text) else ""
-        except (
-            OSError,
-            IndexError,
-            UnicodeDecodeError,
-            ValueError,
-            RuntimeError,
-        ) as exc:
-            # Path-resolution failures are common for files in
-            # `.lake/packages/...` (dep paths that `setup_client_for_file`
-            # accepts but `resolve_file_path(require_exists=True)` rejects).
-            # `RuntimeError` covers CPython's symlink-loop raise from
-            # ``Path.resolve(strict=True)``.
-            # Log so production failures aren't silently invisible.
-            server.logger.debug(
-                "lean_code_actions fallback: could not read line text from %s: %s",
-                file_path,
-                exc,
-            )
-            line_str = ""
+        lines = client.content(rel_path).splitlines()
+        line_str = lines[line - 1] if 0 < line <= len(lines) else ""
         if line_str:
-            # LSP positions are UTF-16 code units, not Python codepoints —
-            # surrogate-pair characters (e.g. `𝕜`) count as 2 units. Use the
-            # UTF-16 length so the end-column reaches the actual end of the
-            # line on those rare inputs.
-            end_col = len(line_str.encode("utf-16-le")) // 2
-            for action in client.get_code_actions(
-                rel_path, line - 1, 0, line - 1, end_col
+            for action in await client.code_actions(
+                rel_path, line - 1, 0, line - 1, len(line_str)
             ):
                 if action.get("title", "") not in seen:
                     seen.add(action.get("title", ""))
                     raw_actions.append(action)
 
-    # Resolve and convert
+    # Resolve and convert. Resolved edit ranges come straight from the LSP
+    # (UTF-16 columns) — convert to codepoints against the document text.
+    doc_lines = client.content(rel_path).splitlines()
     actions: list[CodeAction] = []
     for raw in raw_actions:
-        resolved = raw if "edit" in raw else client.get_code_action_resolve(raw)
-        if isinstance(resolved, dict) and "error" in resolved:
-            continue
+        if "edit" in raw:
+            resolved = raw
+        else:
+            try:
+                resolved = await client.code_action_resolve(raw)
+            except Exception:
+                continue
+        edits = []
+        for dc in (resolved.get("edit") or {}).get("documentChanges", []):
+            for edit in dc.get("edits", []):
+                rng = range_from_utf16(doc_lines, edit["range"])
+                edits.append(
+                    CodeActionEdit(
+                        new_text=edit["newText"],
+                        start_line=rng["start"]["line"] + 1,
+                        start_column=rng["start"]["character"] + 1,
+                        end_line=rng["end"]["line"] + 1,
+                        end_column=rng["end"]["character"] + 1,
+                    )
+                )
         actions.append(
             CodeAction(
                 title=raw.get("title", ""),
                 is_preferred=raw.get("isPreferred", False),
-                edits=[
-                    CodeActionEdit(
-                        new_text=edit["newText"],
-                        start_line=edit["range"]["start"]["line"] + 1,
-                        start_column=edit["range"]["start"]["character"] + 1,
-                        end_line=edit["range"]["end"]["line"] + 1,
-                        end_column=edit["range"]["end"]["character"] + 1,
-                    )
-                    for dc in resolved.get("edit", {}).get("documentChanges", [])
-                    for edit in dc.get("edits", [])
-                ],
+                edits=edits,
             )
         )
 

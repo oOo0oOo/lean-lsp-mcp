@@ -90,6 +90,14 @@ class GoalState(BaseModel):
     goals_after: Optional[List[GoalOutput]] = Field(
         None, description="Goals at line end (when column omitted)"
     )
+    status: Optional[str] = Field(
+        None,
+        description=(
+            "Goal status at the queried column: 'goals' (open goals), "
+            "'complete' (no goals left - proof finished here), or "
+            "'no_goal_at_position' (position carries no proof state)"
+        ),
+    )
 
 
 class CompletionItem(BaseModel):
@@ -150,6 +158,10 @@ class AttemptResult(BaseModel):
         False,
         description="True if elaboration timed out (results are partial)",
     )
+    proof_status: Optional[str] = Field(
+        None,
+        description="REPL proof status when available (e.g. 'Completed', 'Incomplete: contains sorry')",
+    )
 
 
 class BuildResult(BaseModel):
@@ -171,7 +183,16 @@ class RunResult(BaseModel):
 
 class DeclarationInfo(BaseModel):
     file_path: str = Field(description="Path to declaration file")
-    content: str = Field(description="File content")
+    content: str = Field(description="Declaration source (sliced unless full_file=True)")
+    start_line: Optional[int] = Field(
+        None, description="First line of the returned slice (1-indexed)"
+    )
+    end_line: Optional[int] = Field(
+        None, description="Last line of the returned slice (1-indexed)"
+    )
+    total_lines: Optional[int] = Field(
+        None, description="Total lines in the declaration file"
+    )
 
 
 # Wrapper models for list-returning tools
@@ -300,6 +321,9 @@ class ReferencesResult(BaseModel):
 
     items: List[ReferenceLocation] = Field(
         default_factory=list, description="List of reference locations"
+    )
+    total: Optional[int] = Field(
+        None, description="Total matches (> len(items) when truncated by max_results)"
     )
 
 

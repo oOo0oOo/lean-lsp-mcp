@@ -1,13 +1,14 @@
-"""Analysis tools: multi-attempt, run-code, verify, minimal-hypotheses, profiling."""
+"""Analysis tools: multi-attempt, run-code, verify, minimal-hypotheses, profiling.
+
+All temporary-code checks run on pre-warmed scratch documents (virtual files
+that never touch disk); the user's files and open documents are never edited.
+"""
 
 from __future__ import annotations
 
-import os
-import uuid
-from collections.abc import Iterable
+import asyncio
 from typing import Annotated, Dict, List, Optional
 
-from leanclient import DocumentContentChange, LeanLSPClient
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -15,7 +16,9 @@ from pydantic import Field
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import (
     get_path_policy,
+    get_scratch_pool,
     infer_project_path,
+    open_synced,
     startup_client,
 )
 from lean_lsp_mcp.models import (
@@ -28,7 +31,6 @@ from lean_lsp_mcp.models import (
     SourceWarning,
     VerifyResult,
 )
-from lean_lsp_mcp.utils import check_lsp_response
 
 
 @server.mcp.tool(
@@ -61,8 +63,8 @@ async def multi_attempt(
     if result is not None:
         return result
 
-    # Priority 2: LSP approach (fallback)
-    return server._multi_attempt_lsp(ctx, file_path, line, column, snippets)
+    # Priority 2: scratch-pool trials (parallel, user's document untouched)
+    return await server._multi_attempt_lsp(ctx, file_path, line, column, snippets)
 
 
 @server.mcp.tool(
@@ -74,68 +76,27 @@ async def multi_attempt(
         openWorldHint=False,
     ),
 )
-def run_code(
+async def run_code(
     ctx: Context,
     code: Annotated[str, Field(description="Self-contained Lean code with imports")],
 ) -> RunResult:
     """Run a code snippet and return diagnostics. Must include all imports."""
     lifespan_context = ctx.request_context.lifespan_context
-    lean_project_path = lifespan_context.lean_project_path
-    if lean_project_path is None:
+    if lifespan_context.lean_project_path is None:
         raise server.LeanToolError(
             "No valid Lean project path found. Run another tool first to set it up."
         )
 
-    # Use a unique snippet filename to avoid collisions under concurrency
-    rel_path = f"_mcp_snippet_{uuid.uuid4().hex}.lean"
-    abs_path = lean_project_path / rel_path
+    await startup_client(ctx)
+    pool = get_scratch_pool(ctx)
+    trial = await pool.run_text(code if code.endswith("\n") else code + "\n")
 
-    try:
-        with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(code)
-    except Exception as e:
-        raise server.LeanToolError(f"Error writing code snippet: {e}")
-
-    client: LeanLSPClient | None = lifespan_context.client
-    raw_diagnostics: Iterable[Dict] = []
-    opened_file = False
-
-    try:
-        if client is None:
-            startup_client(ctx)
-            client = lifespan_context.client
-            if client is None:
-                raise server.LeanToolError(
-                    "Failed to initialize Lean client for run_code."
-                )
-
-        client.open_file(rel_path)
-        opened_file = True
-        raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)
-        check_lsp_response(raw_diagnostics, "get_diagnostics")
-    finally:
-        if opened_file:
-            try:
-                client.close_files([rel_path])
-            except Exception as exc:
-                server.logger.warning(
-                    "Failed to close `%s` after run_code: %s", rel_path, exc
-                )
-        try:
-            os.remove(abs_path)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            server.logger.warning(
-                "Failed to remove temporary Lean snippet `%s`: %s", abs_path, e
-            )
-
-    diagnostics = server._to_diagnostic_messages(raw_diagnostics)
+    diagnostics = server._to_diagnostic_messages(trial.diagnostics.items)
     has_errors = any(d.severity == "error" for d in diagnostics)
 
     return RunResult(
-        success=not has_errors,
-        timed_out=getattr(raw_diagnostics, "timed_out", False),
+        success=not has_errors and not trial.diagnostics.fatal_error,
+        timed_out=False,
         diagnostics=diagnostics,
     )
 
@@ -144,12 +105,12 @@ def run_code(
     "lean_verify",
     annotations=ToolAnnotations(
         title="Verify Theorem",
-        readOnlyHint=False,
+        readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def verify_theorem(
+async def verify_theorem(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     theorem_name: Annotated[
@@ -167,7 +128,7 @@ def verify_theorem(
     )
 
     theorem_name = server._validate_theorem_name(theorem_name)
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
@@ -176,49 +137,46 @@ def verify_theorem(
         abs_path = policy.validate_path(server.resolve_file_path(ctx, file_path))
     except (FileNotFoundError, ValueError) as exc:
         raise server.LeanToolError(str(exc)) from exc
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
+
+    client = ctx.request_context.lifespan_context.client
+    doc = await open_synced(ctx, rel_path)
+    original_content = doc.text
+
+    # Run the axiom check on a scratch copy; the real document is untouched.
+    text = original_content.rstrip("\n") + f"\n\n#print axioms _root_.{theorem_name}\n"
+    snippet_line = text.count("\n") - 1
+
+    pool = get_scratch_pool(ctx)
+    from leanclient.aio import LeanRequestTimeout
 
     try:
-        original_content = client.get_file_content(rel_path)
-    except Exception:
-        original_content = server.get_file_contents(abs_path)
+        trial = await pool.run_text(text)
+    except LeanRequestTimeout as exc:
+        raise server.LeanToolError(
+            f"Axiom check timed out before `#print axioms` produced output: {exc}"
+        ) from exc
 
-    snippet = f"\n#print axioms _root_.{theorem_name}\n"
-    original_lines = original_content.split("\n")
-    appended_line = len(original_lines)  # 0-indexed line where snippet starts
+    appended_diags = [
+        d
+        for d in trial.diagnostics.items
+        if (d.get("fullRange") or d.get("range") or {})
+        .get("start", {})
+        .get("line", -1)
+        >= snippet_line
+    ]
 
-    try:
-        change = DocumentContentChange(
-            snippet,
-            (appended_line, 0),
-            (appended_line, 0),
+    if err := check_axiom_errors(appended_diags):
+        raise server.LeanToolError(f"Axiom check failed: {err}")
+
+    axioms = parse_axioms(appended_diags)
+    if not axioms and not any(
+        "does not depend on any axioms" in d.get("message", "")
+        for d in appended_diags
+    ):
+        raise server.LeanToolError(
+            "Axiom check produced no `#print axioms` output — result is "
+            "inconclusive (elaboration may not have reached the check)."
         )
-        client.update_file(rel_path, [change])
-        raw = client.get_diagnostics(
-            rel_path, start_line=appended_line, inactivity_timeout=120.0
-        )
-        check_lsp_response(raw, "get_diagnostics")
-
-        appended_diags = list(raw)
-
-        if err := check_axiom_errors(appended_diags):
-            raise server.LeanToolError(f"Axiom check failed: {err}")
-
-        axioms = parse_axioms(appended_diags)
-    finally:
-        try:
-            client.update_file_content(rel_path, original_content)
-        except Exception as exc:
-            server.logger.warning(
-                "Failed to restore `%s` after verify: %s", rel_path, exc
-            )
-        try:
-            client.open_file(rel_path, force_reopen=True)
-        except Exception as exc:
-            server.logger.warning(
-                "Failed to force-reopen `%s` after verify: %s", rel_path, exc
-            )
 
     w: list[SourceWarning] = []
     if scan_source:
@@ -241,12 +199,12 @@ def verify_theorem(
     "lean_minimal_hypotheses",
     annotations=ToolAnnotations(
         title="Minimal Hypotheses",
-        readOnlyHint=False,
+        readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=False,
     ),
 )
-def minimal_hypotheses(
+async def minimal_hypotheses(
     ctx: Context,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     theorem_name: Annotated[
@@ -262,21 +220,20 @@ def minimal_hypotheses(
     inactivity_timeout: Annotated[
         float,
         Field(
-            description="Per-hypothesis LSP elaboration timeout (seconds)",
+            description="Per-hypothesis elaboration timeout (seconds)",
             ge=5.0,
             le=300.0,
         ),
     ] = 60.0,
 ) -> MinimalHypothesesResult:
     """For each explicit `(h : T)` hypothesis of a theorem, drop it and re-elaborate
-    the file via the LSP. Reports which hypotheses are load-bearing and which are
-    actually unused. Skips implicit `{x : α}` and instance `[inst : C]` binders
+    a scratch copy of the file. Reports which hypotheses are load-bearing and which
+    are actually unused. Skips implicit `{x : α}` and instance `[inst : C]` binders
     (those are usually inferable / always load-bearing). Does not rewrite the proof
     body — a body that names `h` will fail to elaborate without the binder, which
     is the truthful answer (load-bearing).
 
-    Slow: each hypothesis triggers a re-elaboration capped at `inactivity_timeout`.
-    The original file content is restored before the tool returns."""
+    Variants are checked in parallel on scratch documents; the file is never edited."""
     from lean_lsp_mcp.minimal_hypotheses import (
         drop_binder,
         explicit_hypotheses,
@@ -285,24 +242,13 @@ def minimal_hypotheses(
     )
 
     theorem_name = server._validate_theorem_name(theorem_name)
-    rel_path = server.setup_client_for_file(ctx, file_path)
+    rel_path = await server.setup_client_for_file(ctx, file_path)
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    try:
-        original_content = client.get_file_content(rel_path)
-    except Exception:
-        try:
-            policy = get_path_policy(ctx)
-            abs_path = policy.validate_path(server.resolve_file_path(ctx, file_path))
-        except (FileNotFoundError, ValueError) as exc:
-            raise server.LeanToolError(str(exc)) from exc
-        original_content = server.get_file_contents(abs_path)
-
-    if original_content is None:
-        raise server.LeanToolError(f"Could not read content for {rel_path}")
+    client = ctx.request_context.lifespan_context.client
+    doc = await open_synced(ctx, rel_path)
+    original_content = doc.text
 
     bare_name = theorem_name.split(".")[-1]
     if not theorem_declared(original_content, bare_name):
@@ -339,89 +285,50 @@ def minimal_hypotheses(
             str(diag.get("message", ""))[:120],
         )
 
-    baseline = client.get_diagnostics(rel_path, inactivity_timeout=inactivity_timeout)
-    check_lsp_response(baseline, "get_diagnostics")
-    baseline_keys = {
-        _error_key(d) for d in list(baseline or []) if d.get("severity") == 1
-    }
+    baseline = await client.diagnostics(rel_path, timeout=inactivity_timeout)
+    baseline_keys = {_error_key(d) for d in baseline.items if d.get("severity") == 1}
 
-    verdicts: list[HypothesisVerdict] = []
-    try:
-        for binder, start, end in explicit:
-            modified = drop_binder(original_content, start, end)
-            try:
-                client.update_file_content(rel_path, modified)
-            except Exception as exc:
-                verdicts.append(
-                    HypothesisVerdict(
-                        binder=binder.strip(),
-                        status=HypothesisStatus.error,
-                        detail=f"update_file_content failed: {exc}",
-                    )
-                )
-                continue
+    pool = get_scratch_pool(ctx)
+    from leanclient.aio import LeanClientError, LeanRequestTimeout
 
-            diag = client.get_diagnostics(
-                rel_path, inactivity_timeout=inactivity_timeout
-            )
-            try:
-                check_lsp_response(diag, "get_diagnostics")
-            except Exception as exc:
-                verdicts.append(
-                    HypothesisVerdict(
-                        binder=binder.strip(),
-                        status=HypothesisStatus.error,
-                        detail=str(exc)[:200],
-                    )
-                )
-                continue
-
-            if getattr(diag, "timed_out", False):
-                verdicts.append(
-                    HypothesisVerdict(
-                        binder=binder.strip(),
-                        status=HypothesisStatus.error,
-                        detail=f"LSP elaboration timed out after {inactivity_timeout}s",
-                    )
-                )
-                continue
-
-            new_errors = [
-                d
-                for d in list(diag or [])
-                if d.get("severity") == 1 and _error_key(d) not in baseline_keys
-            ]
-            if new_errors:
-                breaks = server._to_diagnostic_messages(new_errors)
-                verdicts.append(
-                    HypothesisVerdict(
-                        binder=binder.strip(),
-                        status=HypothesisStatus.load_bearing,
-                        breaks=breaks,
-                    )
-                )
-            else:
-                verdicts.append(
-                    HypothesisVerdict(
-                        binder=binder.strip(),
-                        status=HypothesisStatus.removable,
-                    )
-                )
-    finally:
+    async def probe(binder: str, start: int, end: int) -> HypothesisVerdict:
+        modified = drop_binder(original_content, start, end)
         try:
-            client.update_file_content(rel_path, original_content)
-        except Exception as exc:
-            server.logger.warning(
-                "Failed to restore `%s` after minimal_hypotheses: %s", rel_path, exc
+            trial = await pool.run_text(modified, timeout=inactivity_timeout)
+        except LeanRequestTimeout:
+            return HypothesisVerdict(
+                binder=binder.strip(),
+                status=HypothesisStatus.error,
+                detail=f"elaboration timed out after {inactivity_timeout}s",
             )
-        try:
-            client.open_file(rel_path, force_reopen=True)
-        except Exception as exc:
-            server.logger.warning(
-                "Failed to force-reopen `%s` after minimal_hypotheses: %s",
-                rel_path,
-                exc,
+        except LeanClientError as exc:
+            return HypothesisVerdict(
+                binder=binder.strip(),
+                status=HypothesisStatus.error,
+                detail=str(exc)[:200],
             )
+
+        new_errors = [
+            d
+            for d in trial.diagnostics.items
+            if d.get("severity") == 1 and _error_key(d) not in baseline_keys
+        ]
+        if new_errors:
+            return HypothesisVerdict(
+                binder=binder.strip(),
+                status=HypothesisStatus.load_bearing,
+                breaks=server._to_diagnostic_messages(new_errors),
+            )
+        return HypothesisVerdict(
+            binder=binder.strip(),
+            status=HypothesisStatus.removable,
+        )
+
+    verdicts = list(
+        await asyncio.gather(
+            *(probe(binder, start, end) for binder, start, end in explicit)
+        )
+    )
 
     return MinimalHypothesesResult(
         theorem_name=theorem_name,

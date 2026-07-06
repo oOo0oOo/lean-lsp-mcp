@@ -75,6 +75,19 @@ def max_open_files() -> int:
     return value
 
 
+SCRATCH_POOL_ENV = "LEAN_MCP_SCRATCH_SLOTS"
+
+
+def scratch_pool_size() -> int:
+    raw_value = os.environ.get(SCRATCH_POOL_ENV, "2")
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("Invalid %s=%s, defaulting to 2.", SCRATCH_POOL_ENV, raw_value)
+        return 2
+    return value if value >= 1 else 2
+
+
 # --- Build / logging ---
 def build_concurrency() -> str:
     mode = os.environ.get(BUILD_CONCURRENCY_ENV, "allow").strip().lower()

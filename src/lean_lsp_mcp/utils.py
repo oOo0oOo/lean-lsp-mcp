@@ -225,12 +225,10 @@ def extract_range(content: str, range: dict | None) -> str:
             return total_length
         if line < 0 or line >= len(lines):
             return None
-        py_index = _utf16_index_to_py_index(lines[line], character)
-        if py_index is None:
+        # Ranges from the aio client are codepoint columns already.
+        if character < 0 or character > len(lines[line]):
             return None
-        if py_index > len(lines[line]):
-            return None
-        return line_offsets[line] + py_index
+        return line_offsets[line] + character
 
     start_offset = position_to_offset(start_line, start_char)
     end_offset = position_to_offset(end_line, end_char)
@@ -369,7 +367,7 @@ def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
     return None
 
 
-def get_declaration_range(
+async def get_declaration_range(
     client, file_path: str, declaration_name: str
 ) -> tuple[int, int] | None:
     """Get the line range (1-indexed) of a declaration by name using LSP document symbols.
@@ -385,11 +383,8 @@ def get_declaration_range(
     from lean_lsp_mcp.server import logger
 
     try:
-        # Ensure file is opened (LSP needs this to analyze the file)
-        client.open_file(file_path)
-
-        # Get document symbols from LSP
-        symbols = client.get_document_symbols(file_path)
+        # Get document symbols from LSP (file already open via open_synced)
+        symbols = await client.document_symbols(file_path)
 
         if not symbols:
             logger.debug(

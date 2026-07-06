@@ -1,5 +1,4 @@
 import asyncio
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 import functools
 import json
 import logging.config
@@ -16,22 +15,28 @@ from typing import Any, Dict, List, NoReturn, Optional, cast
 
 import certifi
 import orjson
-from leanclient import DocumentContentChange, LeanLSPClient
+from leanclient.aio import (
+    AsyncLeanLSPClient,
+    GoalResult,
+    LeanClientError,
+)
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
 
 from lean_lsp_mcp.client_utils import (
-    CLIENT_LOCK,
     _active_transport,
-    _max_opened_files,
     _project_switching_allowed,
+    attach_shared_client,
+    detach_shared_client,
     get_path_policy,
+    get_scratch_pool,
     infer_project_path,
-    replace_shared_client,
+    open_synced,
     resolve_file_path,
     set_build_in_progress,
     setup_client_for_file,
+    startup_client,
 )
 from lean_lsp_mcp.file_utils import (
     build_lean_path_policy,
@@ -60,9 +65,7 @@ from lean_lsp_mcp.utils import (
     LeanToolError,
     OutputCapture,
     PreSharedTokenVerifier,
-    check_lsp_response,
     extract_failed_dependency_paths,
-    extract_goals_list,
     is_build_stderr,
 )
 
@@ -298,7 +301,7 @@ async def _ensure_shared_loogle(
 @dataclass
 class AppContext:
     lean_project_path: Path | None
-    client: LeanLSPClient | None
+    client: AsyncLeanLSPClient | None
     rate_limit: Dict[str, List[int]]
     lean_search_available: bool
     active_transport: str = "stdio"
@@ -554,14 +557,13 @@ async def _run_build(
             await _handle_build_output_line(remainder)
 
     try:
-        clients_to_close: list[LeanLSPClient] = []
-        with CLIENT_LOCK:
-            set_build_in_progress(lean_project_path_obj, True)
-            build_flag_set = True
-            client = ctx.request_context.lifespan_context.client
-            ctx.request_context.lifespan_context.client = None
-            shared_client = replace_shared_client(lean_project_path_obj, None)
+        set_build_in_progress(lean_project_path_obj, True)
+        build_flag_set = True
+        client = ctx.request_context.lifespan_context.client
+        ctx.request_context.lifespan_context.client = None
+        shared_client = await detach_shared_client(lean_project_path_obj)
 
+        clients_to_close: list[AsyncLeanLSPClient] = []
         for candidate in (client, shared_client):
             if candidate is None or candidate in clients_to_close:
                 continue
@@ -569,7 +571,7 @@ async def _run_build(
 
         for client_to_close in clients_to_close:
             try:
-                client_to_close.close()
+                await client_to_close.close()
             except Exception:
                 logger.exception("Lean client close failed during lsp_build restart")
 
@@ -624,17 +626,14 @@ async def _run_build(
             )
 
         # Start LSP client (without initial build since we just did it)
-        with OutputCapture():
-            client = LeanLSPClient(
-                lean_project_path_obj,  # ty: ignore[invalid-argument-type]
-                initial_build=False,
-                prevent_cache_get=True,
-                max_opened_files=_max_opened_files(),
-            )
+        client = AsyncLeanLSPClient(
+            str(lean_project_path_obj),
+            max_workers=config.max_open_files(),
+        )
+        await client.start()
 
         logger.info("Built project and re-started LSP client")
-        with CLIENT_LOCK:
-            replace_shared_client(lean_project_path_obj, client)
+        attach_shared_client(lean_project_path_obj, client)
         ctx.request_context.lifespan_context.client = client
 
         return BuildResult(
@@ -660,8 +659,7 @@ async def _run_build(
         )
     finally:
         if build_flag_set:
-            with CLIENT_LOCK:
-                set_build_in_progress(lean_project_path_obj, False)
+            set_build_in_progress(lean_project_path_obj, False)
 
 
 def _to_diagnostic_messages(diagnostics: Iterable[Dict]) -> List[DiagnosticMessage]:
@@ -805,22 +803,9 @@ def _goal_to_structured(goal_str: str) -> StructuredGoal:
     )
 
 
-def _get_goal_response(
-    client: LeanLSPClient, rel_path: str, line: int, column: int
-) -> dict | None:
-    """Fetch a goal response after waiting for full-file elaboration on cold files."""
-
-    try:
-        return client.get_goal(rel_path, line, column)
-    except FuturesTimeoutError:
-        pass
-
-    client.get_diagnostics(rel_path, inactivity_timeout=30.0)
-
-    try:
-        return client.get_goal(rel_path, line, column)
-    except FuturesTimeoutError as exc:
-        raise LeanToolError("LSP timeout during get_goal") from exc
+def _goal_strings(goal: GoalResult) -> List[str]:
+    """Flatten a GoalResult to the legacy list-of-goals output shape."""
+    return list(goal.goals) if goal.status == "goals" else []
 
 
 def _get_line_context(lines: List[str], line: int) -> str:
@@ -921,41 +906,35 @@ def _filter_diagnostics_by_line_range(
     return matches
 
 
-def _prepare_multi_attempt_edit(
-    line_context: str, target_column: int, snippet: str, total_lines: int, line: int
-) -> tuple[str, DocumentContentChange, int, int, int]:
-    """Build the temporary edit and return its goal cursor location.
+def _build_attempt_text(
+    lines: List[str], line_context: str, target_column: int, snippet: str, line: int
+) -> tuple[str, str, int, int, int]:
+    """Build the full trial document for a snippet at (line, target_column).
 
-    The final integer is the post-edit line delta: how many lines the file
-    grows by once the change is applied. Non-zero only when the snippet is
-    near end-of-file and the replacement range is clamped, in which case
-    pre-existing diagnostics at lines >= end_line shift by that delta.
+    Returns (snippet_str, text, goal_line, goal_column, line_delta) where
+    goal_* is the 0-indexed cursor position right after the inserted snippet
+    and line_delta is how many lines the document grew by (snippets replace
+    one source line per snippet line, clamped at end of file).
     """
     snippet_str = snippet.rstrip("\n")
     snippet_lines = snippet_str.split("\n") if snippet_str else [""]
     indent = line_context[:target_column]
     payload_lines = [
-        snippet_lines[0],
+        line_context[:target_column] + snippet_lines[0],
         *[f"{indent}{part}" for part in snippet_lines[1:]],
     ]
-    payload = "\n".join(payload_lines) + "\n"
 
     replaced_line_count = max(len(snippet_lines), 1)
-    end_line = min(line - 1 + replaced_line_count, total_lines)
+    end_line = min(line - 1 + replaced_line_count, len(lines))
     line_delta = len(payload_lines) - (end_line - (line - 1))
-    change = DocumentContentChange(
-        payload,
-        (line - 1, target_column),
-        (end_line, 0),
-    )
+
+    new_lines = lines[: line - 1] + payload_lines + lines[end_line:]
+    text = "\n".join(new_lines) + "\n"
 
     goal_line = line - 1 + len(payload_lines) - 1
-    if len(payload_lines) == 1:
-        goal_column = target_column + len(payload_lines[0])
-    else:
-        goal_column = len(payload_lines[-1])
+    goal_column = len(payload_lines[-1])
 
-    return snippet_str, change, goal_line, goal_column, line_delta
+    return snippet_str, text, goal_line, goal_column, line_delta
 
 
 async def _multi_attempt_repl(
@@ -1018,11 +997,21 @@ async def _multi_attempt_repl(
                         severity="error", message=pr.error, line=0, column=0
                     )
                 )
+            if pr.proof_status and pr.proof_status != "Completed":
+                diagnostics.append(
+                    DiagnosticMessage(
+                        severity="warning",
+                        message=f"REPL proof status: {pr.proof_status}",
+                        line=0,
+                        column=0,
+                    )
+                )
             results.append(
                 AttemptResult(
                     snippet=snippet.rstrip("\n"),
                     goals=pr.goals or [],
                     diagnostics=diagnostics,
+                    proof_status=pr.proof_status,
                 )
             )
         return MultiAttemptResult(items=results)
@@ -1031,31 +1020,23 @@ async def _multi_attempt_repl(
         return None
 
 
-def _multi_attempt_lsp(
+async def _multi_attempt_lsp(
     ctx: Context,
     file_path: str,
     line: int,
     column: Optional[int] = None,
     snippets: Optional[List[str]] = None,
 ) -> MultiAttemptResult:
-    """Try tactics using LSP file modifications (fallback)."""
+    """Try tactics on pre-warmed scratch documents (the user's file is never edited)."""
     if snippets is None:
         snippets = []
-    rel_path = setup_client_for_file(ctx, file_path)
+    rel_path = await setup_client_for_file(ctx, file_path)
     if not rel_path:
         _raise_invalid_path(file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-    try:
-        original_content = client.get_file_content(rel_path)
-    except Exception:
-        try:
-            policy = get_path_policy(ctx)
-            resolved_path = policy.validate_path(resolve_file_path(ctx, file_path))
-        except (FileNotFoundError, ValueError) as exc:
-            raise LeanToolError(str(exc)) from exc
-        original_content = get_file_contents(resolved_path)
+    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    doc = await open_synced(ctx, rel_path)
+    original_content = doc.text
 
     lines = original_content.splitlines() if original_content is not None else []
     line_context = _get_line_context(lines, line)
@@ -1074,20 +1055,9 @@ def _multi_attempt_lsp(
     # complete, causing pre-existing diagnostics to be reported as
     # snippet-introduced.
     try:
-        baseline_diag = client.get_diagnostics(rel_path)
-        check_lsp_response(baseline_diag, "get_diagnostics")
-        if getattr(baseline_diag, "timed_out", False):
-            # Baseline is partial — set-diff would over-report. Disable
-            # it and fall back to local line-range filter only.
-            logger.warning(
-                "_multi_attempt_lsp: baseline diagnostics timed out — "
-                "set-diff disabled for this call (results limited to local "
-                "line-range filter)."
-            )
-            baseline_keys = None
-        else:
-            baseline_keys = {_diagnostic_identity(d) for d in baseline_diag}
-    except Exception:
+        baseline_report = await client.diagnostics(rel_path)
+        baseline_keys = {_diagnostic_identity(d) for d in baseline_report.items}
+    except LeanClientError:
         logger.warning(
             "_multi_attempt_lsp: baseline diagnostics unavailable — "
             "set-diff disabled; results limited to local line-range filter.",
@@ -1095,88 +1065,51 @@ def _multi_attempt_lsp(
         )
         baseline_keys = None
 
-    try:
-        results: List[AttemptResult] = []
-        for i, snippet in enumerate(snippets):
-            # Restore original content before each iteration after the first.
-            # ``_prepare_multi_attempt_edit`` computes edit positions from the
-            # ORIGINAL ``line_context`` / ``len(lines)``; if the previous
-            # snippet's edit grew or shrank the file (EOF clamping), those
-            # positions no longer point to the original sorry region — the
-            # next snippet would patch the wrong content and report drifted
-            # diagnostics as snippet-introduced via ``extra_diag``.
-            if i > 0 and original_content is not None:
-                client.update_file_content(rel_path, original_content)
-            (
-                snippet_str,
-                change,
-                goal_line,
-                goal_column,
-                line_delta,
-            ) = _prepare_multi_attempt_edit(
-                line_context, target_column, snippet, len(lines), line
-            )
-            client.update_file(rel_path, [change])
-            diag = client.get_diagnostics(rel_path)
-            check_lsp_response(diag, "get_diagnostics")
-            filtered_diag = _filter_diagnostics_by_line_range(diag, line - 1, goal_line)
-            in_filtered = {id(d) for d in filtered_diag}
-            # Surface any new diagnostic — relative to the pre-edit baseline —
-            # even if outside the local line range. When baseline capture
-            # failed (baseline_keys is None), set-diff is disabled and we
-            # rely on the local filter only — same behavior as the original
-            # (pre-fix) code path.
-            if baseline_keys is None:
-                extra_diag = []
-            else:
-                # Multi-line snippets near end-of-file can grow the file
-                # (replacement range gets clamped). Pre-existing diagnostics
-                # at or past end_line get re-emitted at shifted line numbers
-                # post-edit, so their identity (which keys on line) won't
-                # match baseline_keys without compensating for the shift.
-                if line_delta:
-                    shifted_keys = _shift_baseline_keys(
-                        baseline_keys, edit_start_line=line - 1, line_delta=line_delta
-                    )
-                else:
-                    shifted_keys = baseline_keys
-                extra_diag = [
-                    d
-                    for d in diag
-                    if id(d) not in in_filtered
-                    and _diagnostic_identity(d) not in shifted_keys
-                ]
-            goal_result = client.get_goal(rel_path, goal_line, goal_column)
-            check_lsp_response(goal_result, "get_goal", allow_none=True)
-            goals = extract_goals_list(goal_result)
-            results.append(
-                AttemptResult(
-                    snippet=snippet_str,
-                    goals=goals,
-                    diagnostics=_to_diagnostic_messages(filtered_diag + extra_diag),
-                    timed_out=getattr(diag, "timed_out", False),
-                )
-            )
+    pool = get_scratch_pool(ctx)
+    prepared = [
+        _build_attempt_text(lines, line_context, target_column, snippet, line)
+        for snippet in snippets
+    ]
 
-        return MultiAttemptResult(items=results)
-    finally:
-        if original_content is not None:
-            try:
-                client.update_file_content(rel_path, original_content)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to restore `%s` after multi_attempt: %s", rel_path, exc
+    trials = await pool.run_texts(
+        [text for _, text, _, _, _ in prepared],
+        want_goal_at=[(goal_line, goal_col) for _, _, goal_line, goal_col, _ in prepared],
+    )
+
+    results: List[AttemptResult] = []
+    for (snippet_str, _, goal_line, _, line_delta), trial in zip(prepared, trials):
+        diag_items = trial.diagnostics.items
+        filtered_diag = _filter_diagnostics_by_line_range(diag_items, line - 1, goal_line)
+        in_filtered = {id(d) for d in filtered_diag}
+        # Surface any new diagnostic — relative to the original file's
+        # baseline — even if outside the local line range (e.g. heartbeat
+        # timeouts reported at distant lines).
+        if baseline_keys is None:
+            extra_diag = []
+        else:
+            shifted_keys = (
+                _shift_baseline_keys(
+                    baseline_keys, edit_start_line=line - 1, line_delta=line_delta
                 )
-            try:
-                # Force a disk resync so transient snippet edits do not leak
-                # into subsequent tool calls for already-open documents.
-                client.open_file(rel_path, force_reopen=True)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to force-reopen `%s` after multi_attempt: %s",
-                    rel_path,
-                    exc,
-                )
+                if line_delta
+                else baseline_keys
+            )
+            extra_diag = [
+                d
+                for d in diag_items
+                if id(d) not in in_filtered
+                and _diagnostic_identity(d) not in shifted_keys
+            ]
+        results.append(
+            AttemptResult(
+                snippet=snippet_str,
+                goals=_goal_strings(trial.goal) if trial.goal else [],
+                diagnostics=_to_diagnostic_messages(filtered_diag + extra_diag),
+                timed_out=False,
+            )
+        )
+
+    return MultiAttemptResult(items=results)
 
 
 # Register the tool subpackage last: each submodule's @mcp.tool decorators run
