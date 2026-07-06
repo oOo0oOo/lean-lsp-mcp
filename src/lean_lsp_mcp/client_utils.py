@@ -67,9 +67,10 @@ def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
     if current_root != resolved_project:
         lifespan.lean_project_path = resolved_project
         current_client: AsyncLeanLSPClient | None = getattr(lifespan, "client", None)
-        if current_client is not None and Path(
-            getattr(current_client, "project_path", "")
-        ) != resolved_project:
+        if (
+            current_client is not None
+            and Path(getattr(current_client, "project_path", "")) != resolved_project
+        ):
             lifespan.client = None
 
     return resolved_project

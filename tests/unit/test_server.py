@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 import importlib
 import json
 import types
@@ -1036,7 +1035,9 @@ _SAMPLE_TEXT = "import Mathlib\n\ntheorem sample_goal : True := by\n  trivial\n"
 async def test_goal_reports_open_goals(monkeypatch: pytest.MonkeyPatch) -> None:
     from leanclient.aio import GoalResult
 
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("GoalSample.lean"))
+    monkeypatch.setattr(
+        server, "setup_client_for_file", _async_setup("GoalSample.lean")
+    )
     ctx = _make_ctx()
     fake = _GoalClient(_SAMPLE_TEXT, GoalResult(status="goals", goals=["⊢ True"]))
     ctx.request_context.lifespan_context.client = fake
@@ -1057,7 +1058,9 @@ async def test_goal_distinguishes_complete_from_no_goal(
     reports 'no_goal_at_position'. Both have goals == []."""
     from leanclient.aio import GoalResult
 
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("GoalSample.lean"))
+    monkeypatch.setattr(
+        server, "setup_client_for_file", _async_setup("GoalSample.lean")
+    )
 
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.client = _GoalClient(
@@ -1071,7 +1074,9 @@ async def test_goal_distinguishes_complete_from_no_goal(
     ctx2.request_context.lifespan_context.client = _GoalClient(
         _SAMPLE_TEXT, GoalResult(status="no_goal")
     )
-    nowhere = await server.goal(ctx2, file_path="/abs/GoalSample.lean", line=1, column=1)
+    nowhere = await server.goal(
+        ctx2, file_path="/abs/GoalSample.lean", line=1, column=1
+    )
     assert nowhere.status == "no_goal_at_position"
     assert nowhere.goals == []
 
@@ -1082,7 +1087,9 @@ async def test_goal_structured_format_accepts_structured_goals(
 ) -> None:
     from leanclient.aio import GoalResult
 
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("GoalSample.lean"))
+    monkeypatch.setattr(
+        server, "setup_client_for_file", _async_setup("GoalSample.lean")
+    )
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.client = _GoalClient(
         "import Mathlib\n\ntheorem sample_goal (x : Nat) (h : x = 0) : x = 0 := by\n  exact h\n",

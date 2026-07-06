@@ -64,4 +64,8 @@ async def get_widget_source(
     client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
     await open_synced(ctx, rel_path, wait=True)
     source = await client.get_widget_source(rel_path, 0, 0, javascript_hash)
+    if source is None:
+        raise server.LeanToolError(
+            f"Widget source not found for hash `{javascript_hash}`."
+        )
     return WidgetSourceResult(source=source)

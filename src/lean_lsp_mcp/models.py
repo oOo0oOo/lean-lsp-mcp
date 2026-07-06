@@ -191,7 +191,9 @@ class RunResult(BaseModel):
 
 class DeclarationInfo(BaseModel):
     file_path: str = Field(description="Path to declaration file")
-    content: str = Field(description="Declaration source (sliced unless full_file=True)")
+    content: str = Field(
+        description="Declaration source (sliced unless full_file=True)"
+    )
     start_line: Optional[int] = Field(
         None, description="First line of the returned slice (1-indexed)"
     )

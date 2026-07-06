@@ -29,14 +29,12 @@ from lean_lsp_mcp.client_utils import (
     _project_switching_allowed,
     attach_shared_client,
     detach_shared_client,
-    get_path_policy,
     get_scratch_pool,
     infer_project_path,
     open_synced,
     resolve_file_path,
     set_build_in_progress,
     setup_client_for_file,
-    startup_client,
 )
 from lean_lsp_mcp.file_utils import (
     build_lean_path_policy,
@@ -63,7 +61,6 @@ from lean_lsp_mcp.models import (
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
 from lean_lsp_mcp.utils import (
     LeanToolError,
-    OutputCapture,
     PreSharedTokenVerifier,
     extract_failed_dependency_paths,
     is_build_stderr,
@@ -80,6 +77,8 @@ def _lean_tags(diag: Dict) -> Optional[List[str]]:
     if not raw:
         return None
     return [LEAN_DIAGNOSTIC_TAG.get(t, str(t)) for t in raw]
+
+
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
 _INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
@@ -1159,13 +1158,17 @@ async def _multi_attempt_lsp(
 
     trials = await pool.run_texts(
         [text for _, text, _, _, _ in prepared],
-        want_goal_at=[(goal_line, goal_col) for _, _, goal_line, goal_col, _ in prepared],
+        want_goal_at=[
+            (goal_line, goal_col) for _, _, goal_line, goal_col, _ in prepared
+        ],
     )
 
     results: List[AttemptResult] = []
     for (snippet_str, _, goal_line, _, line_delta), trial in zip(prepared, trials):
         diag_items = trial.diagnostics.items
-        filtered_diag = _filter_diagnostics_by_line_range(diag_items, line - 1, goal_line)
+        filtered_diag = _filter_diagnostics_by_line_range(
+            diag_items, line - 1, goal_line
+        )
         in_filtered = {id(d) for d in filtered_diag}
         # Surface any new diagnostic — relative to the original file's
         # baseline — even if outside the local line range (e.g. heartbeat

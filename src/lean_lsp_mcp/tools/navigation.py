@@ -46,7 +46,8 @@ async def hover(
     ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
-        int, Field(description="Column at START of identifier (1-indexed characters)", ge=1)
+        int,
+        Field(description="Column at START of identifier (1-indexed characters)", ge=1),
     ],
 ) -> HoverInfo:
     """Get type signature and docs for a symbol. Essential for understanding APIs."""
@@ -228,7 +229,6 @@ async def declaration_file(
         raise server.LeanToolError(f"No declaration available for `{symbol}`.")
 
     decl = locations[0]
-    uri = decl.get("targetUri") or decl.get("uri") or ""
     local_path = decl.get("path", "")
 
     try:

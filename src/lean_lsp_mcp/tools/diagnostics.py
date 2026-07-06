@@ -146,8 +146,7 @@ async def diagnostic_messages(
         rel_path, fresh=True, timeout=timeout_s, partial_ok=True
     )
     processing_lines = [
-        [r["start"]["line"] + 1, r["end"]["line"] + 1]
-        for r in report.processing_ranges
+        [r["start"]["line"] + 1, r["end"]["line"] + 1] for r in report.processing_ranges
     ] or None
 
     items = report.items

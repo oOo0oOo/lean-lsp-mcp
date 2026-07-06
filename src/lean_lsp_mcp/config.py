@@ -211,9 +211,7 @@ def _int_env(env_var: str, default: int) -> int:
     try:
         return int(raw_value)
     except ValueError:
-        logger.warning(
-            "Invalid %s=%s, defaulting to %d.", env_var, raw_value, default
-        )
+        logger.warning("Invalid %s=%s, defaulting to %d.", env_var, raw_value, default)
         return default
 
 

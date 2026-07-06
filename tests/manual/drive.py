@@ -70,9 +70,7 @@ async def main():
                         sess.call_tool(name, args), timeout=call.get("timeout", 180)
                     )
                     dt = time.time() - t
-                    out = "\n".join(
-                        c.text for c in res.content if hasattr(c, "text")
-                    )
+                    out = "\n".join(c.text for c in res.content if hasattr(c, "text"))
                     print(f"[{dt:7.2f}s] {label} isError={res.isError} len={len(out)}")
                     maxlen = call.get("show", 400)
                     print("    " + out[:maxlen].replace("\n", "\n    "))

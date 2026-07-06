@@ -138,7 +138,6 @@ async def verify_theorem(
     except (FileNotFoundError, ValueError) as exc:
         raise server.LeanToolError(str(exc)) from exc
 
-    client = ctx.request_context.lifespan_context.client
     doc = await open_synced(ctx, rel_path)
     original_content = doc.text
 
@@ -159,9 +158,7 @@ async def verify_theorem(
     appended_diags = [
         d
         for d in trial.diagnostics.items
-        if (d.get("fullRange") or d.get("range") or {})
-        .get("start", {})
-        .get("line", -1)
+        if (d.get("fullRange") or d.get("range") or {}).get("start", {}).get("line", -1)
         >= snippet_line
     ]
 
@@ -170,8 +167,7 @@ async def verify_theorem(
 
     axioms = parse_axioms(appended_diags)
     if not axioms and not any(
-        "does not depend on any axioms" in d.get("message", "")
-        for d in appended_diags
+        "does not depend on any axioms" in d.get("message", "") for d in appended_diags
     ):
         raise server.LeanToolError(
             "Axiom check produced no `#print axioms` output — result is "
