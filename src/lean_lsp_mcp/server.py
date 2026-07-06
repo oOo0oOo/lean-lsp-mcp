@@ -324,6 +324,52 @@ class AppContext:
     build_coordinator: BuildCoordinator | None = None
 
 
+_prewarm_started = False
+
+
+async def _prewarm_project_files(project_path: Path, files: List[str]) -> None:
+    """Open/elaborate configured files in the background at server startup.
+
+    Overlaps the expensive first elaboration with the agent's initial
+    reading/planning phase instead of landing on its first tool call
+    (LEAN_MCP_PREWARM_FILES, project-relative, comma-separated).
+    """
+    from lean_lsp_mcp.client_utils import CLIENT_LOCK, _get_or_create_shared_client
+
+    try:
+        async with CLIENT_LOCK:
+            client = await _get_or_create_shared_client(project_path)
+        opened = []
+        for rel_path in files:
+            try:
+                await client.open(rel_path, wait=False)
+                opened.append(rel_path)
+            except (OSError, LeanClientError) as exc:
+                logger.warning("Prewarm skipped %s: %s", rel_path, exc)
+        logger.info("Prewarm started for %s file(s): %s", len(opened), opened)
+        for rel_path in opened:
+            try:
+                await client.barrier(rel_path)
+                logger.info("Prewarm complete: %s", rel_path)
+            except LeanClientError as exc:
+                logger.warning("Prewarm elaboration failed for %s: %s", rel_path, exc)
+    except Exception:
+        logger.exception("Prewarm task failed")
+
+
+def _maybe_start_prewarm(lean_project_path: Path | None) -> None:
+    global _prewarm_started
+    if _prewarm_started or lean_project_path is None:
+        return
+    files = config.prewarm_files()
+    if not files:
+        return
+    _prewarm_started = True
+    asyncio.get_running_loop().create_task(
+        _prewarm_project_files(lean_project_path, files)
+    )
+
+
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
@@ -390,6 +436,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             repl_enabled=repl_available,
             build_coordinator=build_coordinator,
         )
+        _maybe_start_prewarm(lean_project_path)
         yield context
     finally:
         logger.info("Session ending — cleaning up per-session resources")
@@ -702,6 +749,8 @@ def _process_diagnostics(
     build_success: bool,
     severity: Optional[str] = None,
     timed_out: bool = False,
+    partial: bool = False,
+    processing_lines: Optional[List[List[int]]] = None,
 ) -> DiagnosticsResult:
     """Process diagnostics, extracting dependency paths from build stderr.
 
@@ -742,6 +791,28 @@ def _process_diagnostics(
             )
         )
 
+    if partial:
+        # Elaboration still running at the caller's deadline: return an
+        # honest partial report ("poll again"), never a bare failure.
+        return DiagnosticsResult(
+            partial=True,
+            still_elaborating_lines=processing_lines,
+            success=False,
+            timed_out=True,
+            items=items,
+            failed_dependencies=failed_deps,
+        )
+
+    if (not build_success or timed_out) and not items:
+        reason = "diagnostics_timed_out" if timed_out else "diagnostics_unavailable"
+        items.append(
+            DiagnosticMessage(
+                severity="error",
+                message=f"{reason}: Lean did not finish; the file is not known clean.",
+                line=1,
+                column=1,
+            )
+        )
     return DiagnosticsResult(
         success=build_success,
         timed_out=timed_out,

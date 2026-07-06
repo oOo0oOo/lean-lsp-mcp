@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from leanclient.aio import AsyncLeanLSPClient
+from leanclient.aio import AsyncLeanLSPClient, LeanRequestTimeout
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -37,6 +37,16 @@ async def goal(
         Literal["text", "structured"],
         Field(description="Output format: 'text' (default) or 'structured'"),
     ] = "text",
+    timeout_s: Annotated[
+        Optional[float],
+        Field(
+            description=(
+                "Max seconds to wait for elaboration. On timeout returns "
+                "status='still_elaborating' - poll again."
+            ),
+            ge=1,
+        ),
+    ] = None,
 ) -> GoalState:
     """Get proof goals at a position. MOST IMPORTANT tool - use often!
 
@@ -65,13 +75,22 @@ async def goal(
     def render(goals: list[str]) -> list[str | StructuredGoal]:
         return [server._goal_to_structured(g) if structured else g for g in goals]
 
+    try:
+        await client.barrier(rel_path, timeout=timeout_s)
+    except LeanRequestTimeout:
+        return GoalState(
+            line_context=line_context,
+            goals=[],
+            status="still_elaborating",
+        )
+
     if column is None:
         column_start = next(
             (i for i, c in enumerate(line_context) if not c.isspace()), 0
         )
         column_end = len(line_context)
-        # First call barriers (fresh); second reuses the elaborated state.
-        goal_start = await client.goal(rel_path, line - 1, column_start)
+        # Barrier already passed above; both queries reuse the elaborated state.
+        goal_start = await client.goal(rel_path, line - 1, column_start, fresh=False)
         goal_end = await client.goal(rel_path, line - 1, column_end, fresh=False)
 
         return GoalState(
@@ -80,7 +99,7 @@ async def goal(
             goals_after=render(server._goal_strings(goal_end)),
         )
 
-    result = await client.goal(rel_path, line - 1, column - 1)
+    result = await client.goal(rel_path, line - 1, column - 1, fresh=False)
     status = "no_goal_at_position" if result.status == "no_goal" else result.status
     return GoalState(
         line_context=line_context,

@@ -873,7 +873,12 @@ def test_process_diagnostics_build_failure_excluded_regardless_of_filter() -> No
     result = server._process_diagnostics(
         [build_diag], build_success=False, severity=DiagnosticSeverity.error
     )
-    assert result.items == []
+    # The build blob itself is excluded (extracted into failed_dependencies),
+    # but a failed build with no remaining items must NOT look silently empty:
+    # an explicit not-known-clean error is synthesized (upstreamed from the
+    # gauss-next production patch).
+    assert len(result.items) == 1
+    assert "not known clean" in result.items[0].message
     assert result.success is False
 
 
@@ -920,7 +925,9 @@ class _DiagClient:
     async def reload_from_disk(self, _path: str, wait: bool = False):
         return None
 
-    async def diagnostics(self, _path: str, fresh: bool = True, timeout=None):
+    async def diagnostics(
+        self, _path: str, fresh: bool = True, timeout=None, partial_ok: bool = False
+    ):
         return self._report
 
 
@@ -931,7 +938,14 @@ async def test_diagnostic_messages_passes_severity_to_process(
     """diagnostic_messages tool forwards the severity parameter to _process_diagnostics."""
     captured: dict = {}
 
-    def fake_process(diagnostics, build_success, severity=None, timed_out=False):
+    def fake_process(
+        diagnostics,
+        build_success,
+        severity=None,
+        timed_out=False,
+        partial=False,
+        processing_lines=None,
+    ):
         captured["severity"] = severity
         from lean_lsp_mcp.models import DiagnosticsResult
 
@@ -967,7 +981,14 @@ async def test_diagnostic_messages_default_severity_is_none(
 ) -> None:
     captured: dict = {}
 
-    def fake_process(diagnostics, build_success, severity=None, timed_out=False):
+    def fake_process(
+        diagnostics,
+        build_success,
+        severity=None,
+        timed_out=False,
+        partial=False,
+        processing_lines=None,
+    ):
         captured["severity"] = severity
         from lean_lsp_mcp.models import DiagnosticsResult
 
@@ -999,6 +1020,9 @@ class _GoalClient:
 
     def content(self, _path: str) -> str:
         return self._text
+
+    async def barrier(self, _path: str, timeout=None):
+        return None
 
     async def goal(self, _path: str, _line: int, _column: int, fresh: bool = True):
         self.goal_calls += 1
@@ -1108,3 +1132,40 @@ async def test_multi_attempt_repl_does_not_autodiscover_binary(
     )
 
     assert result is None
+
+
+def test_process_diagnostics_partial_returns_poll_shape() -> None:
+    """partial=True yields an honest poll-again result, never a bare error."""
+    result = server._process_diagnostics(
+        [],
+        build_success=False,
+        partial=True,
+        processing_lines=[[3, 40]],
+    )
+    assert result.partial is True
+    assert result.still_elaborating_lines == [[3, 40]]
+    assert result.success is False
+    assert result.timed_out is True
+    assert result.items == []  # no synthesized error on the partial path
+
+
+def test_process_diagnostics_synthesizes_not_known_clean() -> None:
+    """success=false/timed_out with no items must carry an explicit error
+    (upstreamed from gauss-next's production patch, card #102)."""
+    for kwargs, reason in (
+        ({"build_success": False}, "diagnostics_unavailable"),
+        ({"build_success": True, "timed_out": True}, "diagnostics_timed_out"),
+    ):
+        result = server._process_diagnostics([], **kwargs)
+        assert len(result.items) == 1
+        assert result.items[0].message.startswith(reason)
+        assert "not known clean" in result.items[0].message
+
+
+def test_prewarm_files_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lean_lsp_mcp import config
+
+    monkeypatch.delenv("LEAN_MCP_PREWARM_FILES", raising=False)
+    assert config.prewarm_files() == []
+    monkeypatch.setenv("LEAN_MCP_PREWARM_FILES", "A.lean, sub/B.lean ,")
+    assert config.prewarm_files() == ["A.lean", "sub/B.lean"]

@@ -101,9 +101,9 @@ class GoalState(BaseModel):
     status: Optional[str] = Field(
         None,
         description=(
-            "Goal status at the queried column: 'goals' (open goals), "
-            "'complete' (no goals left - proof finished here), or "
-            "'no_goal_at_position' (position carries no proof state)"
+            "Goal status: 'goals' (open goals), 'complete' (no goals left - "
+            "proof finished here), 'no_goal_at_position' (position carries no "
+            "proof state), or 'still_elaborating' (timeout_s hit - poll again)"
         ),
     )
 
@@ -210,6 +210,19 @@ class DeclarationInfo(BaseModel):
 
 class DiagnosticsResult(BaseModel):
     """Wrapper for diagnostic messages list with build status."""
+
+    partial: bool = Field(
+        False,
+        description=(
+            "True when elaboration was still running at timeout: items may be "
+            "incomplete and still_elaborating_lines shows the pending region. "
+            "Poll again instead of treating this as failure."
+        ),
+    )
+    still_elaborating_lines: Optional[List[List[int]]] = Field(
+        None,
+        description="Line ranges [start, end] (1-indexed) still being elaborated",
+    )
 
     success: bool = Field(
         True, description="True if the queried file/range has no errors"

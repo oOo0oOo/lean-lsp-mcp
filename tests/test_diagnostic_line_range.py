@@ -119,8 +119,12 @@ async def test_diagnostic_messages_line_filtering(
             },
         )
         empty_items = parse_diagnostics_result(diagnostics)
-        # Should be empty
-        assert len(empty_items) == 0, f"Expected no diagnostics, got {len(empty_items)}"
+        # The range is clean but the FILE has errors elsewhere: instead of a
+        # confusing success=false + empty items, the not-known-clean marker is
+        # synthesized (upstreamed gauss-next semantics). Real range
+        # diagnostics must not appear.
+        assert len(empty_items) == 1, f"Expected only the marker, got {empty_items}"
+        assert "not known clean" in empty_items[0]["message"]
 
 
 @pytest.fixture(scope="module")
@@ -196,9 +200,12 @@ async def test_diagnostic_messages_declaration_filtering(
             },
         )
         valid_items = parse_diagnostics_result(diagnostics)
-        assert len(valid_items) == 0, (
-            f"Expected no diagnostics for valid function, got {len(valid_items)}"
+        # Same contract as the range filter: clean declaration in a file with
+        # errors elsewhere yields only the synthesized not-known-clean marker.
+        assert len(valid_items) == 1, (
+            f"Expected only the marker for valid function, got {valid_items}"
         )
+        assert "not known clean" in valid_items[0]["message"]
 
 
 @pytest.mark.asyncio

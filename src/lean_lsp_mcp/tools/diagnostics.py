@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from leanclient.aio import (
-    AsyncLeanLSPClient,
-    LeanRequestTimeout,
-)
+from leanclient.aio import AsyncLeanLSPClient
 from leanclient.aio.convert import range_from_utf16
 from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
@@ -84,6 +81,17 @@ async def diagnostic_messages(
             description="Returns verbose nested TaggedText with embedded widgets. Only use when plain text is insufficient. For 'Try This' suggestions, prefer lean_code_actions."
         ),
     ] = False,
+    timeout_s: Annotated[
+        Optional[float],
+        Field(
+            description=(
+                "Max seconds to wait for elaboration. On timeout returns "
+                "partial=true with still_elaborating_lines - poll again. "
+                "Omit to wait for full elaboration."
+            ),
+            ge=1,
+        ),
+    ] = None,
     severity: Annotated[
         Optional[Literal["error", "warning", "info", "hint"]],
         # json_schema_extra forces an explicit top-level `type` onto the
@@ -134,12 +142,13 @@ async def diagnostic_messages(
         )
         return InteractiveDiagnosticsResult(diagnostics=diagnostics or [])
 
-    timed_out = False
-    try:
-        report = await client.diagnostics(rel_path)
-    except LeanRequestTimeout:
-        timed_out = True
-        report = await client.diagnostics(rel_path, fresh=False)
+    report = await client.diagnostics(
+        rel_path, fresh=True, timeout=timeout_s, partial_ok=True
+    )
+    processing_lines = [
+        [r["start"]["line"] + 1, r["end"]["line"] + 1]
+        for r in report.processing_ranges
+    ] or None
 
     items = report.items
     if start_line_0 is not None or end_line_0 is not None:
@@ -153,7 +162,9 @@ async def diagnostic_messages(
         items,
         build_success=not report.has_errors and not report.fatal_error,
         severity=severity,
-        timed_out=timed_out,
+        timed_out=report.partial,
+        partial=report.partial,
+        processing_lines=processing_lines,
     )
 
 

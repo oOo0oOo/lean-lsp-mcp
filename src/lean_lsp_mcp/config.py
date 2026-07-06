@@ -75,6 +75,17 @@ def max_open_files() -> int:
     return value
 
 
+PREWARM_FILES_ENV = "LEAN_MCP_PREWARM_FILES"
+
+
+def prewarm_files() -> list[str]:
+    """Project-relative Lean files to open/elaborate in the background at
+    server startup (comma-separated). Warmup overlaps the agent's first
+    reading/planning phase instead of landing on its first tool call."""
+    raw = os.environ.get(PREWARM_FILES_ENV, "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 SCRATCH_POOL_ENV = "LEAN_MCP_SCRATCH_SLOTS"
 
 

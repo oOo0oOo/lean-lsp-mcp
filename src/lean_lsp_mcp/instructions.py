@@ -54,6 +54,12 @@ After finding a name: lean_local_search to verify, lean_hover_info for signature
 ## Return Formats
 List-returning tools return an object with an `items` array. Empty = `{{"items": []}}`.
 
+## Slow Files
+On large files, pass `timeout_s` to lean_diagnostic_messages / lean_goal. A
+response with `partial: true` + `still_elaborating_lines` (or goal `status:
+'still_elaborating'`) means Lean is still working - poll again; it is NOT an
+error or a dead server.
+
 ## Error Handling
 Check `isError` in responses: `true` means failure (timeout/LSP error/rate limit), while an empty `items` with `isError: false` means no results found.
 """
