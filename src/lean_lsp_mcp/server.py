@@ -284,9 +284,10 @@ async def _ensure_shared_loogle(
                 manager = LoogleManager(project_path=lean_project_path)
                 _shared_loogle_manager = manager
 
-            _shared_loogle_available = (
-                manager.ensure_installed() and await manager.start()
-            )
+            # ensure_installed() can git-clone + `lake build` for many
+            # minutes — keep it off the event loop.
+            installed = await asyncio.to_thread(manager.ensure_installed)
+            _shared_loogle_available = installed and await manager.start()
             if _shared_loogle_available:
                 _shared_loogle_init_done = True
                 logger.info("Shared local loogle started successfully")

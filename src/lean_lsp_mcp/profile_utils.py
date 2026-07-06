@@ -221,6 +221,25 @@ async def profile_theorem(
     finally:
         temp_path.unlink(missing_ok=True)
 
+    # The extracted snippet contains only the header + target theorem; a
+    # reference to anything else in the original file fails to elaborate.
+    # Partial elaboration still emits timing traces, so a compile error must
+    # invalidate the profile outright — never report timings for a broken
+    # snippet as a valid result.
+    # Lean error lines: `file:line:col: error: msg` or (>= 4.30 named
+    # classes) `file:line:col: error(lean.unknownIdentifier): msg`.
+    errors = [
+        line.strip()
+        for line in output.splitlines()
+        if re.search(r"(^|: )error[(:]", line)
+    ]
+    if errors:
+        raise ValueError(
+            "Profiled snippet failed to compile (the theorem is extracted "
+            "standalone with only the file's imports; same-file "
+            "dependencies are not included): " + " | ".join(errors[:5])
+        )
+
     traces, cumulative = _parse_output(output)
     line_times, total = _extract_line_times(traces, name, proof_items)
 
