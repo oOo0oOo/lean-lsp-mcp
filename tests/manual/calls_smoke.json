@@ -1,0 +1,15 @@
+[
+ {"tool":"lean_diagnostic_messages","args":{"file_path":"DiagnosticTest.lean"},"label":"diagnostics (cold)","show":300},
+ {"tool":"lean_diagnostic_messages","args":{"file_path":"DiagnosticTest.lean"},"label":"diagnostics (warm)","show":100},
+ {"tool":"lean_goal","args":{"file_path":"GoalSample.lean","line":4},"label":"goal before/after","show":300},
+ {"tool":"lean_goal","args":{"file_path":"GoalSample.lean","line":4,"column":3},"label":"goal with status","show":200},
+ {"tool":"lean_hover_info","args":{"file_path":"GoalSample.lean","line":3,"column":9},"label":"hover","show":200},
+ {"tool":"lean_file_outline","args":{"file_path":"DiagnosticTest.lean"},"label":"outline (warms scratch pool)","show":200},
+ {"tool":"lean_run_code","args":{"code":"import Mathlib\n\ntheorem quick : 2 + 2 = 4 := by norm_num"},"label":"run_code (scratch, ~0.2s warm)","show":150,"timeout":300},
+ {"tool":"lean_multi_attempt","args":{"file_path":"GoalSample.lean","line":4,"snippets":["trivial","simp","rfl"]},"label":"multi_attempt","show":400},
+ {"gather":[
+   {"tool":"lean_diagnostic_messages","args":{"file_path":"EditorTools.lean"},"label":"cold A"},
+   {"tool":"lean_diagnostic_messages","args":{"file_path":"MiscTools.lean"},"label":"cold B (parallel with A)"},
+   {"tool":"lean_hover_info","args":{"file_path":"GoalSample.lean","line":3,"column":9},"label":"warm hover (must not wait)"}
+ ]}
+]
