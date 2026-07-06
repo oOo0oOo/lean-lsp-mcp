@@ -6,15 +6,15 @@ authors = [{ name = "Oliver Dressler", email = "hey@oli.show" }]
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["leanclient>=0.12.0.dev0", "mcp[cli]==1.27.2", "orjson>=3.11.1", "certifi>=2024.0.0"]
+dependencies = ["leanclient>=0.12.0", "mcp[cli]==1.28.1", "orjson>=3.11.9", "certifi>=2026.6.17"]
 
 [project.urls]
 Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
 
 [project.optional-dependencies]
-yaml = ["PyYAML>=6.0"]
-lint = ["ruff>=0.2.0", "ty>=0.0.46"]
-dev = ["ruff>=0.2.0", "ty>=0.0.46", "pytest>=8.3", "anyio>=4.12.1", "pytest-asyncio>=0.23", "pytest-timeout>=2.3"]
+yaml = ["PyYAML>=6.0.3"]
+lint = ["ruff>=0.15.20", "ty>=0.0.56"]
+dev = ["ruff>=0.15.20", "ty>=0.0.56", "pytest>=9.1.1", "anyio>=4.14.1", "pytest-asyncio>=1.4.0", "pytest-timeout>=2.4.0"]
 
 [tool.ty.environment]
 python-version = "3.10"
@@ -40,7 +40,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]

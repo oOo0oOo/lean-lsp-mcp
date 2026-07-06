@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import importlib
 import json
 import logging.config
 import os
@@ -184,7 +185,7 @@ _LOG_LEVEL = config.log_level()
 if _LOG_FILE_CONFIG:
     try:
         if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
-            import yaml  # ty: ignore[unresolved-import]
+            yaml = cast(Any, importlib.import_module("yaml"))
 
             with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
