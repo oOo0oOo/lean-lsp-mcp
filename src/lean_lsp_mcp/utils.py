@@ -461,7 +461,8 @@ COMPLETION_KIND: Dict[int, str] = {
     20: "enum_member",
     21: "constant",
     22: "struct",
-    23: "event",
+    # LSP kind 23 is "event"; the Lean server uses it for theorems.
+    23: "theorem",
     24: "operator",
     25: "type_parameter",
 }

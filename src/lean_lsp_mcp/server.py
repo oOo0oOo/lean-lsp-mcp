@@ -71,6 +71,15 @@ from lean_lsp_mcp.utils import (
 
 # LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
 DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
+# Lean-specific diagnostic tags (Lean.Lsp.LeanDiagnosticTag)
+LEAN_DIAGNOSTIC_TAG: Dict[int, str] = {1: "unsolvedGoals", 2: "goalsAccomplished"}
+
+
+def _lean_tags(diag: Dict) -> Optional[List[str]]:
+    raw = diag.get("leanTags")
+    if not raw:
+        return None
+    return [LEAN_DIAGNOSTIC_TAG.get(t, str(t)) for t in raw]
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
 _INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
@@ -682,6 +691,7 @@ def _to_diagnostic_messages(diagnostics: Iterable[Dict]) -> List[DiagnosticMessa
                 message=diag.get("message", ""),
                 line=r["start"]["line"] + 1,
                 column=r["start"]["character"] + 1,
+                lean_tags=_lean_tags(diag),
             )
         )
     return result
@@ -728,6 +738,7 @@ def _process_diagnostics(
                 message=message,
                 line=line,
                 column=column,
+                lean_tags=_lean_tags(diag),
             )
         )
 

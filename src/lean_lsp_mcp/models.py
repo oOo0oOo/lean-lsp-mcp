@@ -60,6 +60,14 @@ class DiagnosticMessage(BaseModel):
     message: str = Field(description="Diagnostic message text")
     line: int = Field(description="Line (1-indexed)")
     column: int = Field(description="Column (1-indexed)")
+    lean_tags: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Lean-specific tags: 'unsolvedGoals' (proof incomplete here) or "
+            "'goalsAccomplished' (proof finished). Machine-readable proof "
+            "status - prefer over string-matching the message."
+        ),
+    )
 
 
 class GoalContextEntry(BaseModel):

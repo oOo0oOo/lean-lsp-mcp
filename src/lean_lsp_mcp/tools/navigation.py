@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Annotated, List, Optional
@@ -98,6 +99,10 @@ async def completions(
         int, Field(description="Column number (1-indexed characters)", ge=1)
     ],
     max_completions: Annotated[int, Field(description="Max completions", ge=1)] = 32,
+    resolve_details: Annotated[
+        int,
+        Field(description="Fetch type signatures for the top N results", ge=0),
+    ] = 8,
 ) -> CompletionsResult:
     """Get IDE autocompletions. Use on INCOMPLETE code (after `.` or partial name)."""
     rel_path = await server.setup_client_for_file(ctx, file_path)
@@ -108,51 +113,69 @@ async def completions(
     await open_synced(ctx, rel_path)
     content = client.content(rel_path)
     raw_completions = await client.completions(rel_path, line - 1, column - 1)
+    raw_completions = [c for c in raw_completions if "label" in c]
 
-    # Convert to CompletionItem models
+    if not raw_completions:
+        return CompletionsResult(items=[])
+
+    # Ranking: when the server fuzzy-scored the items (a partial identifier
+    # precedes the cursor) it emits sortText — trust that ranking. Otherwise
+    # (pure dot-completion) fall back to a local prefix heuristic.
+    if any("sortText" in c for c in raw_completions):
+        raw_completions.sort(key=lambda c: c.get("sortText", "\uffff"))
+    else:
+        lines = content.splitlines()
+        prefix = ""
+        if 0 < line <= len(lines):
+            text_before_cursor = lines[line - 1][: column - 1] if column > 0 else ""
+            if not text_before_cursor.endswith("."):
+                prefix = re.split(r"[\s()\[\]{},:;.]+", text_before_cursor)[-1].lower()
+
+        if prefix:
+
+            def sort_key(c: dict):
+                label_lower = c["label"].lower()
+                if label_lower.startswith(prefix):
+                    return (0, label_lower)
+                elif prefix in label_lower:
+                    return (1, label_lower)
+                else:
+                    return (2, label_lower)
+
+            raw_completions.sort(key=sort_key)
+        else:
+            raw_completions.sort(key=lambda c: c["label"].lower())
+
+    raw_completions = raw_completions[:max_completions]
+
+    # Fill in type signatures for the top results via completionItem/resolve
+    # (cheap: resolves one item each; the server keeps the completion state).
+    async def _resolved(c: dict) -> dict:
+        if c.get("detail"):
+            return c
+        try:
+            return await client.completion_resolve(c)
+        except Exception:
+            return c
+
+    if resolve_details > 0:
+        head = await asyncio.gather(
+            *(_resolved(c) for c in raw_completions[:resolve_details])
+        )
+        raw_completions = list(head) + raw_completions[resolve_details:]
+
     items: List[CompletionItem] = []
     for c in raw_completions:
-        if "label" not in c:
-            continue
         kind_int = c.get("kind")
-        kind_str = COMPLETION_KIND.get(kind_int) if kind_int else None
         items.append(
             CompletionItem(
                 label=c["label"],
-                kind=kind_str,
+                kind=COMPLETION_KIND.get(kind_int) if kind_int else None,
                 detail=c.get("detail"),
             )
         )
 
-    if not items:
-        return CompletionsResult(items=[])
-
-    # Find the sort term: The last word/identifier before the cursor
-    lines = content.splitlines()
-    prefix = ""
-    if 0 < line <= len(lines):
-        text_before_cursor = lines[line - 1][: column - 1] if column > 0 else ""
-        if not text_before_cursor.endswith("."):
-            prefix = re.split(r"[\s()\[\]{},:;.]+", text_before_cursor)[-1].lower()
-
-    # Sort completions: prefix matches first, then contains, then alphabetical
-    if prefix:
-
-        def sort_key(item: CompletionItem):
-            label_lower = item.label.lower()
-            if label_lower.startswith(prefix):
-                return (0, label_lower)
-            elif prefix in label_lower:
-                return (1, label_lower)
-            else:
-                return (2, label_lower)
-
-        items.sort(key=sort_key)
-    else:
-        items.sort(key=lambda x: x.label.lower())
-
-    # Truncate if too many results
-    return CompletionsResult(items=items[:max_completions])
+    return CompletionsResult(items=items)
 
 
 @server.mcp.tool(
