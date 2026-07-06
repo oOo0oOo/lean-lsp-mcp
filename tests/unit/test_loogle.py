@@ -185,7 +185,10 @@ class TestLoogleManager:
             return_value=json.dumps({"error": "parse error"}).encode()
         )
         mgr.process = proc
-        assert await mgr.query("bad") == []
+        from lean_lsp_mcp.loogle import LoogleQueryError
+
+        with pytest.raises(LoogleQueryError, match="parse error"):
+            await mgr.query("bad")
 
     @pytest.mark.asyncio
     async def test_query_timeout(self, mgr):
@@ -195,9 +198,13 @@ class TestLoogleManager:
         proc.stdin.write = MagicMock()
         proc.stdin.drain = AsyncMock()
         proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError())
+        proc.kill = MagicMock()  # sync method on the real process
         mgr.process = proc
         with pytest.raises(RuntimeError, match="timeout"):
             await mgr.query("test")
+        # Stream is desynced after a timeout: subprocess must be discarded.
+        assert mgr.process is None
+        assert mgr._ready is False
 
     @pytest.mark.asyncio
     async def test_stop(self, mgr):

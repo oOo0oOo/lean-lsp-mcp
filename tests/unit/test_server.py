@@ -15,12 +15,24 @@ from lean_lsp_mcp import server
 from lean_lsp_mcp.models import DiagnosticSeverity
 
 
+class _FakeTransport:
+    def __init__(self) -> None:
+        self.kill_calls = 0
+
+    def _kill_group(self) -> None:
+        self.kill_calls += 1
+
+
 class DummyClient:
     def __init__(self) -> None:
-        self.closed_calls = 0
+        self._transport = _FakeTransport()
 
-    def close(self) -> None:
-        self.closed_calls += 1
+
+def _async_setup(rel_path):
+    async def fake_setup(_ctx, _path):
+        return rel_path
+
+    return fake_setup
 
 
 class _FailingRepl:
@@ -137,39 +149,34 @@ async def test_app_lifespan_does_not_close_shared_client(
     async with server.app_lifespan(object()) as context:
         context.client = dummy_client
 
-    assert dummy_client.closed_calls == 0
+    assert dummy_client._transport.kill_calls == 0
 
 
 def test_close_shared_client_closes_client() -> None:
-    """close_shared_client() closes the shared singleton and resets state."""
+    """close_shared_client() kills the shared singleton's process group."""
     dummy = DummyClient()
     client_utils._shared_clients[Path("/tmp/proj")] = dummy
 
     try:
         client_utils.close_shared_client()
-        assert dummy.closed_calls == 1
+        assert dummy._transport.kill_calls == 1
         assert client_utils._shared_clients == {}
     finally:
         client_utils._shared_clients.clear()
 
 
 def test_close_shared_client_suppresses_error() -> None:
-    """close_shared_client() suppresses exceptions from client.close()."""
+    """close_shared_client() suppresses exceptions from the terminate path."""
+    dummy = DummyClient()
 
-    class _FailingCloseClient:
-        def __init__(self) -> None:
-            self.close_calls = 0
+    def _boom() -> None:
+        raise PermissionError("operation not permitted")
 
-        def close(self) -> None:
-            self.close_calls += 1
-            raise PermissionError("operation not permitted")
-
-    dummy = _FailingCloseClient()
+    dummy._transport._kill_group = _boom
     client_utils._shared_clients[Path("/tmp/proj")] = dummy
 
     try:
         client_utils.close_shared_client()  # should not raise
-        assert dummy.close_calls == 1
         assert client_utils._shared_clients == {}
     finally:
         client_utils._shared_clients.clear()
@@ -277,8 +284,8 @@ def test_rate_limited_blocks_excess(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _make_ctx()
     assert wrapped(ctx=ctx) == "ok"
     assert wrapped(ctx=ctx) == "ok"
-    message = wrapped(ctx=ctx)
-    assert "Tool limit exceeded" in message
+    with pytest.raises(server.LeanToolError, match="Tool limit exceeded"):
+        wrapped(ctx=ctx)
 
 
 def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -519,107 +526,162 @@ async def test_shared_loogle_retries_after_transient_failure(
     assert fake_manager.start.call_count == 2
 
 
-class _BaseMultiAttemptClient:
+class _MultiAttemptClient:
+    """Async-client fake: records that the real document is never mutated."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.update_calls: list[tuple[str, str]] = []
+        self.diagnostics_calls = 0
+
+    async def reload_from_disk(self, path: str, wait: bool = False):
+        return types.SimpleNamespace(text=self.text)
+
+    async def diagnostics(self, _path: str, fresh: bool = True, timeout=None):
+        from leanclient.aio import DiagnosticsReport
+
+        self.diagnostics_calls += 1
+        return DiagnosticsReport(items=[], version=1)
+
+    async def update(self, path: str, text: str, wait: bool = False):
+        self.update_calls.append((path, text))
+
+
+class _FakePool:
     def __init__(self) -> None:
-        self.open_calls: list[tuple[str, bool]] = []
-        self.restore_calls: list[tuple[str, str]] = []
+        self.texts: list[str] = []
 
-    def open_file(
-        self,
-        path: str,
-        dependency_build_mode: str = "never",
-        force_reopen: bool = False,
-    ) -> None:
-        _ = dependency_build_mode
-        self.open_calls.append((path, force_reopen))
+    async def run_texts(self, texts, want_goal_at=None, timeout=None):
+        from leanclient.aio import DiagnosticsReport, GoalResult
+        from leanclient.aio.scratch import TrialResult
 
-    def update_file(self, _path: str, _changes: list[object]) -> None:
-        return
-
-    def get_diagnostics(self, _path: str) -> list[dict]:
-        return []
-
-    def get_goal(self, _path: str, _line: int, _column: int) -> dict:
-        return {}
-
-    def update_file_content(self, path: str, content: str) -> None:
-        self.restore_calls.append((path, content))
+        self.texts.extend(texts)
+        return [
+            TrialResult(
+                body=t,
+                diagnostics=DiagnosticsReport(items=[], version=1),
+                goal=GoalResult(status="complete"),
+            )
+            for t in texts
+        ]
 
 
-def test_multi_attempt_force_reopens_after_restore(
+@pytest.mark.asyncio
+async def test_multi_attempt_runs_on_scratch_pool_not_user_document(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    class FakeClient(_BaseMultiAttemptClient):
-        def get_file_content(self, _path: str) -> str:
-            return "buffer-content"
-
+    """Snippets are tried on scratch documents; the user's open document is
+    never edited (no update/didChange on it), so there is nothing to restore."""
     project = _make_project(tmp_path / "proj")
-    target = project / "Foo.lean"
-    target.write_text("theorem foo : True := by trivial\n")
-    fake_client = FakeClient()
+    fake_client = _MultiAttemptClient("theorem foo : True := by\n  sorry\n")
+    fake_pool = _FakePool()
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = fake_client
 
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
-    monkeypatch.setattr(server, "get_file_contents", lambda _path: "original")
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
+    monkeypatch.setattr(server, "get_scratch_pool", lambda _ctx: fake_pool)
 
-    result = server._multi_attempt_lsp(ctx, str(target), line=1, snippets=[])
+    result = await server._multi_attempt_lsp(
+        ctx, str(project / "Foo.lean"), line=2, snippets=["trivial", "simp"]
+    )
 
-    assert result.items == []
-    assert fake_client.restore_calls == [("Foo.lean", "buffer-content")]
-    assert fake_client.open_calls == [("Foo.lean", False), ("Foo.lean", True)]
+    assert [item.snippet for item in result.items] == ["trivial", "simp"]
+    assert fake_client.update_calls == []  # the real document was never touched
+    assert len(fake_pool.texts) == 2
+    assert all("theorem foo" in t for t in fake_pool.texts)
+    assert "trivial" in fake_pool.texts[0] and "simp" in fake_pool.texts[1]
 
 
-def test_multi_attempt_restore_falls_back_to_disk_on_buffer_read_failure(
+@pytest.mark.asyncio
+async def test_multi_attempt_diffs_new_diagnostics_against_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    class FakeClient(_BaseMultiAttemptClient):
-        def get_file_content(self, _path: str) -> str:
-            raise RuntimeError("buffer unavailable")
+    """A diagnostic introduced by a snippet at a distant line is reported;
+    pre-existing baseline diagnostics are not re-reported."""
+    from leanclient.aio import DiagnosticsReport, GoalResult
+    from leanclient.aio.scratch import TrialResult
+
+    def _diag(line: int, message: str, severity: int = 1) -> dict:
+        return {
+            "severity": severity,
+            "message": message,
+            "range": {
+                "start": {"line": line, "character": 0},
+                "end": {"line": line, "character": 4},
+            },
+        }
+
+    pre_existing = _diag(20, "pre-existing error")
+
+    class _Client(_MultiAttemptClient):
+        async def diagnostics(self, _path, fresh=True, timeout=None):
+            return DiagnosticsReport(items=[pre_existing], version=1)
+
+    class _Pool:
+        async def run_texts(self, texts, want_goal_at=None, timeout=None):
+            return [
+                TrialResult(
+                    body=texts[0],
+                    diagnostics=DiagnosticsReport(
+                        items=[pre_existing, _diag(15, "distant new error")],
+                        version=2,
+                    ),
+                    goal=GoalResult(status="goals", goals=["⊢ True"]),
+                )
+            ]
 
     project = _make_project(tmp_path / "proj")
-    target = project / "Foo.lean"
-    target.write_text("theorem foo : True := by trivial\n")
-    fake_client = FakeClient()
+    lines = "\n".join(["-- filler"] * 30)
+    fake_client = _Client(f"theorem foo : True := by\n  sorry\n{lines}\n")
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = fake_client
 
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
-    monkeypatch.setattr(server, "get_file_contents", lambda _path: "disk-content")
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
+    monkeypatch.setattr(server, "get_scratch_pool", lambda _ctx: _Pool())
 
-    result = server._multi_attempt_lsp(ctx, str(target), line=1, snippets=[])
+    result = await server._multi_attempt_lsp(
+        ctx, str(project / "Foo.lean"), line=2, snippets=["trivial"]
+    )
 
-    assert result.items == []
-    assert fake_client.restore_calls == [("Foo.lean", "disk-content")]
+    messages = [d.message for d in result.items[0].diagnostics]
+    assert "distant new error" in messages
+    assert "pre-existing error" not in messages
+    assert result.items[0].goals == ["⊢ True"]
 
 
-def test_declaration_file_sanitizes_dependency_path(
+@pytest.mark.asyncio
+async def test_declaration_file_sanitizes_dependency_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     project = _make_project(tmp_path / "proj")
     dep_file = _make_dependency(project, tmp_path / "deps" / "mathlib")
 
     class FakeClient:
-        def open_file(self, _path: str) -> None:
-            return
+        project_path = str(project)
 
-        def get_file_content(self, _path: str) -> str:
+        async def reload_from_disk(self, _path: str, wait: bool = False):
+            return None
+
+        def content(self, _path: str) -> str:
             return "dep"
 
-        def get_declarations(self, _path: str, _line: int, _column: int) -> list[dict]:
-            return [{"uri": "dep-uri"}]
-
-        def _uri_to_abs(self, uri: str) -> str:
-            assert uri == "dep-uri"
-            return str(dep_file)
+        async def goto(self, kind: str, _path: str, _line: int, _column: int):
+            assert kind == "declaration"
+            return [
+                {
+                    "path": str(dep_file),
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 10},
+                    },
+                }
+            ]
 
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "Main.lean"
-    )
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Main.lean"))
 
-    result = server.declaration_file(
+    result = await server.declaration_file(
         ctx=ctx, file_path=str(project / "Main.lean"), symbol="dep"
     )
 
@@ -627,7 +689,8 @@ def test_declaration_file_sanitizes_dependency_path(
     assert "theorem dep" in result.content
 
 
-def test_references_sanitize_paths_and_skip_outside_policy(
+@pytest.mark.asyncio
+async def test_references_sanitize_paths_and_skip_outside_policy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     project = _make_project(tmp_path / "proj")
@@ -637,26 +700,30 @@ def test_references_sanitize_paths_and_skip_outside_policy(
     outside_file.write_text("def leak : Nat := 0\n")
 
     class FakeClient:
-        def open_file(self, _path: str) -> None:
-            return
+        project_path = str(project)
 
-        def get_diagnostics(self, _path: str) -> list[dict]:
-            return []
+        async def reload_from_disk(self, _path: str, wait: bool = False):
+            return None
 
-        def get_references(
-            self, _path: str, _line: int, _column: int, include_declaration: bool = True
-        ) -> list[dict]:
-            _ = include_declaration
+        async def references(
+            self,
+            _path: str,
+            _line: int,
+            _column: int,
+            include_declaration: bool = True,
+            max_results=None,
+            fresh: bool = True,
+        ):
             return [
                 {
-                    "uri": "dep-uri",
+                    "path": str(dep_file),
                     "range": {
                         "start": {"line": 2, "character": 3},
                         "end": {"line": 2, "character": 9},
                     },
                 },
                 {
-                    "uri": "outside-uri",
+                    "path": str(outside_file),
                     "range": {
                         "start": {"line": 0, "character": 0},
                         "end": {"line": 0, "character": 4},
@@ -664,20 +731,11 @@ def test_references_sanitize_paths_and_skip_outside_policy(
                 },
             ]
 
-        def _uri_to_abs(self, uri: str) -> str:
-            if uri == "dep-uri":
-                return str(dep_file)
-            if uri == "outside-uri":
-                return str(outside_file)
-            raise AssertionError(f"unexpected uri: {uri}")
-
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "Main.lean"
-    )
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Main.lean"))
 
-    result = server.references(
+    result = await server.references(
         ctx=ctx,
         file_path=str(project / "Main.lean"),
         line=1,
@@ -690,11 +748,14 @@ def test_references_sanitize_paths_and_skip_outside_policy(
     assert result.items[0].column == 4
 
 
-def test_verify_theorem_rejects_invalid_theorem_name() -> None:
+@pytest.mark.asyncio
+async def test_verify_theorem_rejects_invalid_theorem_name() -> None:
     ctx = _make_ctx()
 
     with pytest.raises(server.LeanToolError, match="Invalid theorem name"):
-        server.verify_theorem(ctx=ctx, file_path="Foo.lean", theorem_name="bad name")
+        await server.verify_theorem(
+            ctx=ctx, file_path="Foo.lean", theorem_name="bad name"
+        )
 
 
 @pytest.mark.asyncio
@@ -850,7 +911,21 @@ def test_diagnostic_messages_severity_schema_is_vertex_compatible() -> None:
         assert level in severity_json
 
 
-def test_diagnostic_messages_passes_severity_to_process(
+class _DiagClient:
+    def __init__(self, items=None):
+        from leanclient.aio import DiagnosticsReport
+
+        self._report = DiagnosticsReport(items=items or [], version=1)
+
+    async def reload_from_disk(self, _path: str, wait: bool = False):
+        return None
+
+    async def diagnostics(self, _path: str, fresh: bool = True, timeout=None):
+        return self._report
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_messages_passes_severity_to_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """diagnostic_messages tool forwards the severity parameter to _process_diagnostics."""
@@ -862,8 +937,12 @@ def test_diagnostic_messages_passes_severity_to_process(
 
         return DiagnosticsResult(success=build_success, items=[])
 
-    class FakeDiagResult:
-        diagnostics = [
+    monkeypatch.setattr(server, "_process_diagnostics", fake_process)
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
+
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _DiagClient(
+        items=[
             {
                 "severity": 2,
                 "message": "unused",
@@ -873,30 +952,17 @@ def test_diagnostic_messages_passes_severity_to_process(
                 },
             }
         ]
-        success = True
-        timed_out = False
+    )
 
-    class FakeClient:
-        def open_file(self, *_a, **_kw):
-            pass
-
-        def get_diagnostics(self, *_a, **_kw):
-            return FakeDiagResult()
-
-    monkeypatch.setattr(server, "_process_diagnostics", fake_process)
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
-
-    ctx = _make_ctx()
-    ctx.request_context.lifespan_context.client = FakeClient()
-
-    server.diagnostic_messages(
+    await server.diagnostic_messages(
         ctx=ctx, file_path="/abs/Foo.lean", severity=DiagnosticSeverity.warning
     )
 
     assert captured["severity"] == DiagnosticSeverity.warning
 
 
-def test_diagnostic_messages_default_severity_is_none(
+@pytest.mark.asyncio
+async def test_diagnostic_messages_default_severity_is_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict = {}
@@ -907,95 +973,99 @@ def test_diagnostic_messages_default_severity_is_none(
 
         return DiagnosticsResult(success=build_success, items=[])
 
-    class FakeDiagResult:
-        diagnostics = []
-        success = True
-        timed_out = False
-
-    class FakeClient:
-        def open_file(self, *_a, **_kw):
-            pass
-
-        def get_diagnostics(self, *_a, **_kw):
-            return FakeDiagResult()
-
     monkeypatch.setattr(server, "_process_diagnostics", fake_process)
-    monkeypatch.setattr(server, "setup_client_for_file", lambda _ctx, _path: "Foo.lean")
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
 
     ctx = _make_ctx()
-    ctx.request_context.lifespan_context.client = FakeClient()
+    ctx.request_context.lifespan_context.client = _DiagClient()
 
-    server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean")
+    await server.diagnostic_messages(ctx=ctx, file_path="/abs/Foo.lean")
 
     assert captured["severity"] is None
 
 
-def test_goal_retries_after_cold_file_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeClient:
-        def __init__(self) -> None:
-            self.goal_calls = 0
-            self.diagnostic_calls: list[tuple[str, float]] = []
-            self.open_calls: list[tuple[str, bool]] = []
+class _GoalClient:
+    """Async fake for the goal tool, parameterized by GoalResult."""
 
-        def open_file(self, path: str, force_reopen: bool = False, **_kw) -> None:
-            self.open_calls.append((path, force_reopen))
-            return
+    def __init__(self, text: str, result) -> None:
+        from leanclient.aio import GoalResult
 
-        def get_file_content(self, _path: str) -> str:
-            return "import Mathlib\n\ntheorem sample_goal : True := by\n  trivial\n"
+        self._text = text
+        self._result = result if result is not None else GoalResult(status="no_goal")
+        self.goal_calls = 0
 
-        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
-            self.goal_calls += 1
-            if self.goal_calls == 1:
-                raise FuturesTimeoutError()
-            return {"goals": ["⊢ True"]}
+    async def reload_from_disk(self, _path: str, wait: bool = False):
+        return None
 
-        def get_diagnostics(
-            self,
-            path: str,
-            *,
-            inactivity_timeout: float,
-        ):
-            self.diagnostic_calls.append((path, inactivity_timeout))
-            return types.SimpleNamespace(diagnostics=[], success=True)
+    def content(self, _path: str) -> str:
+        return self._text
 
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
-    )
+    async def goal(self, _path: str, _line: int, _column: int, fresh: bool = True):
+        self.goal_calls += 1
+        return self._result
 
+
+_SAMPLE_TEXT = "import Mathlib\n\ntheorem sample_goal : True := by\n  trivial\n"
+
+
+@pytest.mark.asyncio
+async def test_goal_reports_open_goals(monkeypatch: pytest.MonkeyPatch) -> None:
+    from leanclient.aio import GoalResult
+
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("GoalSample.lean"))
     ctx = _make_ctx()
-    fake_client = FakeClient()
-    ctx.request_context.lifespan_context.client = fake_client
+    fake = _GoalClient(_SAMPLE_TEXT, GoalResult(status="goals", goals=["⊢ True"]))
+    ctx.request_context.lifespan_context.client = fake
 
-    result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
+    result = await server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
 
     assert result.goals == ["⊢ True"]
-    assert fake_client.goal_calls == 2
-    assert fake_client.open_calls == [("GoalSample.lean", False)]
-    assert fake_client.diagnostic_calls == [("GoalSample.lean", 30.0)]
+    assert result.status == "goals"
+    assert fake.goal_calls == 1
 
 
-def test_goal_structured_format_accepts_structured_goals(
+@pytest.mark.asyncio
+async def test_goal_distinguishes_complete_from_no_goal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeClient:
-        def open_file(self, _path: str, force_reopen: bool = False, **_kw) -> None:
-            pass
+    """The flagship ambiguity fix: an empty goal list means 'complete' only
+    when elaboration reached the position; a position with no proof state
+    reports 'no_goal_at_position'. Both have goals == []."""
+    from leanclient.aio import GoalResult
 
-        def get_file_content(self, _path: str) -> str:
-            return "import Mathlib\n\ntheorem sample_goal (x : Nat) (h : x = 0) : x = 0 := by\n  exact h\n"
-
-        def get_goal(self, _path: str, _line: int, _column: int) -> dict:
-            return {"goals": ["x : Nat\nh : x = 0\n⊢ x = 0"]}
-
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
-    )
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("GoalSample.lean"))
 
     ctx = _make_ctx()
-    ctx.request_context.lifespan_context.client = FakeClient()
+    ctx.request_context.lifespan_context.client = _GoalClient(
+        _SAMPLE_TEXT, GoalResult(status="complete")
+    )
+    done = await server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
+    assert done.status == "complete"
+    assert done.goals == []
 
-    result = server.goal(
+    ctx2 = _make_ctx()
+    ctx2.request_context.lifespan_context.client = _GoalClient(
+        _SAMPLE_TEXT, GoalResult(status="no_goal")
+    )
+    nowhere = await server.goal(ctx2, file_path="/abs/GoalSample.lean", line=1, column=1)
+    assert nowhere.status == "no_goal_at_position"
+    assert nowhere.goals == []
+
+
+@pytest.mark.asyncio
+async def test_goal_structured_format_accepts_structured_goals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from leanclient.aio import GoalResult
+
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("GoalSample.lean"))
+    ctx = _make_ctx()
+    ctx.request_context.lifespan_context.client = _GoalClient(
+        "import Mathlib\n\ntheorem sample_goal (x : Nat) (h : x = 0) : x = 0 := by\n  exact h\n",
+        GoalResult(status="goals", goals=["x : Nat\nh : x = 0\n⊢ x = 0"]),
+    )
+
+    result = await server.goal(
         ctx,
         file_path="/abs/GoalSample.lean",
         line=4,
@@ -1015,43 +1085,6 @@ def test_goal_structured_format_accepts_structured_goals(
         "status": "open",
         "pretty": "x : Nat\nh : x = 0\n⊢ x = 0",
     }
-
-
-def test_goal_returns_no_goals_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeClient:
-        def __init__(self) -> None:
-            self.goal_calls = 0
-            self.diagnostic_calls = 0
-            self.open_calls: list[tuple[str, bool]] = []
-
-        def open_file(self, path: str, force_reopen: bool = False, **_kw) -> None:
-            self.open_calls.append((path, force_reopen))
-
-        def get_file_content(self, _path: str) -> str:
-            return "import Mathlib\n\ntheorem sample_goal : True := by\n  trivial\n"
-
-        def get_goal(self, _path: str, _line: int, _column: int) -> None:
-            self.goal_calls += 1
-            return None
-
-        def get_diagnostics(self, *_a, **_kw):
-            self.diagnostic_calls += 1
-            return types.SimpleNamespace(diagnostics=[], success=True)
-
-    monkeypatch.setattr(
-        server, "setup_client_for_file", lambda _ctx, _path: "GoalSample.lean"
-    )
-
-    ctx = _make_ctx()
-    fake_client = FakeClient()
-    ctx.request_context.lifespan_context.client = fake_client
-
-    result = server.goal(ctx, file_path="/abs/GoalSample.lean", line=4, column=3)
-
-    assert result.goals == []
-    assert fake_client.goal_calls == 1
-    assert fake_client.open_calls == [("GoalSample.lean", False)]
-    assert fake_client.diagnostic_calls == 0
 
 
 @pytest.mark.asyncio

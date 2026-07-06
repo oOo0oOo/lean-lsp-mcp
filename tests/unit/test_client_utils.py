@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from lean_lsp_mcp import client_utils
 from lean_lsp_mcp.client_utils import (
-    CLIENT_LOCK,
+    attach_shared_client,
     bind_lean_project_path,
     close_shared_client,
-    replace_shared_client,
     resolve_file_path,
     set_build_in_progress,
     setup_client_for_file,
@@ -19,30 +19,35 @@ from lean_lsp_mcp.client_utils import (
 )
 
 
-class _MockProcess:
-    def __init__(self, returncode: int | None = None) -> None:
-        self.returncode = returncode
+class _FakeTransport:
+    def __init__(self) -> None:
+        self.kill_calls = 0
 
-    def poll(self) -> int | None:
-        return self.returncode
+    def _kill_group(self) -> None:
+        self.kill_calls += 1
 
 
-class _MockLeanClient:
+class _MockAioClient:
     def __init__(self, project_path: Path) -> None:
-        self.project_path = project_path
-        self.process = _MockProcess()
+        self.project_path = str(project_path)
         self.closed = False
+        self._alive = True
+        self._transport = _FakeTransport()
 
-    def close(self) -> None:
+    @property
+    def alive(self) -> bool:
+        return self._alive and not self.closed
+
+    async def close(self) -> None:
         self.closed = True
 
 
-class _FailingCloseClient(_MockLeanClient):
+class _FailingCloseClient(_MockAioClient):
     def __init__(self, project_path: Path) -> None:
         super().__init__(project_path)
         self.close_calls = 0
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.close_calls += 1
         raise PermissionError("operation not permitted")
 
@@ -51,7 +56,7 @@ class _LifespanContext:
     def __init__(
         self,
         lean_project_path: Path | None,
-        client: _MockLeanClient | None,
+        client: _MockAioClient | None,
         *,
         active_transport: str = "stdio",
         project_switching_allowed: bool = True,
@@ -94,61 +99,62 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _reset_shared_clients() -> None:
+    client_utils._shared_clients.clear()
+    client_utils._shared_pools.clear()
+    client_utils._builds_in_progress.clear()
     yield
-    close_shared_client()
+    client_utils._shared_clients.clear()
+    client_utils._shared_pools.clear()
+    client_utils._builds_in_progress.clear()
 
 
 @pytest.fixture
-def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockLeanClient]:
-    created: list[_MockLeanClient] = []
+def patched_clients(monkeypatch: pytest.MonkeyPatch) -> list[_MockAioClient]:
+    created: list[_MockAioClient] = []
 
-    def _constructor(
-        project_path: Path,
-        initial_build: bool,
-        prevent_cache_get: bool = False,
-        **kwargs,
-    ) -> _MockLeanClient:  # pragma: no cover - signature verified indirectly
-        _ = initial_build, prevent_cache_get, kwargs
-        client = _MockLeanClient(project_path)
+    async def _constructor(project_path: Path) -> _MockAioClient:
+        client = _MockAioClient(project_path)
         created.append(client)
         return client
 
-    monkeypatch.setattr("lean_lsp_mcp.client_utils.LeanLSPClient", _constructor)
+    monkeypatch.setattr(client_utils, "_start_client", _constructor)
     return created
 
 
-def test_startup_client_reuses_existing(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_startup_client_reuses_existing(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     ctx = _Context(_LifespanContext(project, None))
 
-    startup_client(ctx)
+    await startup_client(ctx)
     first = ctx.request_context.lifespan_context.client
-    assert isinstance(first, _MockLeanClient)
+    assert isinstance(first, _MockAioClient)
     assert not first.closed
 
-    startup_client(ctx)
+    await startup_client(ctx)
     assert ctx.request_context.lifespan_context.client is first
     assert len(patched_clients) == 1
 
 
-def test_startup_client_keeps_project_specific_clients(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_startup_client_keeps_project_specific_clients(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project1 = _make_project(tmp_path / "proj1")
     project2 = _make_project(tmp_path / "proj2")
     ctx = _Context(_LifespanContext(project1, None))
 
-    startup_client(ctx)
+    await startup_client(ctx)
     first = ctx.request_context.lifespan_context.client
 
     ctx.request_context.lifespan_context.lean_project_path = project2
-    startup_client(ctx)
+    await startup_client(ctx)
     second = ctx.request_context.lifespan_context.client
 
     ctx.request_context.lifespan_context.lean_project_path = project1
-    startup_client(ctx)
+    await startup_client(ctx)
 
     assert first is not None
     assert second is not None
@@ -159,17 +165,18 @@ def test_startup_client_keeps_project_specific_clients(
     assert len(patched_clients) == 2
 
 
-def test_startup_client_recreates_dead_shared_client(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_startup_client_recreates_dead_shared_client(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     ctx = _Context(_LifespanContext(project, None))
 
-    startup_client(ctx)
+    await startup_client(ctx)
     first = ctx.request_context.lifespan_context.client
-    first.process.returncode = 1
+    first._alive = False
 
-    startup_client(ctx)
+    await startup_client(ctx)
 
     second = ctx.request_context.lifespan_context.client
     assert second is not first
@@ -177,23 +184,23 @@ def test_startup_client_recreates_dead_shared_client(
     assert len(patched_clients) == 2
 
 
-def test_startup_client_recreates_dead_client_even_if_close_fails(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_startup_client_recreates_dead_client_even_if_close_fails(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     old_client = _FailingCloseClient(project)
-    old_client.process.returncode = 1
+    old_client._alive = False
 
-    with CLIENT_LOCK:
-        replace_shared_client(project, old_client)
+    attach_shared_client(project, old_client)
 
     ctx = _Context(_LifespanContext(project, old_client))
-    startup_client(ctx)
+    await startup_client(ctx)
 
     new_client = ctx.request_context.lifespan_context.client
-    assert isinstance(new_client, _MockLeanClient)
+    assert isinstance(new_client, _MockAioClient)
     assert new_client is not old_client
-    assert new_client.project_path == project
+    assert Path(new_client.project_path) == project.resolve()
     assert old_client.close_calls == 1
     assert len(patched_clients) == 1
 
@@ -210,8 +217,9 @@ def test_valid_lean_project_path_requires_lakefile(tmp_path: Path) -> None:
     assert valid_lean_project_path(project)
 
 
-def test_setup_client_for_file_discovers_project(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_setup_client_for_file_discovers_project(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     lean_file = project / "src" / "Example.lean"
@@ -220,14 +228,18 @@ def test_setup_client_for_file_discovers_project(
 
     ctx = _Context(_LifespanContext(None, None))
 
-    rel_path = setup_client_for_file(ctx, str(lean_file))
+    rel_path = await setup_client_for_file(ctx, str(lean_file))
     assert rel_path == "src/Example.lean"
-    assert ctx.request_context.lifespan_context.client.project_path == project
+    assert (
+        Path(ctx.request_context.lifespan_context.client.project_path)
+        == project.resolve()
+    )
     assert len(patched_clients) == 1
 
 
-def test_setup_client_for_file_reuses_client_for_same_project(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_setup_client_for_file_reuses_client_for_same_project(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     file1 = project / "File1.lean"
@@ -238,20 +250,21 @@ def test_setup_client_for_file_reuses_client_for_same_project(
 
     ctx = _Context(_LifespanContext(None, None))
 
-    rel_path1 = setup_client_for_file(ctx, str(file1))
+    rel_path1 = await setup_client_for_file(ctx, str(file1))
     assert rel_path1 == "File1.lean"
     first_client = ctx.request_context.lifespan_context.client
     assert len(patched_clients) == 1
 
-    rel_path2 = setup_client_for_file(ctx, str(file2))
+    rel_path2 = await setup_client_for_file(ctx, str(file2))
     assert rel_path2 == "src/File2.lean"
     assert ctx.request_context.lifespan_context.client is first_client
     assert not first_client.closed
     assert len(patched_clients) == 1
 
 
-def test_setup_client_for_file_switches_projects_without_closing_cache(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_setup_client_for_file_switches_projects_without_closing_cache(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project1 = _make_project(tmp_path / "proj1")
     file1 = project1 / "File1.lean"
@@ -263,10 +276,10 @@ def test_setup_client_for_file_switches_projects_without_closing_cache(
 
     ctx = _Context(_LifespanContext(None, None))
 
-    assert setup_client_for_file(ctx, str(file1)) == "File1.lean"
+    assert await setup_client_for_file(ctx, str(file1)) == "File1.lean"
     first_client = ctx.request_context.lifespan_context.client
 
-    assert setup_client_for_file(ctx, str(file2)) == "File2.lean"
+    assert await setup_client_for_file(ctx, str(file2)) == "File2.lean"
     second_client = ctx.request_context.lifespan_context.client
 
     assert first_client is not second_client
@@ -276,8 +289,9 @@ def test_setup_client_for_file_switches_projects_without_closing_cache(
     assert ctx.request_context.lifespan_context.lean_project_path == project2
 
 
-def test_setup_client_for_dependency_file_uses_parent_project(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_setup_client_for_dependency_file_uses_parent_project(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     try:
@@ -287,11 +301,14 @@ def test_setup_client_for_dependency_file_uses_parent_project(
 
     ctx = _Context(_LifespanContext(project, None))
 
-    rel_path = setup_client_for_file(ctx, str(dep_file))
+    rel_path = await setup_client_for_file(ctx, str(dep_file))
 
     assert rel_path == os.path.relpath(dep_file, project)
     assert ctx.request_context.lifespan_context.lean_project_path == project
-    assert ctx.request_context.lifespan_context.client.project_path == project
+    assert (
+        Path(ctx.request_context.lifespan_context.client.project_path)
+        == project.resolve()
+    )
     assert len(patched_clients) == 1
 
 
@@ -313,45 +330,66 @@ def test_bind_lean_project_path_rejects_switch_on_remote_transport(
         bind_lean_project_path(ctx, project2)
 
 
-def test_startup_client_serializes_concurrent_calls(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_startup_client_serializes_concurrent_calls(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project = _make_project(tmp_path / "proj")
     ctx = _Context(_LifespanContext(project, None))
 
-    def _invoke_startup() -> None:
-        startup_client(ctx)
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(_invoke_startup) for _ in range(10)]
-        for future in futures:
-            assert future.result() is None
+    await asyncio.gather(*(startup_client(ctx) for _ in range(10)))
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
 
 
-def test_build_in_progress_blocks_only_same_project(
-    tmp_path: Path, patched_clients: list[_MockLeanClient]
+@pytest.mark.asyncio
+async def test_build_in_progress_blocks_only_same_project(
+    tmp_path: Path, patched_clients: list[_MockAioClient]
 ) -> None:
     project1 = _make_project(tmp_path / "proj1")
     project2 = _make_project(tmp_path / "proj2")
 
-    with CLIENT_LOCK:
-        set_build_in_progress(project1, True)
+    set_build_in_progress(project1, True)
 
     try:
         with pytest.raises(ValueError, match="build is in progress"):
-            startup_client(_Context(_LifespanContext(project1, None)))
+            await startup_client(_Context(_LifespanContext(project1, None)))
 
         other_ctx = _Context(_LifespanContext(project2, None))
-        startup_client(other_ctx)
+        await startup_client(other_ctx)
 
         assert other_ctx.request_context.lifespan_context.client is patched_clients[0]
         assert len(patched_clients) == 1
     finally:
-        with CLIENT_LOCK:
-            set_build_in_progress(project1, False)
+        set_build_in_progress(project1, False)
+
+
+def test_close_shared_client_kills_process_group(tmp_path: Path) -> None:
+    """close_shared_client() is the post-event-loop exit path: it must
+    terminate synchronously via the transport's process-group kill."""
+    project = _make_project(tmp_path / "proj")
+    client = _MockAioClient(project)
+    attach_shared_client(project, client)
+
+    close_shared_client()
+
+    assert client._transport.kill_calls == 1
+    assert client_utils._shared_clients == {}
+
+
+def test_close_shared_client_suppresses_error(tmp_path: Path) -> None:
+    project = _make_project(tmp_path / "proj")
+    client = _MockAioClient(project)
+
+    def _boom() -> None:
+        raise PermissionError("operation not permitted")
+
+    client._transport._kill_group = _boom
+    attach_shared_client(project, client)
+
+    close_shared_client()  # should not raise
+    assert client_utils._shared_clients == {}
 
 
 def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> None:

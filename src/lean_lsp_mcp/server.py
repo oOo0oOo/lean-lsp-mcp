@@ -475,7 +475,10 @@ def rate_limited(
             async def wrapper(*args, **kwargs):
                 allowed, msg = _apply_rate_limit(args, kwargs)
                 if not allowed:
-                    return msg
+                    # Raising (not returning a string) keeps the structured
+                    # output model valid and reaches the agent as a clean
+                    # tool error instead of a pydantic validation failure.
+                    raise LeanToolError(msg)
                 return await func(*args, **kwargs)
 
         else:
@@ -484,7 +487,7 @@ def rate_limited(
             def wrapper(*args, **kwargs):
                 allowed, msg = _apply_rate_limit(args, kwargs)
                 if not allowed:
-                    return msg
+                    raise LeanToolError(msg)
                 return func(*args, **kwargs)
 
         doc = wrapper.__doc__ or ""

@@ -163,7 +163,11 @@ def lean_local_search(
     root = policy.project_root
 
     pattern = (
-        rf"^\s*(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
+        # Optional attributes (`@[simp]`) and modifiers (`protected`, `private`,
+        # `noncomputable`, ...) may precede the declaration keyword.
+        rf"^\s*(?:@\[[^\]]*\]\s*)*"
+        rf"(?:(?:public|protected|private|noncomputable|partial|unsafe|scoped|local)\s+)*"
+        rf"(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
         rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(query)}[A-Za-z0-9_'.]*(?:\s|:)"
     )
 

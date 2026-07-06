@@ -34,7 +34,10 @@ def theorem_declared(source: str, name: str) -> bool:
     has no binders (``find_theorem_binders`` returns ``[]`` for both).
     """
     return (
-        re.search(rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}\b", source)
+        re.search(
+            rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}(?![A-Za-z0-9_'])",
+            source,
+        )
         is not None
     )
 
@@ -51,7 +54,9 @@ def find_theorem_binders(source: str, name: str) -> list[tuple[str, int, int]]:
     *first* declaration in `source` whose name equals `name`; bare names should
     be unique within a file or this will pick the wrong one.
     """
-    pattern = re.compile(rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}\b")
+    pattern = re.compile(
+        rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}(?![A-Za-z0-9_'])"
+    )
     m = pattern.search(source)
     if not m:
         return []

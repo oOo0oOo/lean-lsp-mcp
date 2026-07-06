@@ -21,7 +21,7 @@ from lean_lsp_mcp.client_utils import (
     build_lean_path_policy,
     open_synced,
 )
-from lean_lsp_mcp.loogle import loogle_remote
+from lean_lsp_mcp.loogle import LoogleQueryError, loogle_remote
 from lean_lsp_mcp.models import (
     LeanFinderResult,
     LeanFinderResults,
@@ -116,7 +116,7 @@ async def local_search(
 # us to lift our previously very conservative 3 req/30s. This client-side
 # throttle mainly guards against runaway loops; the server enforces its own
 # per-IP limit, which the maintainers adjust dynamically as capacity allows.
-@server.rate_limited("leansearch", max_requests=90, per_seconds=30)
+@server.rate_limited("leansearch", *config.RATE_LIMITS["leansearch"])
 async def leansearch(
     ctx: Context,
     query: Annotated[str, Field(description="Natural language or Lean term query")],
@@ -201,18 +201,23 @@ async def loogle(
                 for r in results
             ]
             return LoogleResults(items=items)
+        except LoogleQueryError as e:
+            # The query itself is malformed — remote would reject it too.
+            raise server.LeanToolError(str(e)) from e
         except Exception as e:
             server.logger.warning(f"Local loogle failed: {e}, falling back to remote")
 
     # Fall back to remote. Rate limit only the default public instance; a
     # custom LOOGLE_URL (self-hosted backend) is not rate limited.
     if not server._custom_backend("LOOGLE_URL", config.DEFAULT_LOOGLE_URL):
+        max_requests, per_seconds = config.RATE_LIMITS["loogle"]
         rate_limit = app_ctx.rate_limit["loogle"]
         now = int(time.time())
-        rate_limit[:] = [t for t in rate_limit if now - t < 30]
-        if len(rate_limit) >= 3:
+        rate_limit[:] = [t for t in rate_limit if now - t < per_seconds]
+        if len(rate_limit) >= max_requests:
             raise server.LeanToolError(
-                "Rate limit exceeded: 3 requests per 30s. Use --loogle-local to avoid limits."
+                f"Rate limit exceeded: {max_requests} requests per {per_seconds}s. "
+                "Use --loogle-local to avoid limits."
             )
         rate_limit.append(now)
 
@@ -237,7 +242,7 @@ async def loogle(
         openWorldHint=True,
     ),
 )
-@server.rate_limited("leanfinder", max_requests=10, per_seconds=30)
+@server.rate_limited("leanfinder", *config.RATE_LIMITS["leanfinder"])
 async def leanfinder(
     ctx: Context,
     query: Annotated[str, Field(description="Mathematical concept or proof state")],
@@ -256,7 +261,7 @@ async def leanfinder(
     (v4.19.0, v4.24.0, or v4.28.0). Default: v4.28.0.
     """
     headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
-    request_url = "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
+    request_url = config.leanfinder_url()
     payload = orjson.dumps(
         {"inputs": query, "top_k": int(num_results), "version": version}
     )
@@ -301,8 +306,7 @@ async def leanfinder(
 )
 @server.rate_limited(
     "lean_state_search",
-    max_requests=6,
-    per_seconds=30,
+    *config.RATE_LIMITS["lean_state_search"],
     bypass=lambda: server._custom_backend(
         "LEAN_STATE_SEARCH_URL", config.DEFAULT_STATE_SEARCH_URL
     ),
@@ -335,7 +339,8 @@ async def state_search(
 
     url = config.state_search_url()
     req = urllib.request.Request(
-        f"{url}/api/search?query={goal_str}&results={num_results}&rev=v4.22.0",
+        f"{url}/api/search?query={goal_str}&results={num_results}"
+        f"&rev={config.state_search_rev()}",
         headers={"User-Agent": "lean-lsp-mcp/0.1"},
         method="GET",
     )
@@ -360,8 +365,7 @@ async def state_search(
 )
 @server.rate_limited(
     "hammer_premise",
-    max_requests=6,
-    per_seconds=30,
+    *config.RATE_LIMITS["hammer_premise"],
     bypass=lambda: server._custom_backend("LEAN_HAMMER_URL", config.DEFAULT_HAMMER_URL),
 )
 async def hammer_premise(

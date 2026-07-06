@@ -12,9 +12,9 @@ regardless of its line position.
 from __future__ import annotations
 
 from lean_lsp_mcp.server import (
+    _build_attempt_text,
     _diagnostic_identity,
     _filter_diagnostics_by_line_range,
-    _prepare_multi_attempt_edit,
     _shift_baseline_keys,
 )
 
@@ -115,21 +115,22 @@ def test_unchanged_distant_diagnostic_not_re_reported() -> None:
     assert extra == []  # in baseline, so excluded
 
 
-def test_prepare_multi_attempt_edit_no_shift_in_middle_of_file() -> None:
+def test_build_attempt_text_no_shift_in_middle_of_file() -> None:
     """Multi-line snippet replacing N source lines in the middle of a file
     leaves the file size unchanged, so line_delta == 0.
     """
-    _, _, _, _, line_delta = _prepare_multi_attempt_edit(
+    lines = ["-- line"] * 49 + ["  sorry"] + ["-- line"] * 50
+    _, _, _, _, line_delta = _build_attempt_text(
+        lines=lines,
         line_context="  sorry",
         target_column=2,
         snippet="have h : True := trivial\n  exact h",
-        total_lines=100,
         line=50,
     )
     assert line_delta == 0
 
 
-def test_prepare_multi_attempt_edit_shift_when_clamped() -> None:
+def test_build_attempt_text_shift_when_clamped() -> None:
     """Multi-line snippet near end-of-file gets its replacement range clamped
     by total_lines. The payload still has N lines but only fewer original
     lines were replaced, so the file grows by the difference.
@@ -137,11 +138,12 @@ def test_prepare_multi_attempt_edit_shift_when_clamped() -> None:
     # 4-line file, snippet at line 3 with 3 payload lines.
     # replacement covers lines [2, min(2+3, 4)) = [2, 4), i.e. 2 original
     # lines. Payload is 3 lines. Delta = +1.
-    _, _, _, _, line_delta = _prepare_multi_attempt_edit(
+    lines = ["-- a", "-- b", "  sorry", "-- d"]
+    _, _, _, _, line_delta = _build_attempt_text(
+        lines=lines,
         line_context="  sorry",
         target_column=2,
         snippet="have h : True := trivial\n  have h2 : True := h\n  exact h2",
-        total_lines=4,
         line=3,
     )
     assert line_delta == 1

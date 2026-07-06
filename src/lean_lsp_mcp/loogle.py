@@ -37,6 +37,10 @@ def get_cache_dir() -> Path:
     return Path(xdg) / "lean-lsp-mcp" / "loogle"
 
 
+class LoogleQueryError(RuntimeError):
+    """Loogle rejected the query itself (parse error, bad syntax)."""
+
+
 def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     """Query the remote loogle API.
 
@@ -55,9 +59,12 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as response:
             results = orjson.loads(response.read())
-        if "hits" not in results:
-            return "No results found."
-        hits = results["hits"][:num_results]
+        if err := results.get("error"):
+            suggestions = results.get("suggestions") or []
+            hint = f" Suggestions: {', '.join(suggestions[:5])}" if suggestions else ""
+            return f"loogle query error: {err}{hint}"
+        hits = results.get("hits") or []
+        hits = hits[:num_results]
         return [
             LoogleResult(
                 name=r.get("name", ""),
@@ -500,6 +507,16 @@ class LoogleManager:
             logger.error(f"Start failed: {e}")
             return False
 
+    async def _desync_stop(self) -> None:
+        """Kill the subprocess after a stream desync (timeout/garbage)."""
+        self._ready = False
+        if self.process is not None:
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                pass
+            self.process = None
+
     async def query(self, q: str, num_results: int = 8) -> list[dict[str, Any]]:
         async with self._lock:
             # Try up to 2 attempts (initial + one restart)
@@ -518,16 +535,24 @@ class LoogleManager:
 
                 assert self.process.stdin is not None
                 assert self.process.stdout is not None
+                # The protocol is one line per query/response; a newline in
+                # the query would desync every subsequent read.
+                sanitized = " ".join(q.splitlines())
                 try:
-                    self.process.stdin.write(f"{q}\n".encode())
+                    self.process.stdin.write(f"{sanitized}\n".encode())
                     await self.process.stdin.drain()
                     line = await asyncio.wait_for(
                         self.process.stdout.readline(), timeout=30
                     )
                     response = json.loads(line.decode("utf-8", errors="replace"))
                     if err := response.get("error"):
-                        logger.warning(f"Query error: {err}")
-                        return []
+                        suggestions = response.get("suggestions") or []
+                        hint = (
+                            f" Suggestions: {', '.join(suggestions[:5])}"
+                            if suggestions
+                            else ""
+                        )
+                        raise LoogleQueryError(f"loogle query error: {err}{hint}")
                     return [
                         {
                             "name": h.get("name", ""),
@@ -538,8 +563,12 @@ class LoogleManager:
                         for h in response.get("hits", [])[:num_results]
                     ]
                 except asyncio.TimeoutError:
+                    # The late response would be attributed to the NEXT query;
+                    # kill the subprocess so a restart resyncs the stream.
+                    await self._desync_stop()
                     raise RuntimeError("Query timeout") from None
                 except json.JSONDecodeError as e:
+                    await self._desync_stop()
                     raise RuntimeError(f"Invalid response: {e}") from e
 
             raise RuntimeError("Loogle subprocess not ready")

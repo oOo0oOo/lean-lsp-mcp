@@ -14,7 +14,7 @@ class _FailingClient:
     def __init__(self) -> None:
         self.close_calls = 0
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.close_calls += 1
         raise PermissionError("operation not permitted")
 
@@ -74,10 +74,11 @@ def make_read(output: bytes):
 @pytest.fixture
 def patch_build():
     """Context manager to patch all build dependencies."""
+    client_cls = MagicMock()
+    client_cls.return_value.start = AsyncMock()
     with (
         patch("lean_lsp_mcp.server.asyncio.create_subprocess_exec") as mock_exec,
-        patch("lean_lsp_mcp.server.LeanLSPClient"),
-        patch("lean_lsp_mcp.server.OutputCapture"),
+        patch("lean_lsp_mcp.server.AsyncLeanLSPClient", client_cls),
     ):
         yield mock_exec
 
