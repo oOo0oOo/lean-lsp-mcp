@@ -124,6 +124,7 @@ async def verify_theorem(
     from lean_lsp_mcp.verify import (
         check_axiom_errors,
         parse_axioms,
+        read_lean_source_utf8,
         scan_warnings,
     )
 
@@ -138,8 +139,10 @@ async def verify_theorem(
     except (FileNotFoundError, ValueError) as exc:
         raise server.LeanToolError(str(exc)) from exc
 
-    doc = await open_synced(ctx, rel_path)
-    original_content = doc.text
+    try:
+        original_content = read_lean_source_utf8(abs_path)
+    except ValueError as exc:
+        raise server.LeanToolError(str(exc)) from exc
 
     # Run the axiom check on a scratch copy; the real document is untouched.
     text = original_content.rstrip("\n") + f"\n\n#print axioms _root_.{theorem_name}\n"

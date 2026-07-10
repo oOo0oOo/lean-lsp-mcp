@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from lean_lsp_mcp.verify import (
     check_axiom_errors,
     parse_axioms,
+    read_lean_source_utf8,
     scan_warnings,
 )
 
@@ -101,3 +104,100 @@ class TestScanWarnings:
 
     def test_nonexistent(self, tmp_path: Path):
         assert scan_warnings(tmp_path / "nope.lean") == []
+
+
+class TestReadLeanSourceUtf8:
+    def test_reads_utf8_regardless_of_platform_default(self, tmp_path: Path):
+        source = "-- Unicode: \u2212 \u2080 \u03b1\ntheorem clean : True := trivial\n"
+        file_path = tmp_path / "unicode.lean"
+        file_path.write_text(source, encoding="utf-8")
+
+        assert read_lean_source_utf8(file_path) == source
+
+    def test_reports_utf8_when_decoding_fails(self, tmp_path: Path):
+        file_path = tmp_path / "invalid.lean"
+        file_path.write_bytes(b"-- invalid: \xff\n")
+
+        with pytest.raises(ValueError, match=r"using UTF-8"):
+            read_lean_source_utf8(file_path)
+
+
+@pytest.mark.asyncio
+async def test_verify_reads_utf8_without_opening_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from lean_lsp_mcp import server
+    from lean_lsp_mcp.tools import analysis
+
+    file_path = tmp_path / "unicode.lean"
+    file_path.write_text(
+        "-- Unicode: \u2212 \u2080 \u03b1\ntheorem clean : True := trivial\n",
+        encoding="utf-8",
+    )
+
+    class Policy:
+        def validate_path(self, path: Path) -> Path:
+            return path
+
+    class Pool:
+        async def run_text(self, text: str):
+            return SimpleNamespace(
+                diagnostics=SimpleNamespace(
+                    items=[
+                        {
+                            "severity": 3,
+                            "message": "'clean' does not depend on any axioms",
+                            "range": {"start": {"line": 999}},
+                        }
+                    ]
+                )
+            )
+
+    monkeypatch.setattr(server, "_validate_theorem_name", lambda name: name)
+    monkeypatch.setattr(
+        server, "setup_client_for_file", AsyncMock(return_value="unicode.lean")
+    )
+    monkeypatch.setattr(server, "resolve_file_path", lambda _ctx, _path: file_path)
+    monkeypatch.setattr(server, "_RG_AVAILABLE", False)
+    monkeypatch.setattr(analysis, "get_path_policy", lambda _ctx: Policy())
+    monkeypatch.setattr(analysis, "get_scratch_pool", lambda _ctx: Pool())
+    monkeypatch.setattr(
+        analysis,
+        "open_synced",
+        AsyncMock(
+            side_effect=AssertionError("lean_verify must not read via open_synced")
+        ),
+    )
+
+    result = await analysis.verify_theorem(
+        object(), str(file_path), "Namespace.clean", scan_source=False
+    )
+
+    assert result.axioms == []
+
+
+@pytest.mark.asyncio
+async def test_verify_reports_utf8_decode_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from lean_lsp_mcp import server
+    from lean_lsp_mcp.tools import analysis
+
+    file_path = tmp_path / "invalid.lean"
+    file_path.write_bytes(b"-- invalid: \xff\n")
+
+    class Policy:
+        def validate_path(self, path: Path) -> Path:
+            return path
+
+    monkeypatch.setattr(server, "_validate_theorem_name", lambda name: name)
+    monkeypatch.setattr(
+        server, "setup_client_for_file", AsyncMock(return_value="invalid.lean")
+    )
+    monkeypatch.setattr(server, "resolve_file_path", lambda _ctx, _path: file_path)
+    monkeypatch.setattr(analysis, "get_path_policy", lambda _ctx: Policy())
+
+    with pytest.raises(server.LeanToolError, match=r"using UTF-8"):
+        await analysis.verify_theorem(
+            object(), str(file_path), "Namespace.invalid", scan_source=False
+        )
