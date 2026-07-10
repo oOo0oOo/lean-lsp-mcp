@@ -59,9 +59,9 @@ def ensure_test_project(repo_root: Path) -> Path:
 
 
 def _write_if_changed(path: Path, content: str) -> None:
-    if path.exists() and path.read_text() == content:
+    if path.exists() and path.read_text(encoding="utf-8") == content:
         return
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8")
 
 
 def _should_refresh(project_root: Path) -> bool:

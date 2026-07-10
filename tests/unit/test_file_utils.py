@@ -9,6 +9,8 @@ from lean_lsp_mcp.file_utils import (
     build_lean_path_policy,
     get_file_contents,
     get_relative_file_path,
+    lsp_location_path,
+    read_lean_source_utf8,
     require_lean_project_path,
     resolve_input_path,
 )
@@ -107,3 +109,32 @@ def test_get_file_contents_fallback_encoding(tmp_path: Path) -> None:
     latin1_file.write_text("caf\xe9", encoding="latin-1")
 
     assert get_file_contents(latin1_file) == "caf\xe9"
+
+
+def test_read_lean_source_utf8_is_strict_and_reports_encoding(tmp_path: Path) -> None:
+    source = "-- Unicode: \u2212 \u2080 \u03b1\ntheorem clean : True := trivial\n"
+    valid_file = tmp_path / "valid.lean"
+    valid_file.write_text(source, encoding="utf-8")
+    for _ in range(3):
+        assert read_lean_source_utf8(valid_file) == source
+
+    invalid_file = tmp_path / "invalid.lean"
+    invalid_file.write_bytes(b"-- invalid: \xff\n")
+    with pytest.raises(ValueError, match=r"using UTF-8"):
+        read_lean_source_utf8(invalid_file)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-specific LSP URI path")
+@pytest.mark.parametrize(
+    "location",
+    [
+        "/C:/Users/11388/reserach/HighDimProb/Main.lean",
+        "///C:/Users/11388/reserach/HighDimProb/Main.lean",
+    ],
+)
+def test_lsp_location_path_restores_windows_drive(location: str) -> None:
+    path = lsp_location_path(location)
+
+    assert path.is_absolute()
+    assert path.drive == "C:"
+    assert path == Path(r"C:\Users\11388\reserach\HighDimProb\Main.lean")

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 
 _LAKEFILE_NAMES = ("lakefile.lean", "lakefile.toml")
 _STDLIB_DISPLAY_ROOT = ".lean-stdlib"
+_WINDOWS_DRIVE_URI_PATH = re.compile(r"^/+[A-Za-z]:[\\/]")
 
 
 @dataclass(frozen=True)
@@ -161,6 +163,15 @@ def resolve_input_path(
     return path_obj.resolve(strict=require_exists)
 
 
+def lsp_location_path(location_path: str | Path) -> Path:
+    """Convert a path returned by an LSP location into a local path."""
+    value = str(location_path)
+    if os.name == "nt" and _WINDOWS_DRIVE_URI_PATH.match(value):
+        # leanclient exposes file URIs with leading slashes before the drive.
+        return Path(PureWindowsPath(value.lstrip("/")))
+    return Path(value)
+
+
 def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[str]:
     """Convert a file path into a leanclient-compatible path relative to the project root."""
     policy = build_lean_path_policy(lean_project_path)
@@ -184,6 +195,17 @@ def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[
         if policy.contains(candidate):
             return policy.client_relative_path(candidate)
     return None
+
+
+def read_lean_source_utf8(abs_path: str | Path) -> str:
+    """Read Lean source strictly as UTF-8, independent of the OS code page."""
+    path_obj = Path(abs_path)
+    try:
+        return path_obj.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Could not decode Lean source {path_obj} using UTF-8: {exc}"
+        ) from exc
 
 
 def get_file_contents(abs_path: str | Path) -> str:

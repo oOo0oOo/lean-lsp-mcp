@@ -14,6 +14,7 @@ from pydantic import Field
 
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import get_path_policy, open_synced
+from lean_lsp_mcp.file_utils import lsp_location_path, read_lean_source_utf8
 from lean_lsp_mcp.models import (
     CompletionItem,
     CompletionsResult,
@@ -212,7 +213,10 @@ async def declaration_file(
         server._raise_invalid_path(file_path)
 
     client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
-    await open_synced(ctx, rel_path)
+    try:
+        await open_synced(ctx, rel_path)
+    except ValueError as exc:
+        raise server.LeanToolError(str(exc)) from exc
     orig_file_content = client.content(rel_path)
 
     # Find the first occurence of the symbol (line and column) in the file
@@ -233,10 +237,11 @@ async def declaration_file(
 
     try:
         policy = get_path_policy(ctx)
+        location_path = lsp_location_path(local_path)
         abs_path = policy.validate_path(
-            Path(local_path)
-            if Path(local_path).is_absolute()
-            else Path(client.project_path) / local_path
+            location_path
+            if location_path.is_absolute()
+            else Path(client.project_path) / location_path
         )
     except ValueError as exc:
         raise server.LeanToolError(str(exc)) from exc
@@ -246,7 +251,10 @@ async def declaration_file(
             f"Could not open declaration file `{abs_path}` for `{symbol}`."
         )
 
-    file_content = server.get_file_contents(abs_path)
+    try:
+        file_content = read_lean_source_utf8(abs_path)
+    except ValueError as exc:
+        raise server.LeanToolError(str(exc)) from exc
     file_lines = file_content.splitlines()
     total_lines = len(file_lines)
 
@@ -325,10 +333,11 @@ async def references(
         r = ref.get("range", {})
         display = ref.get("path", "")
         if display:
+            location_path = lsp_location_path(display)
             candidate = (
-                Path(display)
-                if Path(display).is_absolute()
-                else Path(client.project_path) / display
+                location_path
+                if location_path.is_absolute()
+                else Path(client.project_path) / location_path
             )
             try:
                 display = policy.display_path(candidate)
