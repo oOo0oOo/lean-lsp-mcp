@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 
 _LAKEFILE_NAMES = ("lakefile.lean", "lakefile.toml")
 _STDLIB_DISPLAY_ROOT = ".lean-stdlib"
+_WINDOWS_DRIVE_URI_PATH = re.compile(r"^/+[A-Za-z]:[\\/]")
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,15 @@ def resolve_input_path(
     if project_root is not None:
         return (project_root / path_obj).resolve(strict=require_exists)
     return path_obj.resolve(strict=require_exists)
+
+
+def lsp_location_path(location_path: str | Path) -> Path:
+    """Convert a path returned by an LSP location into a local path."""
+    value = str(location_path)
+    if os.name == "nt" and _WINDOWS_DRIVE_URI_PATH.match(value):
+        # leanclient exposes file URIs with leading slashes before the drive.
+        return Path(PureWindowsPath(value.lstrip("/")))
+    return Path(value)
 
 
 def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[str]:

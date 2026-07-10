@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -739,6 +740,56 @@ async def test_declaration_file_reads_utf8_source_repeatedly(
         assert "unicodeTarget" in result.content
 
     assert client.open_calls == [("Unicode.lean", source, False)] * 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-specific LSP URI path")
+@pytest.mark.asyncio
+async def test_declaration_file_normalizes_windows_lsp_uri_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    source_file = project / "WindowsLocation.lean"
+    source = "theorem windowsLocationTarget : True := by trivial\n"
+    source_file.write_text(source, encoding="utf-8")
+
+    class FakeClient:
+        project_path = str(project)
+
+        async def open(self, _path: str, text: str, wait: bool = False):
+            assert text == source
+            assert wait is False
+            return types.SimpleNamespace(text=text)
+
+        def content(self, _path: str) -> str:
+            return source
+
+        async def goto(self, kind: str, _path: str, _line: int, _column: int):
+            assert kind == "declaration"
+            return [
+                {
+                    "path": "///" + source_file.as_posix(),
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": len(source.rstrip())},
+                    },
+                }
+            ]
+
+    ctx = _make_ctx(lean_project_path=project)
+    ctx.request_context.lifespan_context.client = FakeClient()
+    monkeypatch.setattr(
+        server, "setup_client_for_file", _async_setup("WindowsLocation.lean")
+    )
+
+    result = await server.declaration_file(
+        ctx=ctx,
+        file_path=str(source_file),
+        symbol="windowsLocationTarget",
+        context_lines=1,
+    )
+
+    assert result.file_path == "WindowsLocation.lean"
+    assert "windowsLocationTarget" in result.content
 
 
 @pytest.mark.asyncio
