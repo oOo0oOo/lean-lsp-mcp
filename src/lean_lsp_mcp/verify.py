@@ -28,20 +28,6 @@ _WARNING_PATTERNS: list[str] = [
 _COMBINED_PATTERN = "|".join(f"(?:{p})" for p in _WARNING_PATTERNS)
 
 
-def read_lean_source_utf8(file_path: Path) -> str:
-    """Read Lean source with its required UTF-8 encoding.
-
-    Lean files are UTF-8. Do not fall back to the platform default encoding:
-    on Windows that can be a legacy code page such as GBK.
-    """
-    try:
-        return file_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError(
-            f"Could not decode Lean source {file_path} using UTF-8: {exc}"
-        ) from exc
-
-
 def parse_axioms(diagnostics: list[dict]) -> list[str]:
     """Extract axiom names from #print axioms info diagnostics."""
     axioms: list[str] = []

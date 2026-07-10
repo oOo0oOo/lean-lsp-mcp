@@ -186,6 +186,17 @@ def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[
     return None
 
 
+def read_lean_source_utf8(abs_path: str | Path) -> str:
+    """Read Lean source strictly as UTF-8, independent of the OS code page."""
+    path_obj = Path(abs_path)
+    try:
+        return path_obj.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Could not decode Lean source {path_obj} using UTF-8: {exc}"
+        ) from exc
+
+
 def get_file_contents(abs_path: str | Path) -> str:
     path_obj = Path(abs_path)
     for enc in ("utf-8", "latin-1"):

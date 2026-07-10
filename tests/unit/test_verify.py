@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from lean_lsp_mcp.file_utils import read_lean_source_utf8
 from lean_lsp_mcp.verify import (
     check_axiom_errors,
     parse_axioms,
-    read_lean_source_utf8,
     scan_warnings,
 )
 

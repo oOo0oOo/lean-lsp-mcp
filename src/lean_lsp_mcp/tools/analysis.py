@@ -14,6 +14,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
+from lean_lsp_mcp.file_utils import read_lean_source_utf8
 from lean_lsp_mcp.client_utils import (
     get_path_policy,
     get_scratch_pool,
@@ -124,7 +125,6 @@ async def verify_theorem(
     from lean_lsp_mcp.verify import (
         check_axiom_errors,
         parse_axioms,
-        read_lean_source_utf8,
         scan_warnings,
     )
 

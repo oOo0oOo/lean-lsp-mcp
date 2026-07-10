@@ -9,6 +9,7 @@ from lean_lsp_mcp.file_utils import (
     LeanPathPolicy,
     build_lean_path_policy,
     require_lean_project_path,
+    read_lean_source_utf8,
     resolve_input_path,
     valid_lean_project_path,
 )
@@ -354,6 +355,12 @@ async def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
 
 
 async def open_synced(ctx: Context, rel_path: str, wait: bool = False):
-    """Open the file and sync it with the current on-disk content."""
+    """Open a Lean source file using UTF-8 instead of the OS default encoding."""
     client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
-    return await client.reload_from_disk(rel_path, wait=wait)
+    project_path = getattr(client, "project_path", None)
+    open_document = getattr(client, "open", None)
+    if project_path is None or open_document is None:
+        # Compatibility with minimal test doubles; AsyncLeanLSPClient has both APIs.
+        return await client.reload_from_disk(rel_path, wait=wait)
+    content = read_lean_source_utf8(Path(project_path) / rel_path)
+    return await open_document(rel_path, text=content, wait=wait)

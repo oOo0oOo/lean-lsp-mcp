@@ -689,6 +689,87 @@ async def test_declaration_file_sanitizes_dependency_path(
 
 
 @pytest.mark.asyncio
+async def test_declaration_file_reads_utf8_source_repeatedly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    source_file = project / "Unicode.lean"
+    source = (
+        "-- Unicode: \u2212 \u2080 \u03b1\ntheorem unicodeTarget : True := by trivial\n"
+    )
+    source_file.write_text(source, encoding="utf-8")
+
+    class FakeClient:
+        project_path = str(project)
+
+        def __init__(self) -> None:
+            self.open_calls: list[tuple[str, str, bool]] = []
+
+        async def open(self, path: str, text: str, wait: bool = False):
+            self.open_calls.append((path, text, wait))
+            return types.SimpleNamespace(text=text)
+
+        def content(self, _path: str) -> str:
+            return source
+
+        async def goto(self, kind: str, _path: str, _line: int, _column: int):
+            assert kind == "declaration"
+            return [
+                {
+                    "path": str(source_file),
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 28},
+                    },
+                }
+            ]
+
+    client = FakeClient()
+    ctx = _make_ctx(lean_project_path=project)
+    ctx.request_context.lifespan_context.client = client
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Unicode.lean"))
+
+    for _ in range(3):
+        result = await server.declaration_file(
+            ctx=ctx,
+            file_path=str(source_file),
+            symbol="unicodeTarget",
+            context_lines=1,
+        )
+        assert "unicodeTarget" in result.content
+
+    assert client.open_calls == [("Unicode.lean", source, False)] * 3
+
+
+@pytest.mark.asyncio
+async def test_declaration_file_reports_utf8_decode_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    source_file = project / "Invalid.lean"
+    source_file.write_bytes(b"-- invalid: \xff\n")
+
+    class FakeClient:
+        project_path = str(project)
+
+        async def open(self, *_args, **_kwargs):
+            raise AssertionError(
+                "invalid UTF-8 must be rejected before opening the LSP doc"
+            )
+
+    ctx = _make_ctx(lean_project_path=project)
+    ctx.request_context.lifespan_context.client = FakeClient()
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Invalid.lean"))
+
+    with pytest.raises(server.LeanToolError, match=r"using UTF-8"):
+        await server.declaration_file(
+            ctx=ctx,
+            file_path=str(source_file),
+            symbol="missing",
+        )
+
+
+@pytest.mark.asyncio
 async def test_references_sanitize_paths_and_skip_outside_policy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

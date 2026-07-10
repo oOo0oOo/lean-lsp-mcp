@@ -401,3 +401,31 @@ def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> Non
     ctx = _Context(_LifespanContext(project, None))
     resolved = resolve_file_path(ctx, "src/Example.lean")
     assert resolved == target.resolve()
+
+
+@pytest.mark.asyncio
+async def test_open_synced_reads_utf8_without_reload_from_disk(tmp_path: Path) -> None:
+    project = _make_project(tmp_path / "proj")
+    source = "-- Unicode: \u2212 \u2080 \u03b1\ntheorem clean : True := trivial\n"
+    (project / "Source.lean").write_text(source, encoding="utf-8")
+
+    class _Client:
+        project_path = str(project)
+
+        def __init__(self) -> None:
+            self.open_calls: list[tuple[str, str, bool]] = []
+
+        async def open(self, path: str, text: str, wait: bool = False):
+            self.open_calls.append((path, text, wait))
+            return object()
+
+        async def reload_from_disk(self, *_args, **_kwargs):
+            raise AssertionError("open_synced must not use the locale-dependent reload")
+
+    client = _Client()
+    ctx = _Context(_LifespanContext(project, client))
+
+    for _ in range(3):
+        await client_utils.open_synced(ctx, "Source.lean", wait=True)
+
+    assert client.open_calls == [("Source.lean", source, True)] * 3
