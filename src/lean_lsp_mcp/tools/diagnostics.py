@@ -23,6 +23,22 @@ from lean_lsp_mcp.models import (
 from lean_lsp_mcp.outline_utils import generate_outline_data
 from lean_lsp_mcp.utils import get_declaration_range
 
+_SEVERITY_LEVELS = ["error", "warning", "info", "hint"]
+
+
+def _flatten_severity_schema(schema: dict) -> None:
+    """Emit ``severity`` as a flat enum, satisfying every provider's validator.
+
+    ``Optional[Literal[...]]`` generates an ``anyOf`` union with no top-level
+    ``type``. Google Gemini/Vertex *requires* a top-level ``type`` (#185), while
+    Moonshot/Kimi *forbids* a top-level ``type`` whenever ``anyOf`` is present
+    (#213). A flat, nullable-by-omission enum (no ``anyOf``, explicit ``type``)
+    is accepted by both, as well as by Anthropic and OpenAI.
+    """
+    schema.pop("anyOf", None)
+    schema["type"] = "string"
+    schema["enum"] = list(_SEVERITY_LEVELS)
+
 
 @server.mcp.tool(
     "lean_file_outline",
@@ -94,14 +110,13 @@ async def diagnostic_messages(
     ] = None,
     severity: Annotated[
         Optional[Literal["error", "warning", "info", "hint"]],
-        # json_schema_extra forces an explicit top-level `type` onto the
-        # property schema. Without it the emitted schema is a bare
-        # anyOf/enum union with no `type`, which Google Gemini/Vertex
-        # function-calling rejects ("schema didn't specify the schema type
-        # field"). See issue #185.
+        # Flatten the emitted schema to a single enum with an explicit
+        # top-level `type` and no `anyOf`. Gemini/Vertex requires the `type`
+        # (#185); Moonshot/Kimi rejects `type` alongside `anyOf` (#213). See
+        # _flatten_severity_schema.
         Field(
             description="Filter by severity level. Returns all levels when omitted.",
-            json_schema_extra={"type": "string"},
+            json_schema_extra=_flatten_severity_schema,
         ),
     ] = None,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:

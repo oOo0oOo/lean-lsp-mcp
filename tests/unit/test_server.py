@@ -936,13 +936,15 @@ def test_process_diagnostics_accepts_plain_string_severity() -> None:
 
 
 def test_diagnostic_messages_severity_schema_is_vertex_compatible() -> None:
-    """Regression test for #185.
+    """Regression test for #185 and #213.
 
     Google Gemini/Vertex function-calling rejects a parameter schema that lacks
     an explicit top-level ``type`` field, and cannot resolve JSON-Schema
-    ``$ref``/``$defs``. The ``severity`` parameter of ``lean_diagnostic_messages``
-    must therefore expose a top-level ``type`` and contain no ``$ref`` while
-    still constraining the value to the four severity levels.
+    ``$ref``/``$defs`` (#185). Moonshot/Kimi rejects a schema that carries both
+    ``anyOf`` and a sibling top-level ``type`` (#213). The ``severity`` parameter
+    of ``lean_diagnostic_messages`` must therefore be a flat enum: an explicit
+    top-level ``type``, no ``$ref``, no ``anyOf``, still constrained to the four
+    severity levels.
     """
     tools = asyncio.run(server.mcp.list_tools())
     tool = next(t for t in tools if t.name == "lean_diagnostic_messages")
@@ -950,8 +952,10 @@ def test_diagnostic_messages_severity_schema_is_vertex_compatible() -> None:
     severity_json = json.dumps(severity)
 
     assert severity.get("type") == "string"
+    assert "anyOf" not in severity
     assert "$ref" not in severity_json
     assert "DiagnosticSeverity" not in json.dumps(tool.inputSchema.get("$defs", {}))
+    assert severity.get("enum") == ["error", "warning", "info", "hint"]
     for level in ("error", "warning", "info", "hint"):
         assert level in severity_json
 
