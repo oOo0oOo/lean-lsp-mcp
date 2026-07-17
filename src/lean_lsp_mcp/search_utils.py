@@ -16,6 +16,44 @@ from lean_lsp_mcp.file_utils import LeanPathPolicy, build_lean_path_policy
 
 INSTALL_URL = "https://github.com/BurntSushi/ripgrep#installation"
 
+# Declaration keywords and the attributes/modifiers that may precede them.
+# The search pattern and the line parser are built from the same building
+# blocks so they can never drift out of sync.
+_DECL_KEYWORDS = (
+    "theorem",
+    "lemma",
+    "def",
+    "axiom",
+    "class",
+    "instance",
+    "structure",
+    "inductive",
+    "abbrev",
+    "opaque",
+)
+_DECL_MODIFIERS = (
+    "public",
+    "protected",
+    "private",
+    "noncomputable",
+    "partial",
+    "unsafe",
+    "scoped",
+    "local",
+)
+# Leading `@[...]` attributes and zero or more modifiers before the keyword.
+_DECL_LEAD = (
+    r"^\s*(?:@\[[^\]]*\]\s*)*"
+    r"(?:(?:" + "|".join(_DECL_MODIFIERS) + r")\s+)*"
+)
+_DECL_KEYWORD_ALT = "|".join(_DECL_KEYWORDS)
+# Parses a matched line into its declaration keyword and (possibly dotted) name,
+# skipping any attributes/modifiers that precede the keyword.
+_DECL_LINE_RE = re.compile(
+    _DECL_LEAD
+    + rf"(?P<kind>{_DECL_KEYWORD_ALT})\s+(?P<name>[A-Za-z0-9_']+(?:\.[A-Za-z0-9_']+)*)"
+)
+
 _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
     "Windows": (
         "winget install BurntSushi.ripgrep.MSVC",
@@ -165,10 +203,9 @@ def lean_local_search(
     pattern = (
         # Optional attributes (`@[simp]`) and modifiers (`protected`, `private`,
         # `noncomputable`, ...) may precede the declaration keyword.
-        rf"^\s*(?:@\[[^\]]*\]\s*)*"
-        rf"(?:(?:public|protected|private|noncomputable|partial|unsafe|scoped|local)\s+)*"
-        rf"(?:theorem|lemma|def|axiom|class|instance|structure|inductive|abbrev|opaque)\s+"
-        rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(query)}[A-Za-z0-9_'.]*(?:\s|:)"
+        _DECL_LEAD
+        + rf"(?:{_DECL_KEYWORD_ALT})\s+"
+        + rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(query)}[A-Za-z0-9_'.]*(?:\s|:)"
     )
 
     command = [
@@ -237,11 +274,11 @@ def lean_local_search(
                 continue
 
             data = event["data"]
-            parts = data["lines"]["text"].lstrip().split(maxsplit=2)
-            if len(parts) < 2:
+            decl_match = _DECL_LINE_RE.match(data["lines"]["text"])
+            if decl_match is None:
                 continue
 
-            decl_kind, decl_name = parts[0], parts[1].rstrip(":")
+            decl_kind, decl_name = decl_match.group("kind"), decl_match.group("name")
             line_number = data.get("line_number", 0)
             file_path = Path(data["path"]["text"])
             abs_path = (

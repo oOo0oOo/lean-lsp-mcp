@@ -818,6 +818,10 @@ def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
 
     assert len(results) == 1
     assert results[0]["name"].split(".")[-1].startswith("add_comm")
+    # The declaration keyword must be parsed as the `kind`, never a leading
+    # attribute/modifier such as `protected` (which the naive split produced,
+    # yielding name="theorem" and flaky results depending on ripgrep order).
+    assert results[0]["kind"] in search_utils._DECL_KEYWORDS
 
 
 def test_lean_search_integration_stdlib_definitions(reload_search_utils):
