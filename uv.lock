@@ -234,7 +234,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -335,7 +335,7 @@ wheels = [
 
 [[package]]
 name = "lean-lsp-mcp"
-version = "0.27.0"
+version = "0.28.0"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -365,7 +365,7 @@ yaml = [
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.14.1" },
     { name = "certifi", specifier = ">=2026.6.17" },
-    { name = "leanclient", specifier = ">=0.12.0" },
+    { name = "leanclient", specifier = ">=0.12.1" },
     { name = "mcp", extras = ["cli"], specifier = "==1.28.1" },
     { name = "orjson", specifier = ">=3.11.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
@@ -381,16 +381,16 @@ provides-extras = ["yaml", "lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.12.0"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "psutil" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/f5/aeeb80e0f4c0511c66412ee12fcab4e480b9429de3f2f581391975884295/leanclient-0.12.0.tar.gz", hash = "sha256:54214732f3dd0711e25be4d349a8526904df452e800b6b7a09855a92b4b86c86", size = 1160393, upload-time = "2026-07-06T12:32:57.884Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/c2/5ea55cfb9c3bbbd8262ab65fc8de01aa73945e13cc316e2943f3715e9b27/leanclient-0.12.1.tar.gz", hash = "sha256:f21af0d87a16b4ae0fc6d50a8e97425980a27430899fb9e17ae41c4ec9497935", size = 1161237, upload-time = "2026-07-17T09:43:43.858Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/f3/17e05efc03aaba97226bea28441fb909c5a41acd57b4baedc5c2382c8a85/leanclient-0.12.0-py3-none-any.whl", hash = "sha256:dc9b007553b0ae236dd7c451a97277d3a214e5451a8e614f6b0ad0dd13f5a501", size = 59549, upload-time = "2026-07-06T12:32:56.414Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/21/929cd26d2634857457daba670a41bf810dddd8c057a32af005ff6951ed1b/leanclient-0.12.1-py3-none-any.whl", hash = "sha256:337c17922f83adb2d0febf48d93b92571b9e99b2b408acf1af9651273485f43e", size = 59691, upload-time = "2026-07-17T09:43:42.337Z" },
 ]
 
 [[package]]

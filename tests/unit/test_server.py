@@ -689,6 +689,47 @@ async def test_declaration_file_sanitizes_dependency_path(
 
 
 @pytest.mark.asyncio
+async def test_declaration_file_reads_utf8_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    source = "-- Unicode: ∀ α ℕ\ntheorem unicodeTarget : ℕ → ℕ := id\n"
+    (project / "Unicode.lean").write_text(source, encoding="utf-8")
+
+    class FakeClient:
+        project_path = str(project)
+
+        async def reload_from_disk(self, _path: str, wait: bool = False):
+            return None
+
+        def content(self, _path: str) -> str:
+            return source
+
+        async def goto(self, kind: str, _path: str, _line: int, _column: int):
+            assert kind == "declaration"
+            return [
+                {
+                    "path": "Unicode.lean",
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 34},
+                    },
+                }
+            ]
+
+    ctx = _make_ctx(lean_project_path=project)
+    ctx.request_context.lifespan_context.client = FakeClient()
+    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Unicode.lean"))
+
+    result = await server.declaration_file(
+        ctx=ctx, file_path=str(project / "Unicode.lean"), symbol="unicodeTarget"
+    )
+
+    assert "unicodeTarget" in result.content
+    assert "ℕ" in result.content
+
+
+@pytest.mark.asyncio
 async def test_references_sanitize_paths_and_skip_outside_policy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
