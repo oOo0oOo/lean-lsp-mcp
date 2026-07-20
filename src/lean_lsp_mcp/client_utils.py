@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from threading import Lock
 
@@ -177,7 +178,8 @@ def replace_shared_client(
     return previous
 
 
-def close_shared_client(project_path: Path | str | None = None) -> None:
+def take_shared_clients(project_path: Path | str | None = None) -> list[LeanLSPClient]:
+    """Remove and return cached clients without closing them."""
     clients: list[LeanLSPClient] = []
 
     with CLIENT_LOCK:
@@ -192,12 +194,18 @@ def close_shared_client(project_path: Path | str | None = None) -> None:
                 clients.append(client)
             _builds_in_progress.discard(project_key)
 
+    return clients
+
+
+def close_shared_client(project_path: Path | str | None = None) -> None:
+    clients = take_shared_clients(project_path)
     for client in clients:
         _close_client(client, "Shared Lean client close failed during shutdown")
 
 
 def startup_client(ctx: Context):
     """Initialize the Lean LSP client if not already set up."""
+    ctx.request_context.lifespan_context.last_lsp_activity = time.monotonic()
     with CLIENT_LOCK:
         configured_root = ctx.request_context.lifespan_context.lean_project_path
         if configured_root is None:

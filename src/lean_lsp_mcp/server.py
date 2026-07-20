@@ -32,6 +32,7 @@ from lean_lsp_mcp.client_utils import (
     resolve_file_path,
     set_build_in_progress,
     setup_client_for_file,
+    take_shared_clients,
 )
 from lean_lsp_mcp.file_utils import (
     build_lean_path_policy,
@@ -309,12 +310,44 @@ class AppContext:
     repl: Repl | None = None
     repl_enabled: bool = False
     build_coordinator: BuildCoordinator | None = None
+    last_lsp_activity: float = 0.0
+
+
+def _close_stdio_client(context: AppContext, failure_message: str) -> None:
+    """Close this stdio session's project client and remove its cache entry."""
+    client = context.client
+    context.client = None
+    clients_to_close: list[LeanLSPClient] = []
+    for candidate in (client, *take_shared_clients()):
+        if candidate is None or candidate in clients_to_close:
+            continue
+        clients_to_close.append(candidate)
+
+    for client_to_close in clients_to_close:
+        try:
+            client_to_close.close()
+        except Exception:
+            logger.exception(failure_message)
+
+
+async def _close_idle_stdio_client(context: AppContext, timeout_seconds: float) -> None:
+    """Release an idle stdio Lean tree while keeping the MCP wrapper reusable."""
+    poll_seconds = min(timeout_seconds, 30.0)
+    while True:
+        await asyncio.sleep(poll_seconds)
+        if context.client is None:
+            continue
+        if time.monotonic() - context.last_lsp_activity < timeout_seconds:
+            continue
+        logger.info("Stdio Lean client idle for %.1fs; closing it", timeout_seconds)
+        _close_stdio_client(context, "Lean client close failed during idle teardown")
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
     context: AppContext | None = None
+    idle_cleanup_task: asyncio.Task[None] | None = None
 
     try:
         active_transport = _active_transport()
@@ -376,15 +409,34 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
             repl=repl,
             repl_enabled=repl_available,
             build_coordinator=build_coordinator,
+            last_lsp_activity=time.monotonic(),
         )
+        if active_transport == "stdio" and (
+            idle_timeout_seconds := config.idle_timeout_seconds()
+        ) is not None:
+            idle_cleanup_task = asyncio.create_task(
+                _close_idle_stdio_client(context, idle_timeout_seconds)
+            )
         yield context
     finally:
         logger.info("Session ending — cleaning up per-session resources")
 
-        # NOTE: Do NOT close context.client here.  The LSP client is a shared
-        # singleton managed by client_utils.  Closing it would kill ``lake
-        # serve`` for all other sessions.  The shared client is cleaned up via
-        # close_shared_client() at process exit (see __init__.py).
+        if idle_cleanup_task is not None:
+            idle_cleanup_task.cancel()
+            try:
+                await idle_cleanup_task
+            except asyncio.CancelledError:
+                pass
+
+        if context and context.active_transport == "stdio":
+            # A stdio MCP process serves exactly one client session. Keeping
+            # its project-scoped client alive after that session ends retains
+            # the whole lake-serve tree until the wrapper process exits.
+            _close_stdio_client(context, "Lean client close failed during stdio teardown")
+
+        # Streamable HTTP can run multiple sessions in one MCP process. Its
+        # project-scoped client remains shared until process exit so one
+        # disconnect does not kill lake serve for the other sessions.
 
         repl_to_close = context.repl if context and context.repl is not None else repl
         if repl_to_close:

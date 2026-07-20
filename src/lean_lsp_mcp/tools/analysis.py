@@ -96,19 +96,14 @@ def run_code(
     except Exception as e:
         raise server.LeanToolError(f"Error writing code snippet: {e}")
 
+    startup_client(ctx)
     client: LeanLSPClient | None = lifespan_context.client
+    if client is None:
+        raise server.LeanToolError("Failed to initialize Lean client for run_code.")
     raw_diagnostics: Iterable[Dict] = []
     opened_file = False
 
     try:
-        if client is None:
-            startup_client(ctx)
-            client = lifespan_context.client
-            if client is None:
-                raise server.LeanToolError(
-                    "Failed to initialize Lean client for run_code."
-                )
-
         client.open_file(rel_path)
         opened_file = True
         raw_diagnostics = client.get_diagnostics(rel_path, inactivity_timeout=15.0)

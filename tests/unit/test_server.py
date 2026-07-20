@@ -45,6 +45,7 @@ def _clear_optional_runtime_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEAN_LSP_MCP_TOKEN", raising=False)
     monkeypatch.delenv("LEAN_LOOGLE_LOCAL", raising=False)
     monkeypatch.delenv("LEAN_REPL", raising=False)
+    monkeypatch.delenv("LEAN_LSP_IDLE_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", raising=False)
     client_utils.close_shared_client()
 
@@ -126,11 +127,41 @@ async def test_app_lifespan_requires_project_path_for_remote_transport(
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_does_not_close_shared_client(
+async def test_app_lifespan_closes_shared_client_for_stdio(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """The LSP client is a shared singleton — app_lifespan must NOT close it."""
+    """A one-session stdio wrapper must release its Lean server tree."""
     monkeypatch.delenv("LEAN_LOG_LEVEL", raising=False)
+    project_dir = _make_project(tmp_path / "proj")
+    old_project_dir = _make_project(tmp_path / "old-proj")
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
+
+    dummy_client = DummyClient()
+    old_project_client = DummyClient()
+    client_utils._shared_clients[project_dir.resolve()] = dummy_client
+    client_utils._shared_clients[old_project_dir.resolve()] = old_project_client
+
+    try:
+        async with server.app_lifespan(object()) as context:
+            context.client = dummy_client
+
+        assert dummy_client.closed_calls == 1
+        assert old_project_client.closed_calls == 1
+        assert client_utils._shared_clients == {}
+    finally:
+        client_utils._shared_clients.clear()
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_keeps_shared_client_for_streamable_http(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Remote transports can have other sessions sharing one Lean client."""
+    project_dir = _make_project(tmp_path / "proj")
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project_dir))
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "streamable-http")
 
     dummy_client = DummyClient()
 
@@ -138,6 +169,32 @@ async def test_app_lifespan_does_not_close_shared_client(
         context.client = dummy_client
 
     assert dummy_client.closed_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_idle_stdio_client_closes_shared_client(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path / "proj")
+    dummy_client = DummyClient()
+    context = server.AppContext(
+        lean_project_path=project_dir.resolve(),
+        client=dummy_client,
+        rate_limit={"test": []},
+        lean_search_available=True,
+        last_lsp_activity=0.0,
+    )
+    client_utils._shared_clients[project_dir.resolve()] = dummy_client
+    task = asyncio.create_task(server._close_idle_stdio_client(context, 0.01))
+
+    try:
+        await asyncio.sleep(0.03)
+        assert dummy_client.closed_calls == 1
+        assert context.client is None
+        assert client_utils._shared_clients == {}
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        client_utils._shared_clients.clear()
 
 
 def test_close_shared_client_closes_client() -> None:

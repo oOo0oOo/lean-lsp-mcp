@@ -25,6 +25,21 @@ def test_max_open_files(monkeypatch: pytest.MonkeyPatch):
     assert config.max_open_files() == 4
 
 
+def test_idle_timeout_seconds(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(config.IDLE_TIMEOUT_SECONDS_ENV, raising=False)
+    assert config.idle_timeout_seconds() == 600.0
+    monkeypatch.setenv(config.IDLE_TIMEOUT_SECONDS_ENV, "30")
+    assert config.idle_timeout_seconds() == 30.0
+    monkeypatch.setenv(config.IDLE_TIMEOUT_SECONDS_ENV, "0")
+    assert config.idle_timeout_seconds() is None
+    monkeypatch.setenv(config.IDLE_TIMEOUT_SECONDS_ENV, "not-a-number")
+    assert config.idle_timeout_seconds() == 600.0
+    monkeypatch.setenv(config.IDLE_TIMEOUT_SECONDS_ENV, "NaN")
+    assert config.idle_timeout_seconds() == 600.0
+    monkeypatch.setenv(config.IDLE_TIMEOUT_SECONDS_ENV, "inf")
+    assert config.idle_timeout_seconds() == 600.0
+
+
 def test_build_concurrency(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(config.BUILD_CONCURRENCY_ENV, raising=False)
     assert config.build_concurrency() == "allow"

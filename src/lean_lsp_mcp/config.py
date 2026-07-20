@@ -9,6 +9,7 @@ cached at import time.
 from __future__ import annotations
 
 import logging
+import math
 import os
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 # --- Environment variable names (single source of truth) ---
 ACTIVE_TRANSPORT_ENV = "LEAN_LSP_MCP_ACTIVE_TRANSPORT"
 MAX_OPEN_FILES_ENV = "LEAN_LSP_MAX_OPEN_FILES"
+IDLE_TIMEOUT_SECONDS_ENV = "LEAN_LSP_IDLE_TIMEOUT_SECONDS"
 TEST_MODE_ENV = "LEAN_LSP_TEST_MODE"
 PROJECT_PATH_ENV = "LEAN_PROJECT_PATH"
 AUTH_TOKEN_ENV = "LEAN_LSP_MCP_TOKEN"
@@ -72,6 +74,29 @@ def max_open_files() -> int:
     if value < 1:
         logger.warning("Invalid %s=%s, defaulting to 4.", MAX_OPEN_FILES_ENV, raw_value)
         return 4
+    return value
+
+
+def idle_timeout_seconds() -> float | None:
+    raw_value = os.environ.get(IDLE_TIMEOUT_SECONDS_ENV, "600").strip()
+    try:
+        value = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%s, defaulting to 600.",
+            IDLE_TIMEOUT_SECONDS_ENV,
+            raw_value,
+        )
+        return 600.0
+    if not math.isfinite(value):
+        logger.warning(
+            "Invalid %s=%s, defaulting to 600.",
+            IDLE_TIMEOUT_SECONDS_ENV,
+            raw_value,
+        )
+        return 600.0
+    if value <= 0:
+        return None
     return value
 
 

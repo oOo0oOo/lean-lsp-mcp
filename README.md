@@ -206,6 +206,8 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_LOG_LEVEL`: Log level for the server. Options are "INFO", "WARNING", "ERROR", "NONE". Defaults to "INFO".
 - `LEAN_LOG_FILE_CONFIG`: Config file path for logging, with priority over `LEAN_LOG_LEVEL`. If not set, logs are printed to stdout.
 - `LEAN_PROJECT_PATH`: Path to your Lean project root. A valid Lean project root must contain `lean-toolchain` and either `lakefile.lean` or `lakefile.toml`. Relative `file_path` arguments resolve against this root. This variable is required for `streamable-http` and `sse`.
+- `LEAN_LSP_MAX_OPEN_FILES`: Maximum number of Lean files retained by one language-server client. Defaults to `4`; set it to `1` when memory is constrained.
+- `LEAN_LSP_IDLE_TIMEOUT_SECONDS`: For `stdio` transport, close an idle Lean language-server tree after this many seconds while leaving the MCP wrapper reusable. Defaults to `600`; set a non-positive value to disable idle cleanup. The next LSP-backed tool call recreates the client. Multi-session `streamable-http` and `sse` transports are not idle-evicted.
 - `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
 - `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
 - `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.

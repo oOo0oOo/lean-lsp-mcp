@@ -122,14 +122,18 @@ def test_startup_client_reuses_existing(
 ) -> None:
     project = _make_project(tmp_path / "proj")
     ctx = _Context(_LifespanContext(project, None))
+    ctx.request_context.lifespan_context.last_lsp_activity = 0.0
 
     startup_client(ctx)
     first = ctx.request_context.lifespan_context.client
     assert isinstance(first, _MockLeanClient)
     assert not first.closed
+    assert ctx.request_context.lifespan_context.last_lsp_activity > 0
 
+    ctx.request_context.lifespan_context.last_lsp_activity = 0.0
     startup_client(ctx)
     assert ctx.request_context.lifespan_context.client is first
+    assert ctx.request_context.lifespan_context.last_lsp_activity > 0
     assert len(patched_clients) == 1
 
 
