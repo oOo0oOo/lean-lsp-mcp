@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FoOo0oOo%2Flean-lsp-mcp.svg)](https://mcptoplist.com/server/glama%2FoOo0oOo%2Flean-lsp-mcp)
+
 <h1 align="center">
   lean-lsp-mcp
 </h1>
