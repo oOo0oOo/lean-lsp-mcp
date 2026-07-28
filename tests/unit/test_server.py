@@ -1238,9 +1238,7 @@ async def test_run_code_repl_process_failure_disables_fast_lane(
         close_calls = 0
 
         async def run_code(self, _code):
-            raise ReplProcessError(
-                "No response; exit code -9; memory limit: 8192 MiB"
-            )
+            raise ReplProcessError("No response; exit code -9; memory limit: 8192 MiB")
 
         async def close(self):
             self.close_calls += 1

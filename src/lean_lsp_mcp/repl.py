@@ -168,9 +168,7 @@ class Repl:
             details.append(f"exit code {proc.returncode}")
         if stderr:
             details.append(f"stderr: {stderr[-2000:]}")
-        details.append(
-            f"memory limit: {self.mem_mb} MiB ({config.REPL_MEM_MB_ENV})"
-        )
+        details.append(f"memory limit: {self.mem_mb} MiB ({config.REPL_MEM_MB_ENV})")
         return ReplProcessError("; ".join(details))
 
     async def _send(self, cmd: dict[str, Any]) -> dict[str, Any]:

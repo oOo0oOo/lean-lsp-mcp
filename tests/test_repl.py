@@ -313,15 +313,11 @@ async def test_default_memory_limit_keeps_mathlib_repl_alive(repl: Repl):
     result = await repl.run_code("import Mathlib\n\n#check Nat")
     invalid = await repl.run_code("import Mathlib\n\nexample : 1 = 2 := by rfl")
     first_definition = await repl.run_code("import Mathlib\n\ndef replRunValue := 1")
-    repeated_definition = await repl.run_code(
-        "import Mathlib\n\ndef replRunValue := 1"
-    )
+    repeated_definition = await repl.run_code("import Mathlib\n\ndef replRunValue := 1")
 
     assert result.error is None
     assert any("Nat" in message.get("data", "") for message in result.messages)
-    assert any(
-        message.get("severity") == "error" for message in invalid.messages
-    )
+    assert any(message.get("severity") == "error" for message in invalid.messages)
     assert not any(
         message.get("severity") == "error" for message in first_definition.messages
     )
