@@ -526,6 +526,39 @@ async def test_shared_loogle_retries_after_transient_failure(
     assert fake_manager.start.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_shared_loogle_retry_adopts_later_project(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server._shared_loogle_init_done = False
+    server._shared_loogle_manager = None
+    server._shared_loogle_available = False
+
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    fake_manager = MagicMock()
+    fake_manager.project_path = None
+    fake_manager.ensure_installed.side_effect = [False, True]
+    fake_manager.start = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
+
+    _, available = await server._ensure_shared_loogle(None)
+    assert available is False
+
+    project = tmp_path / "project"
+
+    def set_project_path(path):
+        fake_manager.project_path = path
+        return True
+
+    fake_manager.set_project_path.side_effect = set_project_path
+    _, available = await server._ensure_shared_loogle(project)
+
+    assert available is True
+    fake_manager.set_project_path.assert_called_once_with(project)
+
+
 class _MultiAttemptClient:
     """Async-client fake: records that the real document is never mutated."""
 

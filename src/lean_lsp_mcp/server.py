@@ -293,6 +293,8 @@ async def _ensure_shared_loogle(
             if manager is None:
                 manager = LoogleManager(project_path=lean_project_path)
                 _shared_loogle_manager = manager
+            elif manager.project_path != lean_project_path:
+                manager.set_project_path(lean_project_path)
 
             # ensure_installed() can git-clone + `lake build` for many
             # minutes — keep it off the event loop.

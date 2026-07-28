@@ -348,7 +348,7 @@ Symlink escapes outside those roots are rejected.
 
 ### Local Loogle
 
-Run loogle locally to avoid the remote API's rate limit (3 req/30s). First run takes ~5-10 minutes to build; subsequent runs start in seconds.
+Run Loogle locally to avoid the remote API's rate limit (3 req/30s). The binary is built once for the project's Lean toolchain. The first Mathlib index takes a few minutes; subsequent starts load it in seconds.
 
 ```bash
 # Enable via CLI
@@ -358,11 +358,11 @@ uvx lean-lsp-mcp --loogle-local
 export LEAN_LOOGLE_LOCAL=true
 ```
 
-**Requirements:** `git`, `lake` ([elan](https://github.com/leanprover/elan)), ~2GB disk space.
+**Requirements:** `git`, `lake` ([elan](https://github.com/leanprover/elan)), a built Mathlib project, and substantial memory for indexing. In measurements on current Mathlib, the initial index used ~13 GiB peak RSS and a warm load used ~7 GiB.
 
 **Note:** Local loogle is currently only supported on Unix systems (Linux/macOS). Windows users should use WSL or the remote API.
 
-**Mathlib must come from your project:** loogle searches the `Mathlib` it finds on the search path, which is taken from your project's built dependencies (`.lake/packages/mathlib`). This requires `--lean-project-path` to point at a project that depends on Mathlib, has been built, and uses the same Lean toolchain as loogle. If the toolchain differs or Mathlib isn't built, local loogle falls back to the remote API.
+**Mathlib comes from your project:** `--lean-project-path` must point at a built project that depends on Mathlib. The local binary is compiled for that project's Lean toolchain and runs through `lake env`, so Lake supplies the project's own dependency environment. Loogle's native dependency hash detects changed `.olean` files and rebuilds a stale index automatically.
 
 Falls back to remote API if local loogle fails.
 

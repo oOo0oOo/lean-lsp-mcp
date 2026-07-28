@@ -183,10 +183,10 @@ async def loogle(
 
     # Try local loogle first if available (no rate limiting)
     if app_ctx.loogle_local_available and app_ctx.loogle_manager:
-        # Update project path if it changed (adds new library paths)
+        # Restart under the new project's toolchain and Lake environment.
         if app_ctx.lean_project_path != app_ctx.loogle_manager.project_path:
             if app_ctx.loogle_manager.set_project_path(app_ctx.lean_project_path):
-                # Restart to pick up new paths
+                # Restart to pick up the new toolchain and Lake environment.
                 await app_ctx.loogle_manager.stop()
         try:
             results = await app_ctx.loogle_manager.query(query, num_results)

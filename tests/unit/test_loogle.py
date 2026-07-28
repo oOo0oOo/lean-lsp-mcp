@@ -42,10 +42,14 @@ class TestGetCacheDir:
 class TestLoogleManager:
     @pytest.fixture
     def mgr(self, tmp_path):
-        return LoogleManager(cache_dir=tmp_path / "loogle")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+        return LoogleManager(cache_dir=tmp_path / "loogle", project_path=project)
 
     def test_binary_path(self, mgr):
-        assert mgr.binary_path == mgr.repo_dir / ".lake" / "build" / "bin" / "loogle"
+        assert mgr.binary_path == mgr.build_dir / "bin" / "loogle"
+        assert mgr.repo_dir.name.startswith(f"repo-{mgr.REPO_REF[:12]}-")
 
     def test_is_installed(self, mgr):
         assert not mgr.is_installed
@@ -76,11 +80,53 @@ class TestLoogleManager:
         assert not mgr.is_running
 
     def test_clone_repo_exists(self, mgr):
+        (mgr.repo_dir / ".git").mkdir(parents=True)
+        with patch.object(mgr, "_checkout_repo_ref", return_value=True):
+            assert mgr._clone_repo()
+
+    def test_clone_repo_rejects_non_git_directory(self, mgr):
         mgr.repo_dir.mkdir(parents=True)
-        assert mgr._clone_repo()
+        assert not mgr._clone_repo()
+
+    def test_checkout_repo_ref_reuses_pinned_revision(self, mgr, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, timeout=300, cwd=None, env=None):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout=f"{mgr.REPO_REF}\n", stderr="")
+
+        monkeypatch.setattr(mgr, "_run", fake_run)
+        assert mgr._checkout_repo_ref()
+        assert calls == [
+            ["git", "rev-parse", "HEAD"],
+            ["git", "checkout", "--detach", mgr.REPO_REF],
+        ]
+
+    def test_checkout_repo_ref_fetches_pinned_revision(self, mgr, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, timeout=300, cwd=None, env=None):
+            calls.append(cmd)
+            stdout = "old\n" if "rev-parse" in cmd else ""
+            return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(mgr, "_run", fake_run)
+        assert mgr._checkout_repo_ref()
+        assert calls[1] == [
+            "git",
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            mgr.REPO_REF,
+        ]
+        assert calls[2] == ["git", "checkout", "--detach", mgr.REPO_REF]
 
     def test_clone_repo_success(self, mgr):
-        with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+        with (
+            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            patch.object(mgr, "_checkout_repo_ref", return_value=True),
+        ):
             assert mgr._clone_repo()
 
     def test_clone_repo_fail(self, mgr):
@@ -89,57 +135,37 @@ class TestLoogleManager:
         ):
             assert not mgr._clone_repo()
 
-    def test_mathlib_version(self, mgr):
-        mgr.repo_dir.mkdir(parents=True)
-        (mgr.repo_dir / "lake-manifest.json").write_text(
-            json.dumps({"packages": [{"name": "mathlib", "rev": "abc123def456"}]})
-        )
-        assert mgr._get_mathlib_version() == "abc123def456"
-        (mgr.repo_dir / "lake-manifest.json").unlink()
-        assert mgr._get_mathlib_version() == "unknown"
+    def test_project_toolchain_controls_build_dir(self, tmp_path):
+        project1 = tmp_path / "project1"
+        project2 = tmp_path / "project2"
+        project1.mkdir()
+        project2.mkdir()
+        (project1 / "lean-toolchain").write_text("leanprover/lean4:v4.29.0")
+        (project2 / "lean-toolchain").write_text("leanprover/lean4:v4.30.0")
+        cache = tmp_path / "cache"
 
-    def test_toolchain_version(self, mgr):
-        mgr.repo_dir.mkdir(parents=True)
-        (mgr.repo_dir / "lean-toolchain").write_text("leanprover/lean4:v4.25.0-rc1")
-        assert mgr._get_toolchain_version() == "leanprover/lean4:v4.25.0-rc1"
-        (mgr.repo_dir / "lean-toolchain").unlink()
-        assert mgr._get_toolchain_version() is None
+        first = LoogleManager(cache_dir=cache, project_path=project1)
+        second = LoogleManager(cache_dir=cache, project_path=project2)
 
-    def test_check_toolchain_installed(self, mgr, tmp_path, monkeypatch):
-        # No lean-toolchain file => OK
-        mgr.repo_dir.mkdir(parents=True)
-        ok, _ = mgr._check_toolchain_installed()
-        assert ok
+        assert first.build_dir != second.build_dir
+        assert first.binary_path != second.binary_path
 
-        # Create a toolchain file for a non-existent version
-        (mgr.repo_dir / "lean-toolchain").write_text("leanprover/lean4:v9.9.9")
-        # Point to fake elan home
-        monkeypatch.setenv("ELAN_HOME", str(tmp_path / "elan"))
-        ok, msg = mgr._check_toolchain_installed()
-        assert not ok
-        assert "v9.9.9" in msg
-
-        # Create the toolchain directory
-        tc_dir = tmp_path / "elan" / "toolchains" / "leanprover--lean4---v9.9.9"
-        tc_dir.mkdir(parents=True)
-        ok, _ = mgr._check_toolchain_installed()
-        assert ok
-
-    def test_check_environment(self, mgr, tmp_path, monkeypatch):
-        # No binary => not OK
+    def test_check_environment(self, mgr):
         ok, msg = mgr.check_environment()
         assert not ok
         assert "binary not found" in msg
 
-        # Create binary
         mgr.binary_path.parent.mkdir(parents=True)
         mgr.binary_path.touch()
-        mgr.repo_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("ELAN_HOME", str(tmp_path / "elan"))
+        assert mgr.check_environment() == (True, "")
 
-        # No toolchain file => OK
-        ok, _ = mgr.check_environment()
-        assert ok
+    def test_check_environment_requires_project_toolchain(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        mgr = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
+        ok, msg = mgr.check_environment()
+        assert not ok
+        assert "lean-toolchain" in msg
 
     @pytest.mark.asyncio
     async def test_query_not_ready(self, mgr):
@@ -238,7 +264,10 @@ class TestLoogleManager:
     def test_ensure_installed_handles_cache_permission_error(
         self, tmp_path, monkeypatch
     ):
-        mgr = LoogleManager(cache_dir=tmp_path / "loogle")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0")
+        mgr = LoogleManager(cache_dir=tmp_path / "loogle", project_path=project)
         monkeypatch.setattr(mgr, "_check_prerequisites", lambda: (True, ""))
         orig_mkdir = Path.mkdir
 
@@ -254,32 +283,6 @@ class TestLoogleManager:
     async def test_start_not_installed(self, tmp_path):
         assert not await LoogleManager(cache_dir=tmp_path).start()
 
-    def test_cleanup_old_indices(self, mgr):
-        mgr.index_dir.mkdir(parents=True)
-        # Create some old mathlib index files
-        (mgr.index_dir / "mathlib-old1.idx").touch()
-        (mgr.index_dir / "mathlib-old2.idx").touch()
-        # Also create old project-specific indexes
-        (mgr.index_dir / "mathlib-old1-abc123.idx").touch()
-        (mgr.index_dir / "mathlib-old2-def456.idx").touch()
-        current = mgr._get_index_path()
-        current.touch()
-        # Create a project-specific index for current mathlib version (should be preserved)
-        current_mathlib_version = mgr._get_mathlib_version()
-        project_index = mgr.index_dir / f"mathlib-{current_mathlib_version}-proj123.idx"
-        project_index.touch()
-
-        mgr._cleanup_old_indices()
-
-        # Current and project-specific index for current mathlib version should remain
-        remaining = list(mgr.index_dir.glob("*.idx"))
-        assert len(remaining) == 2
-        assert current in remaining
-        assert project_index in remaining
-
-    def test_discover_project_paths_no_project(self, mgr):
-        assert mgr._discover_project_paths() == []
-
     def test_get_project_toolchain(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
@@ -288,155 +291,70 @@ class TestLoogleManager:
         (project / "lean-toolchain").write_text("leanprover/lean4:v4.28.0\n")
         assert mgr._get_project_toolchain() == "leanprover/lean4:v4.28.0"
 
-    def test_get_project_toolchain_no_project(self, mgr):
+    def test_get_project_toolchain_no_project(self, tmp_path):
+        mgr = LoogleManager(cache_dir=tmp_path / "cache")
         assert mgr._get_project_toolchain() is None
 
-    def test_discover_project_paths_tc_mismatch(self, tmp_path):
-        project = tmp_path / "project"
-        project_lib = project / ".lake" / "build" / "lib" / "lean"
-        project_lib.mkdir(parents=True)
-        (project / "lean-toolchain").write_text("leanprover/lean4:v4.28.0")
+    def test_index_path_is_project_specific(self, tmp_path):
+        cache = tmp_path / "cache"
+        first_project = tmp_path / "first"
+        second_project = tmp_path / "second"
+        first_project.mkdir()
+        second_project.mkdir()
 
-        mgr = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
-        mgr.repo_dir.mkdir(parents=True)
-        (mgr.repo_dir / "lean-toolchain").write_text("leanprover/lean4:v4.29.0-rc4")
+        first = LoogleManager(cache_dir=cache, project_path=first_project)
+        second = LoogleManager(cache_dir=cache, project_path=second_project)
 
-        assert mgr._discover_project_paths() == []
-
-    def test_discover_project_paths_tc_match(self, tmp_path):
-        project = tmp_path / "project"
-        project_lib = project / ".lake" / "build" / "lib" / "lean"
-        project_lib.mkdir(parents=True)
-        (project / "lean-toolchain").write_text("leanprover/lean4:v4.28.0")
-
-        mgr = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
-        mgr.repo_dir.mkdir(parents=True)
-        (mgr.repo_dir / "lean-toolchain").write_text("leanprover/lean4:v4.28.0")
-
-        assert len(mgr._discover_project_paths()) == 1
-
-    def test_discover_project_paths(self, tmp_path):
-        # Create a fake project with packages
-        project = tmp_path / "project"
-        pkg1_lib = (
-            project / ".lake" / "packages" / "pkg1" / ".lake" / "build" / "lib" / "lean"
-        )
-        pkg2_lib = (
-            project / ".lake" / "packages" / "pkg2" / ".lake" / "build" / "lib" / "lean"
-        )
-        project_lib = project / ".lake" / "build" / "lib" / "lean"
-        pkg1_lib.mkdir(parents=True)
-        pkg2_lib.mkdir(parents=True)
-        project_lib.mkdir(parents=True)
-
-        mgr = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
-        paths = mgr._discover_project_paths()
-
-        assert len(paths) == 3
-        assert pkg1_lib in paths
-        assert pkg2_lib in paths
-        assert project_lib in paths
-
-    def test_index_path_with_project(self, tmp_path):
-        # Without project - base index name
-        mgr1 = LoogleManager(cache_dir=tmp_path / "cache1")
-        path1 = mgr1._get_index_path()
-        assert "mathlib-" in path1.name
-        assert path1.name.count("-") == 1  # Just mathlib-<version>.idx
-
-        # With extra paths - includes hash
-        mgr2 = LoogleManager(cache_dir=tmp_path / "cache2")
-        mgr2._extra_paths = [Path("/some/path")]
-        path2 = mgr2._get_index_path()
-        assert path2.name.count("-") == 2  # mathlib-<version>-<hash>.idx
+        assert first.index_path != second.index_path
+        assert first.index_path.parent == second.index_path.parent == cache / "index"
 
     def test_set_project_path(self, tmp_path):
         project = tmp_path / "project"
-        lib = project / ".lake" / "build" / "lib" / "lean"
-        lib.mkdir(parents=True)
+        project.mkdir()
 
         mgr = LoogleManager(cache_dir=tmp_path / "cache")
-        assert mgr._extra_paths == []
+        assert mgr.set_project_path(project)
+        assert mgr.project_path == project.resolve()
+        assert not mgr.set_project_path(project)
 
-        # Setting project path discovers paths
-        changed = mgr.set_project_path(project)
-        assert changed
-        assert len(mgr._extra_paths) == 1
-
-        # Setting same path again - no change
-        changed = mgr.set_project_path(project)
-        assert not changed
-
-    # --- issue #193: search-path and CLI-flag handling ---
-
-    def test_loogle_env_no_extra_paths(self, mgr):
-        """Without project paths, LEAN_PATH is left unset (loogle uses its own)."""
-        env = mgr._loogle_env()
+    def test_project_env_uses_project_toolchain(self, mgr):
+        env = mgr._project_env()
         assert "LEAN_PATH" not in env
         assert env["LAKE_ARTIFACT_CACHE"] == "false"
+        assert env["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
 
-    def test_loogle_env_with_extra_paths(self, mgr, monkeypatch):
-        """Project paths extend (not replace) loogle's base search path via LEAN_PATH."""
-        monkeypatch.setattr(mgr, "_get_base_lean_path", lambda: "/base/a:/base/b")
-        mgr._extra_paths = [Path("/proj/p1"), Path("/proj/p2")]
-        entries = mgr._loogle_env()["LEAN_PATH"].split(os.pathsep)
-        # Loogle's base (toolchain core with Init.olean + mathlib) comes first.
-        assert entries[0] == "/base/a"
-        assert entries[1] == "/base/b"
-        assert str(Path("/proj/p1")) in entries
-        assert str(Path("/proj/p2")) in entries
-
-    def test_get_base_lean_path_caches(self, mgr, monkeypatch):
-        calls = []
-
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stdout="/x/lib:/y/lib\n")
-
-        monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._get_base_lean_path() == "/x/lib:/y/lib"
-        assert mgr._get_base_lean_path() == "/x/lib:/y/lib"  # cached, no second call
-        assert len(calls) == 1
-        assert calls[0][:3] == ["lake", "env", "printenv"]
-
-    def test_build_index_uses_index_mode_not_write_index(self, mgr, monkeypatch):
-        """Index build uses the new --index-mode/--index-file flags, never --path."""
-        mgr.binary_path.parent.mkdir(parents=True)
-        mgr.binary_path.touch()
-        mgr._extra_paths = [Path("/proj/p1")]
-        monkeypatch.setattr(mgr, "_get_base_lean_path", lambda: "/base")
+    def test_build_uses_project_toolchain_and_versioned_build_dir(
+        self, mgr, monkeypatch
+    ):
+        mgr.repo_dir.mkdir(parents=True)
         captured = {}
 
         def fake_run(cmd, timeout=300, cwd=None, env=None):
             captured["cmd"], captured["env"] = cmd, env
-            Path(cmd[cmd.index("--index-file") + 1]).touch()
-            return MagicMock(returncode=0)
+            mgr.binary_path.parent.mkdir(parents=True)
+            mgr.binary_path.touch()
+            return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._build_index() is not None
-        cmd = captured["cmd"]
-        assert "--index-mode" in cmd and "write" in cmd and "--index-file" in cmd
-        assert "--write-index" not in cmd
-        assert "--path" not in cmd
-        assert "LEAN_PATH" in captured["env"]
+        assert mgr._build_loogle()
+        assert captured["cmd"] == ["lake", "build", "loogle"]
+        assert captured["env"]["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
+        assert "LEAN_PATH" not in captured["env"]
 
     @pytest.mark.asyncio
-    async def test_start_uses_index_mode_and_lean_path(self, mgr, monkeypatch):
-        """start() uses --index-mode/--index-file and LEAN_PATH, never --read-index/--path."""
+    async def test_start_uses_lake_env_and_native_defaults(self, mgr, monkeypatch):
         mgr.binary_path.parent.mkdir(parents=True)
         mgr.binary_path.touch()
-        mgr._extra_paths = [Path("/proj/p1")]
-        monkeypatch.setattr(mgr, "check_environment", lambda: (True, ""))
-        monkeypatch.setattr(mgr, "_get_base_lean_path", lambda: "/base")
         captured = {}
 
         async def fake_exec(*args, **kwargs):
-            captured["args"], captured["env"] = args, kwargs.get("env")
+            captured["args"], captured["kwargs"] = args, kwargs
             proc = AsyncMock()
             proc.returncode = None
             proc.stdout.readline = AsyncMock(
                 return_value=(mgr.READY_SIGNAL + "\n").encode()
             )
+            proc.stderr.read = AsyncMock(return_value=b"")
             return proc
 
         monkeypatch.setattr(
@@ -444,17 +362,54 @@ class TestLoogleManager:
         )
         assert await mgr.start()
         args = list(captured["args"])
-        assert "--index-mode" in args and "use" in args and "--index-file" in args
-        assert "--read-index" not in args
-        assert "--path" not in args
-        assert "LEAN_PATH" in captured["env"]
+        assert args == [
+            "lake",
+            "env",
+            str(mgr.binary_path),
+            "--json",
+            "--interactive",
+            "--index-file",
+            str(mgr.index_path),
+        ]
+        assert captured["kwargs"]["cwd"] == mgr.project_path
+        assert "LEAN_PATH" not in captured["kwargs"]["env"]
+        assert captured["kwargs"]["env"]["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
+
+    @pytest.mark.asyncio
+    async def test_start_builds_binary_for_new_project_toolchain(
+        self, mgr, monkeypatch
+    ):
+        calls = []
+
+        def fake_install():
+            calls.append("install")
+            mgr.binary_path.parent.mkdir(parents=True)
+            mgr.binary_path.touch()
+            return True
+
+        async def fake_exec(*args, **kwargs):
+            proc = AsyncMock()
+            proc.returncode = None
+            proc.stdout.readline = AsyncMock(
+                return_value=(mgr.READY_SIGNAL + "\n").encode()
+            )
+            proc.stderr.read = AsyncMock(return_value=b"")
+            return proc
+
+        monkeypatch.setattr(mgr, "ensure_installed", fake_install)
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", fake_exec
+        )
+
+        assert await mgr.start()
+        assert calls == ["install"]
 
 
 @pytest.mark.slow
 class TestLoogleInstall:
     """Install loogle binary. Run with: pytest -m slow tests/unit/test_loogle.py
 
-    Requires git, lake, ~2GB disk space. Takes several minutes on first run.
+    Requires git and lake. The first Mathlib index build takes several minutes.
     """
 
     @pytest.mark.asyncio
@@ -464,7 +419,8 @@ class TestLoogleInstall:
         if not shutil.which("git") or not shutil.which("lake"):
             pytest.skip("git and lake required")
 
-        mgr = LoogleManager()  # real cache dir
+        project = Path(__file__).resolve().parents[1] / "test_project"
+        mgr = LoogleManager(project_path=project)  # real cache dir
         assert mgr.ensure_installed(), "Failed to install loogle"
         assert mgr.is_installed
 
@@ -478,7 +434,8 @@ class TestLoogleQuery:
 
     @pytest.mark.asyncio
     async def test_start_query_stop(self):
-        mgr = LoogleManager()  # real cache dir
+        project = Path(__file__).resolve().parents[1] / "test_project"
+        mgr = LoogleManager(project_path=project)  # real cache dir
         if not mgr.is_installed:
             pytest.skip(
                 "loogle not installed (run: pytest -m slow tests/unit/test_loogle.py)"

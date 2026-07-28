@@ -110,8 +110,8 @@ def main():
     parser.add_argument(
         "--loogle-local",
         action="store_true",
-        help="Enable local loogle (auto-installs on first run, ~5-10 min). "
-        "Avoids rate limits and network dependencies.",
+        help="Enable local loogle (auto-installs; first index may take a few "
+        "minutes and substantial memory). Avoids rate limits.",
     )
     parser.add_argument(
         "--loogle-cache-dir",
