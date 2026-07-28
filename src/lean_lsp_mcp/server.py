@@ -45,7 +45,7 @@ from lean_lsp_mcp.file_utils import (
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp import config
 from lean_lsp_mcp.loogle import LoogleManager
-from lean_lsp_mcp.repl import Repl, repl_enabled
+from lean_lsp_mcp.repl import Repl, ReplProcessError, ReplRunResult, repl_enabled
 from lean_lsp_mcp.models import (
     AttemptResult,
     BuildResult,
@@ -54,6 +54,7 @@ from lean_lsp_mcp.models import (
     DiagnosticsResult,
     MultiAttemptResult,
     GoalContextEntry,
+    RunResult,
     StructuredGoal,
 )
 
@@ -1101,9 +1102,90 @@ async def _multi_attempt_repl(
                 )
             )
         return MultiAttemptResult(items=results)
+    except ReplProcessError as e:
+        await _disable_unhealthy_repl(app_ctx, "multi_attempt", e)
+        return None
     except Exception as e:
         logger.debug(f"REPL multi_attempt failed: {e}")
         return None
+
+
+def _repl_run_diagnostics(result: ReplRunResult) -> List[DiagnosticMessage]:
+    """Convert Lean REPL messages to the existing run-code diagnostic shape."""
+    diagnostics = []
+    for message in result.messages:
+        pos = message.get("pos") or {}
+        severity = message.get("severity", "info")
+        if severity == "information":
+            severity = "info"
+        diagnostics.append(
+            DiagnosticMessage(
+                severity=severity,
+                message=str(message.get("data", "")),
+                line=max(1, int(pos.get("line", 1)) + result.line_offset),
+                column=max(1, int(pos.get("column", 0)) + 1),
+            )
+        )
+    if result.error:
+        diagnostics.append(
+            DiagnosticMessage(
+                severity="error",
+                message=str(result.error),
+                line=max(1, result.line_offset + 1),
+                column=1,
+            )
+        )
+    return diagnostics
+
+
+async def _disable_unhealthy_repl(
+    app_ctx: AppContext, operation: str, error: ReplProcessError
+) -> None:
+    """Disable a failed fast lane once instead of retrying it on every call."""
+    app_ctx.repl_enabled = False
+    logger.warning(
+        "REPL %s fast path is unhealthy; disabling it for this session and "
+        "falling back to LSP: %s",
+        operation,
+        error,
+    )
+    if app_ctx.repl is not None:
+        try:
+            await app_ctx.repl.close()
+        except Exception:
+            logger.exception("REPL close failed after %s failure", operation)
+
+
+async def _run_code_repl(ctx: Context, code: str) -> RunResult | None:
+    """Run code through the session REPL when its import cache is healthy."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    if not app_ctx.repl_enabled or app_ctx.repl is None:
+        return None
+
+    project_path = app_ctx.lean_project_path
+    if project_path is None:
+        return None
+    if Path(app_ctx.repl.project_dir).resolve(strict=False) != Path(
+        project_path
+    ).resolve(strict=False):
+        await _close_repl_for_project_switch(app_ctx)
+        return None
+
+    try:
+        result = await app_ctx.repl.run_code(code)
+    except ReplProcessError as e:
+        await _disable_unhealthy_repl(app_ctx, "run_code", e)
+        return None
+    except Exception as e:
+        logger.debug(f"REPL run_code failed: {e}")
+        return None
+
+    diagnostics = _repl_run_diagnostics(result)
+    return RunResult(
+        success=not any(d.severity == "error" for d in diagnostics),
+        timed_out=False,
+        diagnostics=diagnostics,
+    )
 
 
 async def _multi_attempt_lsp(

@@ -16,6 +16,7 @@ from pydantic import Field
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import (
     get_path_policy,
+    get_run_code_pool,
     get_scratch_pool,
     infer_project_path,
     open_synced,
@@ -87,8 +88,12 @@ async def run_code(
             "No valid Lean project path found. Run another tool first to set it up."
         )
 
+    repl_result = await server._run_code_repl(ctx, code)
+    if repl_result is not None:
+        return repl_result
+
     await startup_client(ctx)
-    pool = get_scratch_pool(ctx)
+    pool = get_run_code_pool(ctx)
     trial = await pool.run_text(code if code.endswith("\n") else code + "\n")
 
     diagnostics = server._to_diagnostic_messages(trial.diagnostics.items)

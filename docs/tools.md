@@ -88,6 +88,9 @@ Code auto-completion: Find available identifiers or import suggestions at a spec
 #### lean_run_code
 
 Run/compile an independent Lean code snippet/file and return the result or error message.
+When `LEAN_REPL=true`, repeated calls with the same imports reuse the REPL's
+cached import environment; if the REPL is unavailable, the tool falls back to
+its dedicated LSP scratch document.
 <details>
 <summary>Example output (code snippet: `#eval 5 * 7 + 3`)</summary>
 

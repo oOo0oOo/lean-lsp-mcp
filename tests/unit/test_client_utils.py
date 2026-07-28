@@ -11,6 +11,8 @@ from lean_lsp_mcp.client_utils import (
     attach_shared_client,
     bind_lean_project_path,
     close_shared_client,
+    get_run_code_pool,
+    get_scratch_pool,
     resolve_file_path,
     set_build_in_progress,
     setup_client_for_file,
@@ -101,10 +103,12 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
 def _reset_shared_clients() -> None:
     client_utils._shared_clients.clear()
     client_utils._shared_pools.clear()
+    client_utils._shared_run_code_pools.clear()
     client_utils._builds_in_progress.clear()
     yield
     client_utils._shared_clients.clear()
     client_utils._shared_pools.clear()
+    client_utils._shared_run_code_pools.clear()
     client_utils._builds_in_progress.clear()
 
 
@@ -341,6 +345,22 @@ async def test_startup_client_serializes_concurrent_calls(
 
     assert len(patched_clients) == 1
     assert ctx.request_context.lifespan_context.client is patched_clients[0]
+
+
+def test_run_code_pool_is_single_slot_and_separate(tmp_path: Path) -> None:
+    project = _make_project(tmp_path / "proj")
+    client = _MockAioClient(project)
+    attach_shared_client(project, client)
+    ctx = _Context(_LifespanContext(project, client))
+
+    run_code_pool = get_run_code_pool(ctx)
+    scratch_pool = get_scratch_pool(ctx)
+
+    assert run_code_pool is get_run_code_pool(ctx)
+    assert run_code_pool is not scratch_pool
+    assert run_code_pool._size == 1
+    assert run_code_pool._paths == ["_mcp_run_code_0.lean"]
+    assert scratch_pool._paths[0].startswith("_mcp_scratch_")
 
 
 @pytest.mark.asyncio

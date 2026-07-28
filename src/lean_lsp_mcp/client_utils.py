@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 CLIENT_LOCK = asyncio.Lock()
 _shared_clients: dict[Path, AsyncLeanLSPClient] = {}
 _shared_pools: dict[Path, ScratchPool] = {}
+_shared_run_code_pools: dict[Path, ScratchPool] = {}
 _builds_in_progress: set[Path] = set()
 
 
@@ -105,6 +106,7 @@ async def _evict_oldest_client() -> None:
     oldest_key = next(iter(_shared_clients))
     old = _shared_clients.pop(oldest_key)
     _shared_pools.pop(oldest_key, None)
+    _shared_run_code_pools.pop(oldest_key, None)
     try:
         await old.close()
     except Exception:
@@ -128,6 +130,7 @@ async def _get_or_create_shared_client(
     if client is not None:
         _shared_clients.pop(project_key, None)
         _shared_pools.pop(project_key, None)
+        _shared_run_code_pools.pop(project_key, None)
         try:
             await client.close()
         except Exception:
@@ -168,6 +171,32 @@ def get_scratch_pool(ctx: Context) -> ScratchPool:
     return pool
 
 
+def get_run_code_pool(ctx: Context) -> ScratchPool:
+    """Dedicated single-slot pool for sequential ``lean_run_code`` calls.
+
+    Keeping this separate from the parallel trial pool prevents alternating
+    run-code calls from warming two copies of the same import environment.
+    """
+    lifespan = ctx.request_context.lifespan_context
+    project = lifespan.lean_project_path
+    if project is None:
+        raise ValueError("lean project path is not set.")
+    project_key = Path(project).resolve(strict=False)
+    pool = _shared_run_code_pools.get(project_key)
+    client = _shared_clients.get(project_key)
+    if client is None:
+        raise ValueError("Lean client is not running for this project.")
+    if pool is None or pool._client is not client:
+        pool = ScratchPool(
+            client,
+            header="",
+            size=1,
+            name_prefix="_mcp_run_code",
+        )
+        _shared_run_code_pools[project_key] = pool
+    return pool
+
+
 def set_build_in_progress(project_path: Path | str, value: bool) -> None:
     project_key = Path(project_path).resolve(strict=False)
     if value:
@@ -182,6 +211,7 @@ async def detach_shared_client(
     """Remove (without closing) the shared client for a project."""
     project_key = Path(project_path).resolve(strict=False)
     _shared_pools.pop(project_key, None)
+    _shared_run_code_pools.pop(project_key, None)
     return _shared_clients.pop(project_key, None)
 
 
@@ -200,6 +230,7 @@ def close_shared_client(project_path: Path | str | None = None) -> None:
         clients = list(_shared_clients.values())
         _shared_clients.clear()
         _shared_pools.clear()
+        _shared_run_code_pools.clear()
         _builds_in_progress.clear()
     else:
         project_key = Path(project_path).resolve(strict=False)
@@ -208,6 +239,7 @@ def close_shared_client(project_path: Path | str | None = None) -> None:
         if client is not None:
             clients.append(client)
         _shared_pools.pop(project_key, None)
+        _shared_run_code_pools.pop(project_key, None)
         _builds_in_progress.discard(project_key)
 
     for client in clients:

@@ -209,10 +209,10 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
 - `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
 - `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
-- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_multi_attempt` for line-based attempts (~5x faster, see [REPL Setup](#repl-setup)).
-- `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` if not set.
+- `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt` (see [REPL Setup](#repl-setup)).
+- `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` or `.lake/packages/REPL/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
-- `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 8192). Only enforced on Linux/macOS.
+- `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 16384). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport. If set, bearer auth is required for every request.
 - `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance. Rate limits are skipped when set to a custom backend.
@@ -307,7 +307,7 @@ Clients should then include the token in the `Authorization` header.
 
 ### REPL Setup
 
-Enable fast REPL-based `lean_multi_attempt` for line-based attempts (~5x faster). Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode. Exact `column`-based attempts still use the LSP path.
+Enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt`. Uses [leanprover-community/repl](https://github.com/leanprover-community/repl) tactic mode. Exact `column`-based attempts still use the LSP path.
 
 **1. Add REPL to your Lean project's `lakefile.toml`:**
 
@@ -333,7 +333,8 @@ uvx lean-lsp-mcp --repl
 export LEAN_REPL=true
 ```
 
-The REPL binary is auto-detected from `.lake/packages/repl/`. Falls back to LSP if not found.
+The REPL binary is auto-detected from `.lake/packages/repl/` or
+`.lake/packages/REPL/`. Falls back to LSP if not found.
 
 ### Path Policy
 

@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from lean_lsp_mcp.repl import Repl, _split_imports, find_repl_binary
+from lean_lsp_mcp import config
+from lean_lsp_mcp import repl as repl_module
+from lean_lsp_mcp.repl import (
+    Repl,
+    ReplProcessError,
+    _memory_limit_preexec,
+    _split_imports,
+    find_repl_binary,
+)
 
 
 # =============================================================================
@@ -22,6 +30,15 @@ def test_find_repl_binary_from_lake_packages(tmp_path: Path, monkeypatch):
 
     found = find_repl_binary(str(tmp_path))
     assert found == str(repl_path / "repl")
+
+
+def test_find_repl_binary_from_uppercase_lake_package(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("LEAN_REPL_PATH", raising=False)
+    repl_path = tmp_path / ".lake" / "packages" / "REPL" / ".lake" / "build" / "bin"
+    repl_path.mkdir(parents=True)
+    (repl_path / "repl").touch()
+
+    assert find_repl_binary(str(tmp_path)) == str(repl_path / "repl")
 
 
 def test_find_repl_binary_env_var_takes_precedence(tmp_path: Path, monkeypatch):
@@ -63,6 +80,88 @@ def test_split_imports_preserves_specific_mathlib():
     assert "import Mathlib.Data.Nat" in header
     assert "import Mathlib.Data.List" in header
     assert "import Other" in header
+
+
+def test_memory_limit_preexec_uses_configured_mebibytes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(repl_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        repl_module.resource,
+        "setrlimit",
+        lambda resource_id, limits: calls.append((resource_id, limits)),
+    )
+
+    callback = _memory_limit_preexec(16384)
+    assert callback is not None
+    callback()
+
+    mem = 16384 * 1024 * 1024
+    assert calls == [(repl_module.resource.RLIMIT_AS, (mem, mem))]
+
+
+@pytest.mark.asyncio
+async def test_dead_repl_reports_exit_and_memory_limit(tmp_path: Path):
+    class _Stdin:
+        def write(self, _data):
+            pass
+
+        async def drain(self):
+            pass
+
+    class _Stdout:
+        async def readline(self):
+            return b""
+
+    class _Stderr:
+        async def read(self):
+            return b"allocation failed"
+
+    class _Proc:
+        stdin = _Stdin()
+        stdout = _Stdout()
+        stderr = _Stderr()
+        returncode = -9
+
+        async def wait(self):
+            return self.returncode
+
+    repl = Repl(project_dir=str(tmp_path))
+    repl.mem_mb = 8192
+    repl._proc = _Proc()
+
+    with pytest.raises(ReplProcessError) as exc_info:
+        await repl._send_cmd("#check Nat")
+
+    message = str(exc_info.value)
+    assert "exit code -9" in message
+    assert "allocation failed" in message
+    assert "8192 MiB (LEAN_REPL_MEM_MB)" in message
+
+
+@pytest.mark.asyncio
+async def test_run_code_uses_cached_header_environment(tmp_path: Path):
+    from unittest.mock import AsyncMock
+
+    repl = Repl(project_dir=str(tmp_path))
+    repl._ensure_header = AsyncMock(return_value=7)
+    repl._send_cmd = AsyncMock(
+        return_value={
+            "messages": [
+                {
+                    "severity": "info",
+                    "data": "Nat : Type",
+                    "pos": {"line": 1, "column": 0},
+                }
+            ]
+        }
+    )
+
+    result = await repl.run_code("import Mathlib\n\n#check Nat")
+
+    repl._ensure_header.assert_awaited_once_with("import Mathlib")
+    repl._send_cmd.assert_awaited_once_with("#check Nat", env=7)
+    assert result.line_offset == 2
+    assert result.messages[0]["data"] == "Nat : Type"
 
 
 @pytest.mark.asyncio
@@ -146,6 +245,14 @@ async def repl(test_project_path: Path, monkeypatch):
         / "build"
         / "bin"
         / "repl",
+        test_project_path
+        / ".lake"
+        / "packages"
+        / "REPL"
+        / ".lake"
+        / "build"
+        / "bin"
+        / "repl",
     ]
     repl_bin = next((p for p in candidates if p.exists()), None)
     if not repl_bin:
@@ -156,6 +263,7 @@ async def repl(test_project_path: Path, monkeypatch):
 
     monkeypatch.setenv("LEAN_REPL_PATH", str(repl_bin))
     monkeypatch.setenv("LEAN_REPL_TIMEOUT", "30")
+    monkeypatch.delenv(config.REPL_MEM_MB_ENV, raising=False)
 
     r = Repl(project_dir=str(test_project_path))
     yield r
@@ -195,6 +303,33 @@ async def test_backtracking_isolation(repl: Repl):
     )
     assert len(results) == 2
     assert results[1].error is None  # rfl specifically should work
+
+
+@pytest.mark.asyncio
+async def test_default_memory_limit_keeps_mathlib_repl_alive(repl: Repl):
+    """The default cap must leave enough virtual address space to load Mathlib."""
+    assert repl.mem_mb == 16384
+
+    result = await repl.run_code("import Mathlib\n\n#check Nat")
+    invalid = await repl.run_code("import Mathlib\n\nexample : 1 = 2 := by rfl")
+    first_definition = await repl.run_code("import Mathlib\n\ndef replRunValue := 1")
+    repeated_definition = await repl.run_code(
+        "import Mathlib\n\ndef replRunValue := 1"
+    )
+
+    assert result.error is None
+    assert any("Nat" in message.get("data", "") for message in result.messages)
+    assert any(
+        message.get("severity") == "error" for message in invalid.messages
+    )
+    assert not any(
+        message.get("severity") == "error" for message in first_definition.messages
+    )
+    assert not any(
+        message.get("severity") == "error" for message in repeated_definition.messages
+    )
+    assert repl._proc is not None
+    assert repl._proc.returncode is None
 
 
 @pytest.mark.skip

@@ -220,4 +220,12 @@ def repl_timeout() -> int:
 
 
 def repl_mem_mb() -> int:
-    return _int_env(REPL_MEM_MB_ENV, 8192)
+    mem_mb = _int_env(REPL_MEM_MB_ENV, 16384)
+    if mem_mb < 1:
+        logger.warning(
+            "Invalid %s=%s, defaulting to 16384.",
+            REPL_MEM_MB_ENV,
+            mem_mb,
+        )
+        return 16384
+    return mem_mb

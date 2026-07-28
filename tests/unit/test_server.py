@@ -12,6 +12,7 @@ import pytest
 from lean_lsp_mcp import client_utils
 from lean_lsp_mcp import server
 from lean_lsp_mcp.models import DiagnosticSeverity
+from lean_lsp_mcp.repl import ReplProcessError, ReplRunResult
 
 
 class _FakeTransport:
@@ -1184,6 +1185,115 @@ async def test_multi_attempt_repl_does_not_autodiscover_binary(
     )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_run_code_repl_preserves_diagnostic_shape(tmp_path: Path) -> None:
+    project = _make_project(tmp_path / "proj")
+
+    class _Repl:
+        project_dir = str(project)
+
+        async def run_code(self, _code):
+            return ReplRunResult(
+                messages=[
+                    {
+                        "severity": "error",
+                        "data": "type mismatch",
+                        "pos": {"line": 2, "column": 3},
+                    }
+                ],
+                line_offset=2,
+            )
+
+    ctx = _make_ctx(lean_project_path=project)
+    lifespan = ctx.request_context.lifespan_context
+    lifespan.repl_enabled = True
+    lifespan.repl = _Repl()
+
+    result = await server._run_code_repl(ctx, "import Mathlib\n\n#check missing")
+
+    assert result is not None
+    assert result.success is False
+    assert result.timed_out is False
+    assert [diagnostic.model_dump() for diagnostic in result.diagnostics] == [
+        {
+            "severity": "error",
+            "message": "type mismatch",
+            "line": 4,
+            "column": 4,
+            "lean_tags": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_code_repl_process_failure_disables_fast_lane(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    project = _make_project(tmp_path / "proj")
+
+    class _DeadRepl:
+        project_dir = str(project)
+        close_calls = 0
+
+        async def run_code(self, _code):
+            raise ReplProcessError(
+                "No response; exit code -9; memory limit: 8192 MiB"
+            )
+
+        async def close(self):
+            self.close_calls += 1
+
+    repl = _DeadRepl()
+    ctx = _make_ctx(lean_project_path=project)
+    lifespan = ctx.request_context.lifespan_context
+    lifespan.repl_enabled = True
+    lifespan.repl = repl
+
+    result = await server._run_code_repl(ctx, "#check Nat")
+
+    assert result is None
+    assert lifespan.repl_enabled is False
+    assert repl.close_calls == 1
+    assert "disabling it for this session" in caplog.text
+    assert "8192 MiB" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_multi_attempt_repl_process_failure_disables_fast_lane(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    lean_file = project / "Foo.lean"
+    lean_file.write_text("theorem foo : True := by\n  trivial\n")
+
+    class _DeadRepl:
+        project_dir = str(project)
+        close_calls = 0
+
+        async def run_snippets(self, _code, _snippets):
+            raise ReplProcessError("No response; exit code -9")
+
+        async def close(self):
+            self.close_calls += 1
+
+    repl = _DeadRepl()
+    ctx = _make_ctx(lean_project_path=project)
+    lifespan = ctx.request_context.lifespan_context
+    lifespan.repl_enabled = True
+    lifespan.repl = repl
+
+    result = await server._multi_attempt_repl(
+        ctx,
+        file_path=str(lean_file),
+        line=2,
+        snippets=["trivial"],
+    )
+
+    assert result is None
+    assert lifespan.repl_enabled is False
+    assert repl.close_calls == 1
 
 
 def test_process_diagnostics_partial_returns_poll_shape() -> None:

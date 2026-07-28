@@ -121,7 +121,7 @@ def main():
     parser.add_argument(
         "--repl",
         action="store_true",
-        help="Enable fast REPL-based multi-attempt (~5x faster). Requires Lean REPL.",
+        help="Enable fast REPL-based run-code and multi-attempt. Requires Lean REPL.",
     )
     parser.add_argument(
         "--repl-timeout",

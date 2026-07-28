@@ -91,6 +91,10 @@ def test_repl_numeric_getters(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(config.REPL_TIMEOUT_ENV, raising=False)
     monkeypatch.delenv(config.REPL_MEM_MB_ENV, raising=False)
     assert config.repl_timeout() == 60
-    assert config.repl_mem_mb() == 8192
+    assert config.repl_mem_mb() == 16384
     monkeypatch.setenv(config.REPL_TIMEOUT_ENV, "120")
     assert config.repl_timeout() == 120
+    monkeypatch.setenv(config.REPL_MEM_MB_ENV, "8192")
+    assert config.repl_mem_mb() == 8192
+    monkeypatch.setenv(config.REPL_MEM_MB_ENV, "0")
+    assert config.repl_mem_mb() == 16384
