@@ -11,7 +11,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_scratch_pool, open_synced
+from lean_lsp_mcp.client_utils import get_serial_scratch_pool, open_synced
 from lean_lsp_mcp.models import (
     CodeAction,
     CodeActionEdit,
@@ -64,7 +64,7 @@ async def file_outline(
         server._raise_invalid_path(file_path)
 
     client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
-    pool = get_scratch_pool(ctx)
+    pool = get_serial_scratch_pool(ctx)
     return await generate_outline_data(client, pool, rel_path, max_declarations)
 
 

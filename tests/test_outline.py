@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import orjson
 from collections.abc import Callable
 from pathlib import Path
@@ -50,6 +51,39 @@ class _FakeOutlineClient:
         ]
 
 
+class _BlockingOutlineClient:
+    project_path = "/tmp/lean-lsp-mcp-outline-race-test"
+
+    def __init__(self) -> None:
+        self.namespace = "BeforeEdit"
+        self.document_symbols_calls = 0
+        self.request_started = asyncio.Event()
+        self.release_request = asyncio.Event()
+
+    async def reload_from_disk(self, path: str, wait: bool = False):
+        self.path = path
+
+    def content(self, path: str) -> str:
+        return f"namespace {self.namespace}\nend {self.namespace}\n"
+
+    async def document_symbols(self, path: str) -> list[dict]:
+        namespace = self.namespace
+        self.document_symbols_calls += 1
+        self.request_started.set()
+        await self.release_request.wait()
+        return [
+            {
+                "name": namespace,
+                "kind": "namespace",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 1, "character": len(namespace) + 4},
+                },
+                "children": [],
+            }
+        ]
+
+
 @pytest.mark.asyncio
 async def test_outline_cache_reuses_unchanged_file_symbols() -> None:
     """Repeated unchanged outlines should avoid another documentSymbol call."""
@@ -68,6 +102,26 @@ async def test_outline_cache_reuses_unchanged_file_symbols() -> None:
     first.declarations[0].name = "mutated"
     third = await generate_outline_data(client, pool, "Cache.lean")
     assert third.declarations[0].name == "CacheNs"
+
+
+@pytest.mark.asyncio
+async def test_outline_cache_does_not_publish_stale_inflight_result() -> None:
+    """An old in-flight result must not become the cache entry for new content."""
+    with _OUTLINE_CACHE_LOCK:
+        _OUTLINE_CACHE.clear()
+
+    client = _BlockingOutlineClient()
+    first_task = asyncio.create_task(generate_outline_data(client, None, "Cache.lean"))
+    await client.request_started.wait()
+    client.namespace = "AfterEdit"
+    client.release_request.set()
+
+    first = await first_task
+    second = await generate_outline_data(client, None, "Cache.lean")
+
+    assert first.declarations[0].name == "BeforeEdit"
+    assert second.declarations[0].name == "AfterEdit"
+    assert client.document_symbols_calls == 2
 
 
 @pytest.fixture
