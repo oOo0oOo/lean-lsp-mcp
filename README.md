@@ -209,6 +209,9 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_MCP_DISABLED_TOOLS`: Comma-separated list of tool names to remove from MCP tool listing.
 - `LEAN_MCP_INSTRUCTIONS`: Replacement server instructions string.
 - `LEAN_MCP_TOOL_DESCRIPTIONS`: JSON object mapping tool names to replacement descriptions.
+- `LEAN_MCP_SCRATCH_SLOTS`: Number of parallel scratch documents used for snippet
+  trials. Defaults to `1`; increase it only when parallel attempts are worth the
+  additional Lean process memory.
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt` (see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` or `.lake/packages/REPL/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).

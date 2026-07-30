@@ -25,6 +25,17 @@ def test_max_open_files(monkeypatch: pytest.MonkeyPatch):
     assert config.max_open_files() == 4
 
 
+def test_scratch_pool_size(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(config.SCRATCH_POOL_ENV, raising=False)
+    assert config.scratch_pool_size() == 1
+    monkeypatch.setenv(config.SCRATCH_POOL_ENV, "3")
+    assert config.scratch_pool_size() == 3
+    monkeypatch.setenv(config.SCRATCH_POOL_ENV, "not-an-int")
+    assert config.scratch_pool_size() == 1
+    monkeypatch.setenv(config.SCRATCH_POOL_ENV, "0")
+    assert config.scratch_pool_size() == 1
+
+
 def test_build_concurrency(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(config.BUILD_CONCURRENCY_ENV, raising=False)
     assert config.build_concurrency() == "allow"

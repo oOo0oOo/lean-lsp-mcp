@@ -90,13 +90,13 @@ SCRATCH_POOL_ENV = "LEAN_MCP_SCRATCH_SLOTS"
 
 
 def scratch_pool_size() -> int:
-    raw_value = os.environ.get(SCRATCH_POOL_ENV, "2")
+    raw_value = os.environ.get(SCRATCH_POOL_ENV, "1")
     try:
         value = int(raw_value)
     except ValueError:
-        logger.warning("Invalid %s=%s, defaulting to 2.", SCRATCH_POOL_ENV, raw_value)
-        return 2
-    return value if value >= 1 else 2
+        logger.warning("Invalid %s=%s, defaulting to 1.", SCRATCH_POOL_ENV, raw_value)
+        return 1
+    return value if value >= 1 else 1
 
 
 # --- Build / logging ---
