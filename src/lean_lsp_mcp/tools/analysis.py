@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Dict, List, Optional
 
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 

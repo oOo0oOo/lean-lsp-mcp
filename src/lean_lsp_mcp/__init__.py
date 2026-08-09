@@ -153,10 +153,11 @@ def main():
     os.environ[config.ACTIVE_TRANSPORT_ENV] = args.transport
 
     apply_tool_configuration(mcp)
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
     try:
-        mcp.run(transport=args.transport)
+        if args.transport == "stdio":
+            mcp.run(transport="stdio")
+        else:
+            mcp.run(transport=args.transport, host=args.host, port=args.port)
     except KeyboardInterrupt:
         return 130
     except Exception as exc:

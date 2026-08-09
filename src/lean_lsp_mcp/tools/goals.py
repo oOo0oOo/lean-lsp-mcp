@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal, Optional
 
 from leanclient.aio import AsyncLeanLSPClient, LeanRequestTimeout
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 

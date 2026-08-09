@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, List, Optional
 
 from leanclient.aio import AsyncLeanLSPClient
-from mcp.server.fastmcp import Context
+from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 

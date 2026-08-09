@@ -22,8 +22,8 @@ from leanclient.aio import (
     LeanClientError,
 )
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.utilities.logging import configure_logging, get_logger
 
 from lean_lsp_mcp.client_utils import (
     _active_transport,
@@ -151,7 +151,7 @@ def _load_tool_description_overrides() -> dict[str, str]:
     return overrides
 
 
-def apply_tool_configuration(server: FastMCP) -> None:
+def apply_tool_configuration(server: MCPServer) -> None:
     """Apply optional runtime tool configuration from environment variables."""
     disabled = _parse_disabled_tools(config.disabled_tools_raw())
     for name in sorted(disabled):
@@ -164,7 +164,7 @@ def apply_tool_configuration(server: FastMCP) -> None:
 
     instructions_override = config.instructions_override()
     if instructions_override is not None:
-        server._mcp_server.instructions = instructions_override
+        server._lowlevel_server.instructions = instructions_override
         logger.info("Overrode server instructions via %s", _INSTRUCTIONS_ENV)
 
     description_overrides = _load_tool_description_overrides()
@@ -374,7 +374,7 @@ def _maybe_start_prewarm(lean_project_path: Path | None) -> None:
 
 
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
     context: AppContext | None = None
 
@@ -472,7 +472,7 @@ if auth_token:
     )
     mcp_kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
 
-mcp = FastMCP(**mcp_kwargs)
+mcp = MCPServer(**mcp_kwargs)
 
 # Symbols imported here but used only by the tool subpackage (via `server.X`)
 # or by tests through monkeypatching. Listing them in __all__ marks them as

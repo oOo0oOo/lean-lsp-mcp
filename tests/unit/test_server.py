@@ -367,7 +367,7 @@ def test_load_tool_description_overrides_inline(
 def test_apply_tool_configuration_disables_and_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mcp = server.FastMCP(name="test", instructions="base instructions")
+    mcp = server.MCPServer(name="test", instructions="base instructions")
 
     @mcp.tool("enabled_tool")
     def enabled_tool() -> str:

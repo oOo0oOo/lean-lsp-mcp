@@ -2,8 +2,8 @@ import asyncio
 from pathlib import Path
 
 from leanclient.aio import AsyncLeanLSPClient, ScratchPool
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.utilities.logging import get_logger
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.utilities.logging import get_logger
 
 from lean_lsp_mcp.file_utils import (
     LeanPathPolicy,
