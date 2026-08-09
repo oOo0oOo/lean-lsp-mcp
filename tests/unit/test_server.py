@@ -982,13 +982,13 @@ def test_diagnostic_messages_severity_schema_is_vertex_compatible() -> None:
     """
     tools = asyncio.run(server.mcp.list_tools())
     tool = next(t for t in tools if t.name == "lean_diagnostic_messages")
-    severity = tool.inputSchema["properties"]["severity"]
+    severity = tool.input_schema["properties"]["severity"]
     severity_json = json.dumps(severity)
 
     assert severity.get("type") == "string"
     assert "anyOf" not in severity
     assert "$ref" not in severity_json
-    assert "DiagnosticSeverity" not in json.dumps(tool.inputSchema.get("$defs", {}))
+    assert "DiagnosticSeverity" not in json.dumps(tool.input_schema.get("$defs", {}))
     assert severity.get("enum") == ["error", "warning", "info", "hint"]
     for level in ("error", "warning", "info", "hint"):
         assert level in severity_json

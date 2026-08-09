@@ -18,9 +18,9 @@ from lean_lsp_mcp.models import GoalState, StructuredGoal, TermGoalState
     "lean_goal",
     annotations=ToolAnnotations(
         title="Proof Goals",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def goal(
@@ -112,9 +112,9 @@ async def goal(
     "lean_term_goal",
     annotations=ToolAnnotations(
         title="Term Goal",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def term_goal(

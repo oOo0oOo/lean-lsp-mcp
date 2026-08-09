@@ -54,7 +54,7 @@ async def main():
                     async def one(c):
                         t = time.time()
                         res = await sess.call_tool(c["tool"], c.get("args", {}))
-                        return c.get("label", c["tool"]), time.time() - t, res.isError
+                        return c.get("label", c["tool"]), time.time() - t, res.is_error
 
                     t = time.time()
                     results = await asyncio.gather(*(one(c) for c in call["gather"]))
@@ -71,7 +71,7 @@ async def main():
                     )
                     dt = time.time() - t
                     out = "\n".join(c.text for c in res.content if hasattr(c, "text"))
-                    print(f"[{dt:7.2f}s] {label} isError={res.isError} len={len(out)}")
+                    print(f"[{dt:7.2f}s] {label} isError={res.is_error} len={len(out)}")
                     maxlen = call.get("show", 400)
                     print("    " + out[:maxlen].replace("\n", "\n    "))
                     if len(out) > maxlen:

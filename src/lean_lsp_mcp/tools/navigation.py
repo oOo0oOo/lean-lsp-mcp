@@ -34,9 +34,9 @@ from lean_lsp_mcp.utils import (
     "lean_hover_info",
     annotations=ToolAnnotations(
         title="Hover Info",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def hover(
@@ -85,9 +85,9 @@ async def hover(
     "lean_completions",
     annotations=ToolAnnotations(
         title="Completions",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def completions(
@@ -183,9 +183,9 @@ async def completions(
     "lean_declaration_file",
     annotations=ToolAnnotations(
         title="Declaration Source",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def declaration_file(
@@ -278,9 +278,9 @@ async def declaration_file(
     "lean_references",
     annotations=ToolAnnotations(
         title="Find References",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def references(

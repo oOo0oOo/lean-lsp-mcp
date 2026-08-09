@@ -38,9 +38,9 @@ from lean_lsp_mcp.models import (
     "lean_multi_attempt",
     annotations=ToolAnnotations(
         title="Multi-Attempt",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def multi_attempt(
@@ -72,9 +72,9 @@ async def multi_attempt(
     "lean_run_code",
     annotations=ToolAnnotations(
         title="Run Code",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def run_code(
@@ -110,9 +110,9 @@ async def run_code(
     "lean_verify",
     annotations=ToolAnnotations(
         title="Verify Theorem",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def verify_theorem(
@@ -200,9 +200,9 @@ async def verify_theorem(
     "lean_minimal_hypotheses",
     annotations=ToolAnnotations(
         title="Minimal Hypotheses",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def minimal_hypotheses(
@@ -343,9 +343,9 @@ async def minimal_hypotheses(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def profile_proof(

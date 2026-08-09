@@ -17,10 +17,10 @@ from lean_lsp_mcp.models import BuildResult
     "lean_build",
     annotations=ToolAnnotations(
         title="Build Project",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def lsp_build(

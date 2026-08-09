@@ -46,9 +46,9 @@ class LocalSearchError(Exception):
     "lean_local_search",
     annotations=ToolAnnotations(
         title="Local Search",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def local_search(
@@ -107,9 +107,9 @@ async def local_search(
     "lean_leansearch",
     annotations=ToolAnnotations(
         title="LeanSearch",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=True,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=True,
     ),
 )
 # leansearch.net raised capacity to ~40 req/s (per-IP ~120 req/min) and asked
@@ -162,9 +162,9 @@ async def leansearch(
     "lean_loogle",
     annotations=ToolAnnotations(
         title="Loogle",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=True,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=True,
     ),
 )
 async def loogle(
@@ -237,9 +237,9 @@ async def loogle(
     "lean_leanfinder",
     annotations=ToolAnnotations(
         title="Lean Finder",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=True,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=True,
     ),
 )
 @server.rate_limited("leanfinder", *config.RATE_LIMITS["leanfinder"])
@@ -299,9 +299,9 @@ async def leanfinder(
     "lean_state_search",
     annotations=ToolAnnotations(
         title="State Search",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=True,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=True,
     ),
 )
 @server.rate_limited(
@@ -358,9 +358,9 @@ async def state_search(
     "lean_hammer_premise",
     annotations=ToolAnnotations(
         title="Hammer Premises",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=True,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=True,
     ),
 )
 @server.rate_limited(

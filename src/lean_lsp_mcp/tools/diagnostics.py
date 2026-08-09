@@ -44,9 +44,9 @@ def _flatten_severity_schema(schema: dict) -> None:
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def file_outline(
@@ -72,9 +72,9 @@ async def file_outline(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
         title="Diagnostics",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def diagnostic_messages(
@@ -186,9 +186,9 @@ async def diagnostic_messages(
     "lean_code_actions",
     annotations=ToolAnnotations(
         title="Code Actions",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def code_actions(

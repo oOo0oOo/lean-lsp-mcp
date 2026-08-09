@@ -18,9 +18,9 @@ from lean_lsp_mcp.models import WidgetsResult, WidgetSourceResult
     "lean_get_widgets",
     annotations=ToolAnnotations(
         title="Get Widgets",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def get_widgets(
@@ -44,9 +44,9 @@ async def get_widgets(
     "lean_get_widget_source",
     annotations=ToolAnnotations(
         title="Widget Source",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def get_widget_source(
