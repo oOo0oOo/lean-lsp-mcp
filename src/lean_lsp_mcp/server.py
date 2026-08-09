@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import importlib
+import importlib.metadata
 import json
 import logging.config
 import os
@@ -462,9 +463,12 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
                 logger.exception("REPL close failed during app_lifespan teardown")
 
 
+VERSION = importlib.metadata.version("lean-lsp-mcp")
+
 mcp_kwargs: dict[str, Any] = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
+    version=VERSION,
     dependencies=["leanclient"],
     lifespan=app_lifespan,
 )
