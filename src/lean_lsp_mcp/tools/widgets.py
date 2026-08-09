@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from leanclient.aio import AsyncLeanLSPClient
-from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import open_synced
+from lean_lsp_mcp.client_utils import get_client, open_synced
 from lean_lsp_mcp.models import WidgetsResult, WidgetSourceResult
 
 
@@ -24,7 +22,7 @@ from lean_lsp_mcp.models import WidgetsResult, WidgetSourceResult
     ),
 )
 async def get_widgets(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
@@ -34,7 +32,7 @@ async def get_widgets(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
     widgets = await client.get_widgets(rel_path, line - 1, column - 1)
     return WidgetsResult(widgets=widgets)
@@ -50,7 +48,7 @@ async def get_widgets(
     ),
 )
 async def get_widget_source(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     javascript_hash: Annotated[
         str, Field(description="javascriptHash from a widget instance")
@@ -61,7 +59,7 @@ async def get_widget_source(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path, wait=True)
     source = await client.get_widget_source(rel_path, 0, 0, javascript_hash)
     if source is None:

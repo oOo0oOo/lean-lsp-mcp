@@ -7,13 +7,11 @@ import re
 from pathlib import Path
 from typing import Annotated, List, Optional
 
-from leanclient.aio import AsyncLeanLSPClient
-from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_path_policy, open_synced
+from lean_lsp_mcp.client_utils import get_client, get_path_policy, open_synced
 from lean_lsp_mcp.models import (
     CompletionItem,
     CompletionsResult,
@@ -40,7 +38,7 @@ from lean_lsp_mcp.utils import (
     ),
 )
 async def hover(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -55,7 +53,7 @@ async def hover(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
     file_content = client.content(rel_path)
     hover_info = await client.hover(rel_path, line - 1, column - 1)
@@ -91,7 +89,7 @@ async def hover(
     ),
 )
 async def completions(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -110,7 +108,7 @@ async def completions(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
     content = client.content(rel_path)
     raw_completions = await client.completions(rel_path, line - 1, column - 1)
@@ -189,7 +187,7 @@ async def completions(
     ),
 )
 async def declaration_file(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -211,7 +209,7 @@ async def declaration_file(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
     orig_file_content = client.content(rel_path)
 
@@ -284,7 +282,7 @@ async def declaration_file(
     ),
 )
 async def references(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
@@ -302,7 +300,7 @@ async def references(
             "Invalid Lean file path: Unable to start LSP server or load file"
         )
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
 
     try:

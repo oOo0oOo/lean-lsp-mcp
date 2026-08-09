@@ -9,12 +9,12 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Dict, List, Optional
 
-from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import (
+    get_client,
     get_path_policy,
     get_serial_scratch_pool,
     get_scratch_pool,
@@ -44,7 +44,7 @@ from lean_lsp_mcp.models import (
     ),
 )
 async def multi_attempt(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -78,7 +78,7 @@ async def multi_attempt(
     ),
 )
 async def run_code(
-    ctx: Context,
+    ctx: server.ToolContext,
     code: Annotated[str, Field(description="Self-contained Lean code with imports")],
 ) -> RunResult:
     """Run a code snippet and return diagnostics. Must include all imports."""
@@ -116,7 +116,7 @@ async def run_code(
     ),
 )
 async def verify_theorem(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     theorem_name: Annotated[
         str, Field(description="Fully qualified name (e.g. `Namespace.theorem`)")
@@ -206,7 +206,7 @@ async def verify_theorem(
     ),
 )
 async def minimal_hypotheses(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     theorem_name: Annotated[
         str,
@@ -247,7 +247,7 @@ async def minimal_hypotheses(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     doc = await open_synced(ctx, rel_path)
     original_content = doc.text
 
@@ -349,7 +349,7 @@ async def minimal_hypotheses(
     ),
 )
 async def profile_proof(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],

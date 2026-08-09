@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Annotated, Optional
 
-from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -24,7 +23,7 @@ from lean_lsp_mcp.models import BuildResult
     ),
 )
 async def lsp_build(
-    ctx: Context,
+    ctx: server.ToolContext,
     lean_project_path: Annotated[
         Optional[str], Field(description="Path to Lean project")
     ] = None,

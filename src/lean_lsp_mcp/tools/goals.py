@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from leanclient.aio import AsyncLeanLSPClient, LeanRequestTimeout
-from mcp.server.mcpserver import Context
+from leanclient.aio import LeanRequestTimeout
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import open_synced
+from lean_lsp_mcp.client_utils import get_client, open_synced
 from lean_lsp_mcp.models import GoalState, StructuredGoal, TermGoalState
 
 
@@ -24,7 +23,7 @@ from lean_lsp_mcp.models import GoalState, StructuredGoal, TermGoalState
     ),
 )
 async def goal(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -59,7 +58,7 @@ async def goal(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
     content = client.content(rel_path)
     lines = content.splitlines()
@@ -118,7 +117,7 @@ async def goal(
     ),
 )
 async def term_goal(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -132,7 +131,7 @@ async def term_goal(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
     content = client.content(rel_path)
     lines = content.splitlines()
