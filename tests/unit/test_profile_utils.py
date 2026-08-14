@@ -1,13 +1,19 @@
 """Unit tests for profile_utils module."""
 
+import os
+import platform
+from pathlib import Path
+
 import pytest
 
+from lean_lsp_mcp import profile_utils
 from lean_lsp_mcp.profile_utils import (
     _build_proof_items,
     _extract_line_times,
     _extract_theorem_source,
     _filter_categories,
     _parse_output,
+    _run_lean_profile,
 )
 
 
@@ -109,3 +115,70 @@ class TestFilterCategories:
     def test_filters_skip_and_small(self):
         cumulative = {"import": 100.0, "simp": 5.0, "parsing": 2.0, "ring": 0.5}
         assert _filter_categories(cumulative) == {"simp": 5.0}
+
+
+class _FakeProc:
+    """Stands in for the `lake env lean --profile` subprocess."""
+
+    pid = 4321
+
+    def __init__(self):
+        self.killed = False
+
+    async def communicate(self):
+        return b"[Elab.command] [0.005] done\n", None
+
+    def kill(self):
+        self.killed = True
+
+
+class TestRunLeanProfileCleanup:
+    """The cleanup in _run_lean_profile's `finally` runs on every profile.
+
+    Both platforms are simulated rather than detected, so each case is
+    exercised wherever the suite runs.
+    """
+
+    @pytest.fixture
+    def proc(self, monkeypatch) -> _FakeProc:
+        fake = _FakeProc()
+
+        async def fake_exec(*args, **kwargs):
+            return fake
+
+        monkeypatch.setattr(profile_utils.asyncio, "create_subprocess_exec", fake_exec)
+        return fake
+
+    async def test_windows_kills_the_process_instead_of_the_group(
+        self, monkeypatch, tmp_path: Path, proc: _FakeProc
+    ):
+        """Windows has no os.killpg, so the group kill must not be attempted.
+
+        Calling it raised AttributeError out of the `finally`, which discarded
+        the profile that had already been produced.
+        """
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        monkeypatch.delattr(os, "killpg", raising=False)
+        monkeypatch.delattr(os, "getpgid", raising=False)
+
+        output = await _run_lean_profile(tmp_path / "T.lean", tmp_path, 30.0)
+
+        assert output == "[Elab.command] [0.005] done\n"
+        assert proc.killed
+
+    async def test_posix_still_kills_the_whole_group(
+        self, monkeypatch, tmp_path: Path, proc: _FakeProc
+    ):
+        """The group kill is what stops lean surviving as an orphan."""
+        killed: list[tuple[int, int]] = []
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
+        monkeypatch.setattr(
+            os, "killpg", lambda pgid, sig: killed.append((pgid, sig)), raising=False
+        )
+
+        output = await _run_lean_profile(tmp_path / "T.lean", tmp_path, 30.0)
+
+        assert output == "[Elab.command] [0.005] done\n"
+        assert killed == [(_FakeProc.pid, 9)]
+        assert not proc.killed
