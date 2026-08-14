@@ -20,8 +20,14 @@ from lean_lsp_mcp.client_utils import (
     bind_lean_project_path,
     build_lean_path_policy,
     open_synced,
+    running_shared_client,
 )
+from lean_lsp_mcp.file_utils import LeanPathPolicy
 from lean_lsp_mcp.loogle import LoogleQueryError, loogle_remote
+from lean_lsp_mcp.search_utils import (
+    merge_local_search_matches,
+    workspace_symbol_matches,
+)
 from lean_lsp_mcp.models import (
     LeanFinderResult,
     LeanFinderResults,
@@ -40,6 +46,50 @@ from lean_lsp_mcp.models import (
 
 class LocalSearchError(Exception):
     pass
+
+
+async def _with_index_matches(
+    source_matches: list[dict[str, str]],
+    query: str,
+    limit: int,
+    policy: LeanPathPolicy,
+) -> list[dict[str, str]]:
+    """Add declarations that exist in the symbol index but not in source text.
+
+    Ripgrep can only match declarations someone wrote. Mathlib derives a large
+    part of its API from attributes: ``@[to_additive]`` alone accounts for
+    roughly sixteen thousand declarations, and ``@[simps]``, ``@[to_dual]`` and
+    ``@[mk_iff]`` add thousands more. Those names never appear as source text,
+    so a source-only search reports them as absent, which reads as "this lemma
+    does not exist" rather than "this search cannot see it".
+
+    The language server answers ``workspace/symbol`` from the compiled
+    ``.ilean`` index and does know them.
+
+    Returns *source_matches* unchanged when no language server is running for
+    the project. Starting one costs a full ``lake serve`` boot, and a search is
+    not the right moment to pay it.
+    """
+    client = running_shared_client(policy.project_root)
+    if client is None:
+        return source_matches
+
+    try:
+        # wait_for_index=0: report what the index has now rather than stalling
+        # a search behind index loading.
+        symbols, _index_ready = await client.workspace_symbol(
+            query, max_results=limit, wait_for_index=0.0
+        )
+    except Exception as exc:  # a search must survive a symbol query failure
+        server.logger.warning(f"workspace/symbol lookup failed: {exc}")
+        return source_matches
+
+    return merge_local_search_matches(
+        source_matches,
+        workspace_symbol_matches(symbols, policy),
+        query,
+        limit,
+    )
 
 
 @server.mcp.tool(
@@ -87,12 +137,16 @@ async def local_search(
 
     try:
         policy = build_lean_path_policy(resolved_root)
+        normalized_query = query.strip()
         raw_results = await asyncio.to_thread(
             server.lean_local_search,
-            query=query.strip(),
+            query=normalized_query,
             limit=limit,
             project_root=policy.project_root,
             path_policy=policy,
+        )
+        raw_results = await _with_index_matches(
+            raw_results, normalized_query, limit, policy
         )
         results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
