@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import platform
 import re
 import tempfile
 from collections import defaultdict
@@ -147,10 +148,18 @@ def _filter_categories(cumulative: dict[str, float]) -> dict[str, float]:
     }
 
 
-def _kill_process_group(pid: int) -> None:
-    """Kill an entire process group. No-op if already dead."""
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill an entire process group. No-op if already dead.
+
+    Windows has no POSIX process groups and no os.killpg/os.getpgid, so
+    killing the process itself is the available equivalent there.  Same
+    branch Repl.close uses for this cleanup.
+    """
     try:
-        os.killpg(os.getpgid(pid), 9)
+        if platform.system() != "Windows":
+            os.killpg(os.getpgid(proc.pid), 9)
+        else:
+            proc.kill()
     except (ProcessLookupError, OSError):
         pass
 
@@ -181,7 +190,7 @@ async def _run_lean_profile(file_path: Path, project_path: Path, timeout: float)
     except asyncio.TimeoutError:
         raise TimeoutError(f"Profiling timed out after {timeout}s")
     finally:
-        _kill_process_group(proc.pid)
+        _kill_process_group(proc)
 
 
 def _find_proof_start(source_lines: list[str]) -> int:
