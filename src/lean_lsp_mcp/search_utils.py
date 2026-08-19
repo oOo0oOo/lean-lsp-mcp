@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from functools import lru_cache
 import platform
 import re
@@ -373,6 +373,80 @@ def lean_local_search(
             break
 
     return deduped
+
+
+# `workspace/symbol` answers with LSP's generic SymbolKind enum, which does not
+# carry Lean's declaration vocabulary (theorem / lemma / def / instance / ...).
+# Reporting a neutral kind is honest; guessing one from the enum would not be.
+INDEX_MATCH_KIND = "declaration"
+
+
+def workspace_symbol_matches(
+    symbols: Iterable[Mapping[str, object]],
+    policy: LeanPathPolicy,
+) -> list[dict[str, str]]:
+    """Convert ``workspace/symbol`` results into local search match dicts.
+
+    The language server answers from the compiled ``.ilean`` index, so it knows
+    declarations that attributes such as ``@[to_additive]`` generate and that
+    never exist as source text for ripgrep to find.
+
+    Symbols outside the project, its dependencies and the stdlib are skipped so
+    that ``file`` keeps the repo relative shape the ripgrep path produces.
+    """
+    matches: list[dict[str, str]] = []
+    for symbol in symbols:
+        name = symbol.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+
+        location = symbol.get("location")
+        if not isinstance(location, Mapping):
+            continue
+        path = location.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+
+        local_path = Path(path)
+        if not local_path.is_absolute():
+            local_path = policy.project_root / local_path
+        try:
+            display_path = policy.display_path(local_path)
+        except ValueError:
+            continue
+
+        matches.append({"name": name, "kind": INDEX_MATCH_KIND, "file": display_path})
+
+    return matches
+
+
+def merge_local_search_matches(
+    source_matches: Sequence[dict[str, str]],
+    index_matches: Sequence[dict[str, str]],
+    query: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    """Combine ripgrep matches with index matches, the source entry winning ties.
+
+    A declaration present in both is reported once, from the source match, which
+    carries the real declaration keyword.
+
+    Ranking reuses the ripgrep sort key so that a declaration found only in the
+    index still outranks the near misses source search turned up: searching
+    ``sum_range_succ`` puts the generated ``Finset.sum_range_succ`` ahead of
+    ``Finset.sum_range_succ_mul_sum_range_succ``.
+    """
+    merged: list[dict[str, str]] = list(source_matches)
+    seen_names = {match["name"] for match in merged}
+    for match in index_matches:
+        if match["name"] in seen_names:
+            continue
+        seen_names.add(match["name"])
+        merged.append(match)
+
+    normalized_query = query.casefold()
+    merged.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
+    return merged[:limit]
 
 
 @lru_cache(maxsize=4)

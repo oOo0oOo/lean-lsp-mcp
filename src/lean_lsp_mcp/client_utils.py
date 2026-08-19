@@ -232,6 +232,20 @@ def attach_shared_client(project_path: Path | str, client: AsyncLeanLSPClient) -
     _shared_clients[project_key] = client
 
 
+def running_shared_client(project_path: Path | str) -> AsyncLeanLSPClient | None:
+    """Return the shared client for *project_path*, but only if one is already up.
+
+    Unlike :func:`startup_client` this never launches ``lake serve``. Callers
+    that only enrich a result with language server data use it so that a fast
+    operation cannot silently turn into a cold server start.
+    """
+    project_key = Path(project_path).resolve(strict=False)
+    client = _shared_clients.get(project_key)
+    if client is None or not client.alive:
+        return None
+    return client
+
+
 def close_shared_client(project_path: Path | str | None = None) -> None:
     """Terminate shared clients synchronously (process-exit path).
 

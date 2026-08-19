@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import AsyncContextManager
@@ -162,3 +164,64 @@ async def test_search_tools(
         else:
             finder_text = result_text(finder_informal)
             assert finder_text and len(finder_text) > 0
+
+
+def _result_names(result) -> list[str]:
+    """Every declaration name in a `{"items": [...]}` result."""
+    if result.structured_content is not None:
+        return [item["name"] for item in result.structured_content.get("items", [])]
+
+    for block in result.content:
+        text = getattr(block, "text", "").strip()
+        if not text:
+            continue
+        try:
+            parsed = orjson.loads(text)
+        except orjson.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and "items" in parsed:
+            return [item["name"] for item in parsed["items"]]
+    return []
+
+
+async def test_local_search_finds_attribute_generated_declarations(
+    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
+    test_project_path: Path,
+) -> None:
+    """`Finset.sum_range_succ` is derived from `Finset.prod_range_succ` by
+    `@[to_additive]`, so it never appears as source text and ripgrep alone
+    reports it as missing. The language server's symbol index knows it.
+
+    A search never blocks on index loading, so index backed results appear once
+    the server has finished reading `.ilean` files, which takes a couple of
+    minutes on a Mathlib project. Waiting for that belongs here, in the test,
+    rather than inside a tool documented as fast.
+    """
+    async with mcp_client_factory() as client:
+        # Opening a file is what brings a language server up; without one the
+        # search stays source only by design.
+        await client.call_tool(
+            "lean_diagnostic_messages",
+            {"file_path": str(test_project_path / "McpTestProject.lean")},
+        )
+
+        deadline = time.monotonic() + 300
+        names: list[str] = []
+        while time.monotonic() < deadline:
+            result = await client.call_tool(
+                "lean_local_search",
+                {
+                    "query": "Finset.sum_range_succ",
+                    "project_root": str(test_project_path),
+                },
+            )
+            names = _result_names(result)
+            if "Finset.sum_range_succ" in names:
+                return
+            if not names:
+                message = result_text(result).strip()
+                if "ripgrep" in message.lower():
+                    pytest.skip(message)
+            await asyncio.sleep(5)
+
+        pytest.fail(f"generated declaration never appeared in search results: {names}")

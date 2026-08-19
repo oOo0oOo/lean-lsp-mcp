@@ -396,7 +396,7 @@ yaml = [
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.14.2" },
     { name = "certifi", specifier = ">=2026.7.22" },
-    { name = "leanclient", specifier = ">=0.13.0" },
+    { name = "leanclient", specifier = ">=0.13.1" },
     { name = "mcp", extras = ["cli"], specifier = "==2.0.0" },
     { name = "orjson", specifier = ">=3.11.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
@@ -412,16 +412,16 @@ provides-extras = ["yaml", "lint", "dev"]
 
 [[package]]
 name = "leanclient"
-version = "0.13.0"
+version = "0.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "orjson" },
     { name = "psutil" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/13/54/f1d83a0917082c025f22004ba79dec2da0cbcc9456bc2c276cc5d71fd33c/leanclient-0.13.0.tar.gz", hash = "sha256:dffba9499fc1467e2c17a49d184da36d744b171760d91887a572e5696aecb437", size = 1164284, upload-time = "2026-07-28T08:23:49.755Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/27/2cf422dc9b8804c6fa964ab6963e2b9566011b036df90f10ad3740446df5/leanclient-0.13.1.tar.gz", hash = "sha256:be62c4d9df4c45e1c8d4afcad21638ee0c061f65f096c56f150d421f22e5dff4", size = 1164713, upload-time = "2026-08-19T13:07:21.933Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/9a/7e98a449f436132a5f47ad58ef8539ae1a1f7bf1d9145fcde28992565f49/leanclient-0.13.0-py3-none-any.whl", hash = "sha256:e4736f018dec00d91c443a8fc6eb998ec4f0114b495034f43cea5ee79ccd2a98", size = 60729, upload-time = "2026-07-28T08:23:48.036Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/2c/43b350b8fb75e2e6bbae4295065a4a92a97af7dc2a84d1a430dbf5146b8b/leanclient-0.13.1-py3-none-any.whl", hash = "sha256:96964a4eab9a84106ae7b1594b1993bf36c23ce665f5cf51a67f888f7c88dad5", size = 60776, upload-time = "2026-08-19T13:07:20.359Z" },
 ]
 
 [[package]]

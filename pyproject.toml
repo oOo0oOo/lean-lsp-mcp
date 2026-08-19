@@ -6,7 +6,7 @@ authors = [{ name = "Oliver Dressler", email = "hey@oli.show" }]
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["leanclient>=0.13.0", "mcp[cli]==2.0.0", "orjson>=3.11.9", "certifi>=2026.7.22"]
+dependencies = ["leanclient>=0.13.1", "mcp[cli]==2.0.0", "orjson>=3.11.9", "certifi>=2026.7.22"]
 
 [project.urls]
 Repository = "https://github.com/oOo0oOo/lean-lsp-mcp"
