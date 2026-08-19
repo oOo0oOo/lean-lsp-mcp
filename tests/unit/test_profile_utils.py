@@ -16,6 +16,12 @@ from lean_lsp_mcp.profile_utils import (
     _run_lean_profile,
 )
 
+# Status markers exactly as `lean --profile` emits them, captured from a real
+# run rather than written by hand: success, failure, error.
+OK = "\u2705\ufe0f"
+FAIL = "\u274c\ufe0f"
+ERROR = "\U0001f4a5\ufe0f"
+
 
 class TestParseOutput:
     def test_parses_single_trace(self):
@@ -87,6 +93,76 @@ class TestExtractLineTimes:
         line_times, total = _extract_line_times(traces, "missing", [])
         assert line_times == {}
         assert total == 0.0
+
+
+class TestTraceStatusMarkers:
+    """Messages arrive prefixed with the traced action's status emoji.
+
+    The cases below use the marked form the profiler actually produces. The
+    unmarked form used elsewhere in this file matches whatever the parser
+    happens to do, which is why it never caught the prefix.
+    """
+
+    @pytest.mark.parametrize("marker", [OK, FAIL, ERROR], ids=["ok", "fail", "error"])
+    def test_binds_a_tactic_whatever_its_status(self, marker):
+        """With the marker left in place no message can match any source line,
+        and a step that failed or threw still spent its time on that line."""
+        traces = [
+            (0, "Elab.definition.value", 10.0, "my_thm"),
+            (1, "Elab.step", 8.0, f"{marker} induction n with"),
+        ]
+        proof_items = [(2, "induction n with", False)]
+
+        line_times, _ = _extract_line_times(traces, "my_thm", proof_items)
+
+        assert line_times == {2: 8.0}
+
+    def test_keeps_a_leading_parenthesis(self):
+        """Tactic text can start with punctuation, so only the status marker
+        may be removed."""
+        traces = [
+            (0, "Elab.definition.value", 10.0, "my_thm"),
+            (1, "Elab.step", 4.0, f"{OK} (rewrite [h])"),
+        ]
+        proof_items = [(2, "(rewrite [h])", False)]
+
+        line_times, _ = _extract_line_times(traces, "my_thm", proof_items)
+
+        assert line_times == {2: 4.0}
+
+    def test_a_status_only_step_claims_nothing(self):
+        """Lean wraps a tactic block in steps whose message is only the status
+        prefix, and they arrive before any real tactic.
+
+        Such a step must not take a line: an empty message matches a bullet on
+        position alone, and matches any line at all through
+        `content.startswith("")`. Skipping it is also what lets the first real
+        tactic fix the depth the others are matched at.
+        """
+        traces = [
+            (0, "Elab.definition.value", 10.0, "my_thm"),
+            (1, "Elab.step", 9.0, OK),
+            (2, "Elab.step", 8.0, f"{OK} norm_num"),
+        ]
+        proof_items = [(2, "exact hp", True), (3, "norm_num", True)]
+
+        line_times, _ = _extract_line_times(traces, "my_thm", proof_items)
+
+        assert line_times == {3: 8.0}
+
+    def test_marked_expected_type_does_not_claim_the_tactic_depth(self):
+        """The `expected type:` guard has to see the message without its marker,
+        otherwise a pseudo step fixes the depth that real tactics are matched at."""
+        traces = [
+            (0, "Elab.definition.value", 10.0, "my_thm"),
+            (1, "Elab.step", 5.0, f"{OK} expected type: Prop, term"),
+            (2, "Elab.step", 8.0, f"{OK} ring"),
+        ]
+        proof_items = [(2, "ring", False)]
+
+        line_times, _ = _extract_line_times(traces, "my_thm", proof_items)
+
+        assert line_times == {2: 8.0}
 
 
 class TestExtractTheoremSource:
