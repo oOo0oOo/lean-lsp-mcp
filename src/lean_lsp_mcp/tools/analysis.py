@@ -7,7 +7,7 @@ that never touch disk); the user's files and open documents are never edited.
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Dict, List, Optional
+from typing import Annotated
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -20,6 +20,7 @@ from lean_lsp_mcp.client_utils import (
     get_scratch_pool,
     infer_project_path,
     open_synced,
+    require_client_for_file,
     startup_client,
 )
 from lean_lsp_mcp.models import (
@@ -32,9 +33,10 @@ from lean_lsp_mcp.models import (
     SourceWarning,
     VerifyResult,
 )
+from lean_lsp_mcp.tool_registry import tool
 
 
-@server.mcp.tool(
+@tool(
     "lean_multi_attempt",
     annotations=ToolAnnotations(
         title="Multi-Attempt",
@@ -50,11 +52,11 @@ async def multi_attempt(
     ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     snippets: Annotated[
-        List[str],
+        list[str],
         Field(description="Tactics to try (3+ recommended)"),
     ],
     column: Annotated[
-        Optional[int],
+        int | None,
         Field(description="Column (1-indexed). Omit to target the tactic line", ge=1),
     ] = None,
 ) -> MultiAttemptResult:
@@ -68,7 +70,7 @@ async def multi_attempt(
     return await server._multi_attempt_lsp(ctx, file_path, line, column, snippets)
 
 
-@server.mcp.tool(
+@tool(
     "lean_run_code",
     annotations=ToolAnnotations(
         title="Run Code",
@@ -106,7 +108,7 @@ async def run_code(
     )
 
 
-@server.mcp.tool(
+@tool(
     "lean_verify",
     annotations=ToolAnnotations(
         title="Verify Theorem",
@@ -133,9 +135,7 @@ async def verify_theorem(
     )
 
     theorem_name = server._validate_theorem_name(theorem_name)
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     try:
         policy = get_path_policy(ctx)
@@ -196,7 +196,7 @@ async def verify_theorem(
     return VerifyResult(axioms=axioms, warnings=w)
 
 
-@server.mcp.tool(
+@tool(
     "lean_minimal_hypotheses",
     annotations=ToolAnnotations(
         title="Minimal Hypotheses",
@@ -243,9 +243,7 @@ async def minimal_hypotheses(
     )
 
     theorem_name = server._validate_theorem_name(theorem_name)
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     doc = await open_synced(ctx, rel_path)
@@ -271,7 +269,7 @@ async def minimal_hypotheses(
             skipped_implicit=skipped,
         )
 
-    def _error_key(diag: Dict) -> tuple[int, int, str]:
+    def _error_key(diag: dict) -> tuple[int, int, str]:
         """Stable identifier for a single LSP diagnostic — used to filter the
         set of *new* errors against the pre-modification baseline. Line and
         column may shift slightly if a multi-line binder is removed, but most
@@ -339,7 +337,7 @@ async def minimal_hypotheses(
     )
 
 
-@server.mcp.tool(
+@tool(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",

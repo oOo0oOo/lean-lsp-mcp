@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from lean_lsp_mcp.file_utils import (
     valid_lean_project_path,
 )
 from lean_lsp_mcp import config
+from lean_lsp_mcp.utils import LeanToolError
 
 if TYPE_CHECKING:
     from lean_lsp_mcp.server import ToolContext
@@ -22,13 +24,42 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 CLIENT_LOCK = asyncio.Lock()
-_shared_clients: dict[Path, AsyncLeanLSPClient] = {}
-_shared_pools: dict[Path, ScratchPool] = {}
-_shared_serial_pools: dict[Path, ScratchPool] = {}
-_builds_in_progress: set[Path] = set()
+
+
+@dataclass
+class ProjectRuntime:
+    """Shared LSP resources owned by one Lean project."""
+
+    client: AsyncLeanLSPClient | None = None
+    scratch_pool: ScratchPool | None = None
+    serial_pool: ScratchPool | None = None
+    build_in_progress: bool = False
+
+
+_project_runtimes: dict[Path, ProjectRuntime] = {}
 
 
 _MAX_SHARED_CLIENTS = 8
+
+
+def _project_key(project_path: Path | str) -> Path:
+    return Path(project_path).resolve(strict=False)
+
+
+def _project_runtime(project_path: Path | str) -> ProjectRuntime:
+    return _project_runtimes.setdefault(_project_key(project_path), ProjectRuntime())
+
+
+def _discard_empty_runtime(project_key: Path) -> None:
+    runtime = _project_runtimes.get(project_key)
+    if (
+        runtime is not None
+        and runtime.client is None
+        and runtime.scratch_pool is None
+        and runtime.serial_pool is None
+        and not runtime.build_in_progress
+    ):
+        _project_runtimes.pop(project_key, None)
 
 
 def _active_transport(ctx: ToolContext | None = None) -> str:
@@ -110,10 +141,12 @@ async def _start_client(project_path: Path) -> AsyncLeanLSPClient:
 
 async def _evict_oldest_client() -> None:
     """Close and remove the oldest shared client to stay within the cap."""
-    oldest_key = next(iter(_shared_clients))
-    old = _shared_clients.pop(oldest_key)
-    _shared_pools.pop(oldest_key, None)
-    _shared_serial_pools.pop(oldest_key, None)
+    oldest_key = next(
+        key for key, runtime in _project_runtimes.items() if runtime.client is not None
+    )
+    runtime = _project_runtimes.pop(oldest_key)
+    old = runtime.client
+    assert old is not None
     try:
         await old.close()
     except Exception:
@@ -123,59 +156,72 @@ async def _evict_oldest_client() -> None:
 async def _get_or_create_shared_client(
     lean_project_path: Path,
 ) -> AsyncLeanLSPClient:
-    project_key = lean_project_path.resolve(strict=False)
+    project_key = _project_key(lean_project_path)
+    runtime = _project_runtimes.get(project_key)
 
-    if project_key in _builds_in_progress:
+    if runtime is not None and runtime.build_in_progress:
         raise ValueError(
             "A project build is in progress. Retry after the build completes."
         )
 
-    client = _shared_clients.get(project_key)
+    client = runtime.client if runtime is not None else None
     if client is not None and client.alive:
         return client
 
     if client is not None:
-        _shared_clients.pop(project_key, None)
-        _shared_pools.pop(project_key, None)
-        _shared_serial_pools.pop(project_key, None)
+        assert runtime is not None
+        runtime.client = None
+        runtime.scratch_pool = None
+        runtime.serial_pool = None
         try:
             await client.close()
         except Exception:
             logger.exception("Shared Lean client close failed during restart")
 
-    if len(_shared_clients) >= _MAX_SHARED_CLIENTS:
+    client_count = sum(
+        runtime.client is not None for runtime in _project_runtimes.values()
+    )
+    if client_count >= _MAX_SHARED_CLIENTS:
         await _evict_oldest_client()
 
     client = await _start_client(project_key)
-    _shared_clients[project_key] = client
+    _project_runtime(project_key).client = client
     return client
 
 
+def _get_scratch_pool(ctx: ToolContext, *, serial: bool) -> ScratchPool:
+    lifespan = ctx.request_context.lifespan_context
+    project = lifespan.lean_project_path
+    if project is None:
+        raise ValueError("lean project path is not set.")
+    runtime = _project_runtimes.get(_project_key(project))
+    if runtime is None or runtime.client is None:
+        raise ValueError("Lean client is not running for this project.")
+    client = runtime.client
+
+    pool = runtime.serial_pool if serial else runtime.scratch_pool
+    if pool is None or pool._client is not client:
+        pool = ScratchPool(
+            client,
+            header="",
+            size=1 if serial else config.scratch_pool_size(),
+            name_prefix="_mcp_serial" if serial else "_mcp_scratch",
+        )
+        if serial:
+            runtime.serial_pool = pool
+        else:
+            runtime.scratch_pool = pool
+    return pool
+
+
 def get_scratch_pool(ctx: ToolContext) -> ScratchPool:
-    """Per-project pre-warmed virtual-document pool for snippet trials.
+    """Per-project pre-warmed virtual-document pool for parallel trials.
 
     Slots warm lazily with empty content; the first trial that imports
     Mathlib pays the import once per slot, later trials reuse the header
     snapshot (same-prefix didChange).
     """
-    lifespan = ctx.request_context.lifespan_context
-    project = lifespan.lean_project_path
-    if project is None:
-        raise ValueError("lean project path is not set.")
-    project_key = Path(project).resolve(strict=False)
-    pool = _shared_pools.get(project_key)
-    client = _shared_clients.get(project_key)
-    if client is None:
-        raise ValueError("Lean client is not running for this project.")
-    if pool is None or pool._client is not client:
-        pool = ScratchPool(
-            client,
-            header="",
-            size=config.scratch_pool_size(),
-            name_prefix="_mcp_scratch",
-        )
-        _shared_pools[project_key] = pool
-    return pool
+    return _get_scratch_pool(ctx, serial=False)
 
 
 def get_serial_scratch_pool(ctx: ToolContext) -> ScratchPool:
@@ -184,24 +230,7 @@ def get_serial_scratch_pool(ctx: ToolContext) -> ScratchPool:
     Keeping sequential work separate from the parallel trial pool prevents
     alternating calls from warming two copies of the same import environment.
     """
-    lifespan = ctx.request_context.lifespan_context
-    project = lifespan.lean_project_path
-    if project is None:
-        raise ValueError("lean project path is not set.")
-    project_key = Path(project).resolve(strict=False)
-    pool = _shared_serial_pools.get(project_key)
-    client = _shared_clients.get(project_key)
-    if client is None:
-        raise ValueError("Lean client is not running for this project.")
-    if pool is None or pool._client is not client:
-        pool = ScratchPool(
-            client,
-            header="",
-            size=1,
-            name_prefix="_mcp_serial",
-        )
-        _shared_serial_pools[project_key] = pool
-    return pool
+    return _get_scratch_pool(ctx, serial=True)
 
 
 def get_run_code_pool(ctx: ToolContext) -> ScratchPool:
@@ -210,26 +239,38 @@ def get_run_code_pool(ctx: ToolContext) -> ScratchPool:
 
 
 def set_build_in_progress(project_path: Path | str, value: bool) -> None:
-    project_key = Path(project_path).resolve(strict=False)
+    project_key = _project_key(project_path)
     if value:
-        _builds_in_progress.add(project_key)
+        _project_runtime(project_key).build_in_progress = True
     else:
-        _builds_in_progress.discard(project_key)
+        runtime = _project_runtimes.get(project_key)
+        if runtime is not None:
+            runtime.build_in_progress = False
+            _discard_empty_runtime(project_key)
 
 
 async def detach_shared_client(
     project_path: Path | str,
 ) -> AsyncLeanLSPClient | None:
     """Remove (without closing) the shared client for a project."""
-    project_key = Path(project_path).resolve(strict=False)
-    _shared_pools.pop(project_key, None)
-    _shared_serial_pools.pop(project_key, None)
-    return _shared_clients.pop(project_key, None)
+    project_key = _project_key(project_path)
+    runtime = _project_runtimes.get(project_key)
+    if runtime is None:
+        return None
+    client = runtime.client
+    runtime.client = None
+    runtime.scratch_pool = None
+    runtime.serial_pool = None
+    _discard_empty_runtime(project_key)
+    return client
 
 
 def attach_shared_client(project_path: Path | str, client: AsyncLeanLSPClient) -> None:
-    project_key = Path(project_path).resolve(strict=False)
-    _shared_clients[project_key] = client
+    runtime = _project_runtime(project_path)
+    if runtime.client is not client:
+        runtime.scratch_pool = None
+        runtime.serial_pool = None
+    runtime.client = client
 
 
 def running_shared_client(project_path: Path | str) -> AsyncLeanLSPClient | None:
@@ -239,8 +280,8 @@ def running_shared_client(project_path: Path | str) -> AsyncLeanLSPClient | None
     that only enrich a result with language server data use it so that a fast
     operation cannot silently turn into a cold server start.
     """
-    project_key = Path(project_path).resolve(strict=False)
-    client = _shared_clients.get(project_key)
+    runtime = _project_runtimes.get(_project_key(project_path))
+    client = runtime.client if runtime is not None else None
     if client is None or not client.alive:
         return None
     return client
@@ -253,20 +294,15 @@ def close_shared_client(project_path: Path | str | None = None) -> None:
     process groups directly instead of awaiting a graceful close.
     """
     if project_path is None:
-        clients = list(_shared_clients.values())
-        _shared_clients.clear()
-        _shared_pools.clear()
-        _shared_serial_pools.clear()
-        _builds_in_progress.clear()
+        clients = [
+            runtime.client
+            for runtime in _project_runtimes.values()
+            if runtime.client is not None
+        ]
+        _project_runtimes.clear()
     else:
-        project_key = Path(project_path).resolve(strict=False)
-        clients = []
-        client = _shared_clients.pop(project_key, None)
-        if client is not None:
-            clients.append(client)
-        _shared_pools.pop(project_key, None)
-        _shared_serial_pools.pop(project_key, None)
-        _builds_in_progress.discard(project_key)
+        runtime = _project_runtimes.pop(_project_key(project_path), None)
+        clients = [runtime.client] if runtime is not None and runtime.client else []
 
     for client in clients:
         try:
@@ -327,11 +363,61 @@ def _cacheable_project_dirs(project_path: Path, cache_dirs: list[str]) -> list[s
     ]
 
 
+def _cache_project_path(
+    ctx: ToolContext | None, project_path: Path, cache_dirs: list[str]
+) -> Path:
+    if ctx is None:
+        return project_path
+
+    bound_project = bind_lean_project_path(ctx, project_path)
+    cache_targets = _cacheable_project_dirs(bound_project, cache_dirs)
+    project_cache = ctx.request_context.lifespan_context.project_cache
+    for directory in {*cache_targets, str(bound_project)}:
+        if directory:
+            project_cache[directory] = bound_project
+    return bound_project
+
+
+def _cached_project_path(
+    ctx: ToolContext | None, directory: str, resolved_input: Path
+) -> Path | None:
+    if ctx is None:
+        return None
+
+    project_cache = ctx.request_context.lifespan_context.project_cache
+    cached_root = project_cache.get(directory)
+    if not cached_root:
+        return None
+    try:
+        policy = build_lean_path_policy(Path(cached_root))
+    except ValueError:
+        project_cache[directory] = ""
+        return None
+    if policy.contains(resolved_input):
+        return Path(cached_root)
+    project_cache[directory] = ""
+    return None
+
+
+def _bound_project_path(
+    ctx: ToolContext | None, resolved_input: Path, file_dir: str
+) -> Path | None:
+    if ctx is None:
+        return None
+    project_path = ctx.request_context.lifespan_context.lean_project_path
+    if not project_path:
+        return None
+    try:
+        policy = build_lean_path_policy(project_path)
+    except ValueError:
+        return None
+    if not policy.contains(resolved_input):
+        return None
+    return _cache_project_path(ctx, project_path, [file_dir])
+
+
 def infer_project_path(file_path: str, ctx: ToolContext | None = None) -> Path | None:
     """Infer and cache the Lean project path for a file WITHOUT starting the client."""
-    if ctx:
-        lifespan = ctx.request_context.lifespan_context
-
     if ctx is not None:
         resolved_input = resolve_file_path(ctx, file_path, require_exists=False)
     else:
@@ -341,23 +427,9 @@ def infer_project_path(file_path: str, ctx: ToolContext | None = None) -> Path |
     start_dir = start_dir.resolve(strict=False)
     file_dir = str(start_dir)
 
-    def cache_project_path(project_path: Path, cache_dirs: list[str]) -> Path:
-        if ctx:
-            bound_project = bind_lean_project_path(ctx, project_path)
-            cache_targets = _cacheable_project_dirs(bound_project, cache_dirs)
-            for directory in set(cache_targets + [str(bound_project)]):
-                if directory:
-                    lifespan.project_cache[directory] = bound_project
-            return bound_project
-        return project_path
-
-    if ctx and lifespan.lean_project_path:
-        try:
-            current_policy = build_lean_path_policy(lifespan.lean_project_path)
-        except ValueError:
-            current_policy = None
-        if current_policy is not None and current_policy.contains(resolved_input):
-            return cache_project_path(lifespan.lean_project_path, [file_dir])
+    lifespan = ctx.request_context.lifespan_context if ctx is not None else None
+    if bound_project := _bound_project_path(ctx, resolved_input, file_dir):
+        return bound_project
 
     current_dir = start_dir
     cache_dirs: list[str] = []
@@ -366,21 +438,12 @@ def infer_project_path(file_path: str, ctx: ToolContext | None = None) -> Path |
         current_dir_str = str(current_dir)
         cache_dirs.append(current_dir_str)
 
-        if ctx:
-            cached_root = lifespan.project_cache.get(current_dir_str)
-            if cached_root:
-                try:
-                    cached_policy = build_lean_path_policy(Path(cached_root))
-                except ValueError:
-                    lifespan.project_cache[current_dir_str] = ""
-                else:
-                    if cached_policy.contains(resolved_input):
-                        return cache_project_path(Path(cached_root), cache_dirs)
-                    lifespan.project_cache[current_dir_str] = ""
+        if cached_root := _cached_project_path(ctx, current_dir_str, resolved_input):
+            return _cache_project_path(ctx, cached_root, cache_dirs)
 
         if valid_lean_project_path(current_dir):
             candidates.append(current_dir.resolve(strict=True))
-        elif ctx:
+        elif lifespan is not None:
             lifespan.project_cache[current_dir_str] = ""
 
         parent = current_dir.parent
@@ -389,7 +452,7 @@ def infer_project_path(file_path: str, ctx: ToolContext | None = None) -> Path |
         current_dir = parent
 
     if chosen_root := _pick_project_root(resolved_input, candidates):
-        return cache_project_path(chosen_root, cache_dirs)
+        return _cache_project_path(ctx, chosen_root, cache_dirs)
 
     return None
 
@@ -414,6 +477,21 @@ async def setup_client_for_file(ctx: ToolContext, file_path: str) -> str | None:
 
     await startup_client(ctx)
     return policy.client_relative_path(resolved_file)
+
+
+async def require_client_for_file(
+    ctx: ToolContext, file_path: str, *, error_message: str | None = None
+) -> str:
+    """Prepare a file's project client or raise the standard tool-path error."""
+    rel_path = await setup_client_for_file(ctx, file_path)
+    if rel_path is None:
+        if error_message is not None:
+            raise LeanToolError(error_message)
+        raise LeanToolError(
+            f"Invalid Lean file path: '{file_path}' not found in any Lean project "
+            "(no lean-toolchain ancestor or file does not exist)"
+        )
+    return rel_path
 
 
 async def open_synced(ctx: ToolContext, rel_path: str, wait: bool = False):

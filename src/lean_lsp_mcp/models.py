@@ -1,7 +1,6 @@
 """Pydantic models for MCP tool structured outputs."""
 
 from enum import Enum
-from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -22,8 +21,8 @@ class LocalSearchResult(BaseModel):
 class LeanSearchResult(BaseModel):
     name: str = Field(description="Full qualified name")
     module_name: str = Field(description="Module where declared")
-    kind: Optional[str] = Field(None, description="Declaration kind")
-    type: Optional[str] = Field(None, description="Type signature")
+    kind: str | None = Field(None, description="Declaration kind")
+    type: str | None = Field(None, description="Type signature")
 
 
 class LoogleResult(BaseModel):
@@ -60,7 +59,7 @@ class DiagnosticMessage(BaseModel):
     message: str = Field(description="Diagnostic message text")
     line: int = Field(description="Line (1-indexed)")
     column: int = Field(description="Column (1-indexed)")
-    lean_tags: Optional[List[str]] = Field(
+    lean_tags: list[str] | None = Field(
         None,
         description=(
             "Lean-specific tags: 'unsolvedGoals' (proof incomplete here) or "
@@ -76,29 +75,29 @@ class GoalContextEntry(BaseModel):
 
 
 class StructuredGoal(BaseModel):
-    context: List[GoalContextEntry] = Field(
+    context: list[GoalContextEntry] = Field(
         default_factory=list, description="Local context entries"
     )
-    goal: Optional[str] = Field(None, description="Target goal")
+    goal: str | None = Field(None, description="Target goal")
     status: str = Field(description="Goal status: open, complete, or unknown")
     pretty: str = Field(description="Original pretty-printed goal")
 
 
-GoalOutput = Union[str, StructuredGoal]
+GoalOutput = str | StructuredGoal
 
 
 class GoalState(BaseModel):
     line_context: str = Field(description="Source line where goals were queried")
-    goals: Optional[List[GoalOutput]] = Field(
+    goals: list[GoalOutput] | None = Field(
         None, description="Goal list at specified column position"
     )
-    goals_before: Optional[List[GoalOutput]] = Field(
+    goals_before: list[GoalOutput] | None = Field(
         None, description="Goals at line start (when column omitted)"
     )
-    goals_after: Optional[List[GoalOutput]] = Field(
+    goals_after: list[GoalOutput] | None = Field(
         None, description="Goals at line end (when column omitted)"
     )
-    status: Optional[str] = Field(
+    status: str | None = Field(
         None,
         description=(
             "Goal status: 'goals' (open goals), 'complete' (no goals left - "
@@ -110,23 +109,23 @@ class GoalState(BaseModel):
 
 class CompletionItem(BaseModel):
     label: str = Field(description="Completion text to insert")
-    kind: Optional[str] = Field(
+    kind: str | None = Field(
         None, description="Completion kind (function, variable, etc.)"
     )
-    detail: Optional[str] = Field(None, description="Additional detail")
+    detail: str | None = Field(None, description="Additional detail")
 
 
 class HoverInfo(BaseModel):
     symbol: str = Field(description="The symbol being hovered")
     info: str = Field(description="Type signature and documentation")
-    diagnostics: List[DiagnosticMessage] = Field(
+    diagnostics: list[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics at this position"
     )
 
 
 class TermGoalState(BaseModel):
     line_context: str = Field(description="Source line where term goal was queried")
-    expected_type: Optional[str] = Field(
+    expected_type: str | None = Field(
         None, description="Expected type at this position"
     )
 
@@ -136,37 +135,35 @@ class OutlineEntry(BaseModel):
     kind: str = Field(description="Declaration kind (Thm, Def, Class, Struct, Ns, Ex)")
     start_line: int = Field(description="Start line (1-indexed)")
     end_line: int = Field(description="End line (1-indexed)")
-    type_signature: Optional[str] = Field(
-        None, description="Type signature if available"
-    )
-    children: List["OutlineEntry"] = Field(
+    type_signature: str | None = Field(None, description="Type signature if available")
+    children: list["OutlineEntry"] = Field(
         default_factory=list, description="Nested declarations"
     )
 
 
 class FileOutline(BaseModel):
-    imports: List[str] = Field(default_factory=list, description="Import statements")
-    declarations: List[OutlineEntry] = Field(
+    imports: list[str] = Field(default_factory=list, description="Import statements")
+    declarations: list[OutlineEntry] = Field(
         default_factory=list, description="Top-level declarations"
     )
-    total_declarations: Optional[int] = Field(
+    total_declarations: int | None = Field(
         None, description="Total count (set when truncated)"
     )
 
 
 class AttemptResult(BaseModel):
     snippet: str = Field(description="Code snippet that was tried")
-    goals: List[str] = Field(
+    goals: list[str] = Field(
         default_factory=list, description="Goal list after applying snippet"
     )
-    diagnostics: List[DiagnosticMessage] = Field(
+    diagnostics: list[DiagnosticMessage] = Field(
         default_factory=list, description="Diagnostics for this attempt"
     )
     timed_out: bool = Field(
         False,
         description="True if elaboration timed out (results are partial)",
     )
-    proof_status: Optional[str] = Field(
+    proof_status: str | None = Field(
         None,
         description="REPL proof status when available (e.g. 'Completed', 'Incomplete: contains sorry')",
     )
@@ -175,7 +172,7 @@ class AttemptResult(BaseModel):
 class BuildResult(BaseModel):
     success: bool = Field(description="Whether build succeeded")
     output: str = Field(description="Build output")
-    errors: List[str] = Field(default_factory=list, description="Build errors if any")
+    errors: list[str] = Field(default_factory=list, description="Build errors if any")
 
 
 class RunResult(BaseModel):
@@ -184,7 +181,7 @@ class RunResult(BaseModel):
         False,
         description="True if elaboration timed out (results are partial)",
     )
-    diagnostics: List[DiagnosticMessage] = Field(
+    diagnostics: list[DiagnosticMessage] = Field(
         default_factory=list, description="Compiler diagnostics"
     )
 
@@ -194,13 +191,13 @@ class DeclarationInfo(BaseModel):
     content: str = Field(
         description="Declaration source (sliced unless full_file=True)"
     )
-    start_line: Optional[int] = Field(
+    start_line: int | None = Field(
         None, description="First line of the returned slice (1-indexed)"
     )
-    end_line: Optional[int] = Field(
+    end_line: int | None = Field(
         None, description="Last line of the returned slice (1-indexed)"
     )
-    total_lines: Optional[int] = Field(
+    total_lines: int | None = Field(
         None, description="Total lines in the declaration file"
     )
 
@@ -221,7 +218,7 @@ class DiagnosticsResult(BaseModel):
             "Poll again instead of treating this as failure."
         ),
     )
-    still_elaborating_lines: Optional[List[List[int]]] = Field(
+    still_elaborating_lines: list[list[int]] | None = Field(
         None,
         description="Line ranges [start, end] (1-indexed) still being elaborated",
     )
@@ -233,10 +230,10 @@ class DiagnosticsResult(BaseModel):
         False,
         description="True if elaboration timed out (results are partial, not a real build failure)",
     )
-    items: List[DiagnosticMessage] = Field(
+    items: list[DiagnosticMessage] = Field(
         default_factory=list, description="List of diagnostic messages"
     )
-    failed_dependencies: List[str] = Field(
+    failed_dependencies: list[str] = Field(
         default_factory=list,
         description="File paths of dependencies that failed to build",
     )
@@ -245,7 +242,7 @@ class DiagnosticsResult(BaseModel):
 class CompletionsResult(BaseModel):
     """Wrapper for completions list."""
 
-    items: List[CompletionItem] = Field(
+    items: list[CompletionItem] = Field(
         default_factory=list, description="List of completion items"
     )
 
@@ -253,7 +250,7 @@ class CompletionsResult(BaseModel):
 class MultiAttemptResult(BaseModel):
     """Wrapper for multi-attempt results list."""
 
-    items: List[AttemptResult] = Field(
+    items: list[AttemptResult] = Field(
         default_factory=list, description="List of attempt results"
     )
 
@@ -261,7 +258,7 @@ class MultiAttemptResult(BaseModel):
 class LocalSearchResults(BaseModel):
     """Wrapper for local search results list."""
 
-    items: List[LocalSearchResult] = Field(
+    items: list[LocalSearchResult] = Field(
         default_factory=list, description="List of local search results"
     )
 
@@ -269,7 +266,7 @@ class LocalSearchResults(BaseModel):
 class LeanSearchResults(BaseModel):
     """Wrapper for LeanSearch results list."""
 
-    items: List[LeanSearchResult] = Field(
+    items: list[LeanSearchResult] = Field(
         default_factory=list, description="List of LeanSearch results"
     )
 
@@ -277,7 +274,7 @@ class LeanSearchResults(BaseModel):
 class LoogleResults(BaseModel):
     """Wrapper for Loogle results list."""
 
-    items: List[LoogleResult] = Field(
+    items: list[LoogleResult] = Field(
         default_factory=list, description="List of Loogle results"
     )
 
@@ -285,7 +282,7 @@ class LoogleResults(BaseModel):
 class LeanFinderResults(BaseModel):
     """Wrapper for Lean Finder results list."""
 
-    items: List[LeanFinderResult] = Field(
+    items: list[LeanFinderResult] = Field(
         default_factory=list, description="List of Lean Finder results"
     )
 
@@ -293,7 +290,7 @@ class LeanFinderResults(BaseModel):
 class StateSearchResults(BaseModel):
     """Wrapper for state search results list."""
 
-    items: List[StateSearchResult] = Field(
+    items: list[StateSearchResult] = Field(
         default_factory=list, description="List of state search results"
     )
 
@@ -301,7 +298,7 @@ class StateSearchResults(BaseModel):
 class PremiseResults(BaseModel):
     """Wrapper for premise results list."""
 
-    items: List[PremiseResult] = Field(
+    items: list[PremiseResult] = Field(
         default_factory=list, description="List of premise results"
     )
 
@@ -309,7 +306,7 @@ class PremiseResults(BaseModel):
 class WidgetsResult(BaseModel):
     """Wrapper for widget instances at a position."""
 
-    widgets: List[dict] = Field(
+    widgets: list[dict] = Field(
         default_factory=list, description="Widget instances (id, name, range, props)"
     )
 
@@ -317,7 +314,7 @@ class WidgetsResult(BaseModel):
 class InteractiveDiagnosticsResult(BaseModel):
     """Wrapper for interactive diagnostics with embedded widgets."""
 
-    diagnostics: List[dict] = Field(
+    diagnostics: list[dict] = Field(
         default_factory=list,
         description="Interactive diagnostic objects with TaggedText messages",
     )
@@ -342,10 +339,10 @@ class ReferenceLocation(BaseModel):
 class ReferencesResult(BaseModel):
     """Wrapper for find references results."""
 
-    items: List[ReferenceLocation] = Field(
+    items: list[ReferenceLocation] = Field(
         default_factory=list, description="List of reference locations"
     )
-    total: Optional[int] = Field(
+    total: int | None = Field(
         None, description="Total matches (> len(items) when truncated by max_results)"
     )
 
@@ -362,7 +359,7 @@ class ProofProfileResult(BaseModel):
     """Profiling result for a theorem."""
 
     ms: float = Field(description="Total elaboration time in ms")
-    lines: List[LineProfile] = Field(
+    lines: list[LineProfile] = Field(
         default_factory=list, description="Time per source line (>1% of total)"
     )
     categories: dict[str, float] = Field(
@@ -383,7 +380,7 @@ class CodeAction(BaseModel):
         description="Code action title (e.g. 'Try this: simp only [...])"
     )
     is_preferred: bool = Field(description="Whether this is the preferred action")
-    edits: List[CodeActionEdit] = Field(
+    edits: list[CodeActionEdit] = Field(
         default_factory=list, description="Text edits to apply"
     )
 
@@ -391,7 +388,7 @@ class CodeAction(BaseModel):
 class CodeActionsResult(BaseModel):
     """Wrapper for code actions at a position."""
 
-    actions: List[CodeAction] = Field(
+    actions: list[CodeAction] = Field(
         default_factory=list, description="List of available code actions"
     )
 
@@ -402,11 +399,11 @@ class SourceWarning(BaseModel):
 
 
 class VerifyResult(BaseModel):
-    axioms: List[str] = Field(
+    axioms: list[str] = Field(
         default_factory=list,
         description="Axioms used. Standard 3: propext, Classical.choice, Quot.sound",
     )
-    warnings: List[SourceWarning] = Field(
+    warnings: list[SourceWarning] = Field(
         default_factory=list,
         description="Suspicious source patterns (if enabled)",
     )
@@ -427,7 +424,7 @@ class HypothesisVerdict(BaseModel):
             "error: probing this binder failed (e.g. LSP timeout)."
         )
     )
-    breaks: List[DiagnosticMessage] = Field(
+    breaks: list[DiagnosticMessage] = Field(
         default_factory=list,
         description=(
             "New errors caused by removing this binder (empty when removable). "
@@ -444,7 +441,7 @@ class HypothesisVerdict(BaseModel):
 class MinimalHypothesesResult(BaseModel):
     theorem_name: str = Field(description="Theorem analyzed")
     file: str = Field(description="Relative file path")
-    verdicts: List[HypothesisVerdict] = Field(
+    verdicts: list[HypothesisVerdict] = Field(
         default_factory=list,
         description="One verdict per explicit (h : T) binder, in source order",
     )

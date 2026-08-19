@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from functools import lru_cache
 import platform
 import re
@@ -66,6 +67,8 @@ _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
     ),
 }
 
+_MAX_RIPGREP_STDERR_CHARS = 100_000
+
 
 def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen[str]:
     """Spawn ripgrep and return a process with line-streaming stdout.
@@ -87,6 +90,147 @@ def _create_ripgrep_process(command: list[str], *, cwd: str) -> subprocess.Popen
         if not _ok:
             raise FileNotFoundError(msg) from None
         raise
+
+
+@dataclass
+class _StderrCapture:
+    chunks: list[str] = field(default_factory=list)
+    chars: int = 0
+    truncated: bool = False
+
+    def drain(self, pipe: Iterable[str]) -> None:
+        try:
+            for line in pipe:
+                if self.chars < _MAX_RIPGREP_STDERR_CHARS:
+                    self.chunks.append(line)
+                    self.chars += len(line)
+                else:
+                    self.truncated = True
+        except Exception:
+            return
+
+    def text(self) -> str:
+        output = "".join(self.chunks)
+        if output and self.truncated:
+            output += "\n[stderr truncated]"
+        return output
+
+
+def _read_ripgrep_matches(
+    process: subprocess.Popen[str],
+    root: Path,
+    policy: LeanPathPolicy,
+    max_candidates: int,
+) -> tuple[list[dict[str, str]], list[tuple[Path, int]], bool]:
+    stdout = process.stdout
+    if stdout is None:
+        raise RuntimeError("ripgrep did not provide stdout pipe")
+
+    matches: list[dict[str, str]] = []
+    locations: list[tuple[Path, int]] = []
+    for line in stdout:
+        if not line or (event := _json_loads(line)).get("type") != "match":
+            continue
+
+        data = event["data"]
+        declaration = _DECL_LINE_RE.match(data["lines"]["text"])
+        if declaration is None:
+            continue
+
+        file_path = Path(data["path"]["text"])
+        abs_path = (
+            file_path if file_path.is_absolute() else (root / file_path).resolve()
+        )
+        try:
+            display_path = policy.display_path(abs_path)
+        except ValueError:
+            continue
+
+        matches.append(
+            {
+                "name": declaration.group("name"),
+                "kind": declaration.group("kind"),
+                "file": display_path,
+            }
+        )
+        locations.append((abs_path, data.get("line_number", 0)))
+        if len(matches) >= max_candidates:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            return matches, locations, True
+
+    return matches, locations, False
+
+
+def _wait_for_ripgrep(
+    process: subprocess.Popen[str], *, terminated_early: bool
+) -> None:
+    try:
+        process.wait(timeout=5) if terminated_early else process.wait()
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _close_ripgrep_process(
+    process: subprocess.Popen[str], stderr_thread: threading.Thread | None
+) -> None:
+    if process.returncode is None:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
+    if stderr_thread is not None:
+        stderr_thread.join(timeout=1)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
+
+
+def _qualify_and_rank_matches(
+    matches: list[dict[str, str]],
+    locations: list[tuple[Path, int]],
+    query: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    file_lines: dict[Path, set[int]] = {}
+    for abs_path, line_num in locations:
+        file_lines.setdefault(abs_path, set()).add(line_num)
+    namespaces = {
+        path: _resolve_namespaces(path, lines) for path, lines in file_lines.items()
+    }
+    for match, (abs_path, line_num) in zip(matches, locations):
+        prefix = namespaces.get(abs_path, {}).get(line_num, "")
+        if prefix:
+            match["name"] = f"{prefix}.{match['name']}"
+
+    normalized_query = query.casefold()
+    matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for match in matches:
+        key = (match["name"], match["kind"], match["file"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(match)
+        if len(deduped) >= limit:
+            break
+    return deduped
 
 
 def check_ripgrep_status() -> tuple[bool, str]:
@@ -231,33 +375,12 @@ def lean_local_search(
         command.append(str(policy.stdlib_root))
 
     process = _create_ripgrep_process(command, cwd=str(root))
-
-    matches: list[dict[str, str]] = []
-    match_locations: list[tuple[Path, int]] = []
     max_candidates = min(max(limit * 8, limit), 2048)
-    stderr_text = ""
-    terminated_early = False
-    stderr_chunks: list[str] = []
-    stderr_chars = 0
-    stderr_truncated = False
-    max_stderr_chars = 100_000
-
-    def _drain_stderr(pipe) -> None:
-        nonlocal stderr_chars, stderr_truncated
-        try:
-            for err_line in pipe:
-                if stderr_chars < max_stderr_chars:
-                    stderr_chunks.append(err_line)
-                    stderr_chars += len(err_line)
-                else:
-                    stderr_truncated = True
-        except Exception:
-            return
-
+    stderr = _StderrCapture()
     stderr_thread: threading.Thread | None = None
     if process.stderr is not None:
         stderr_thread = threading.Thread(
-            target=_drain_stderr,
+            target=stderr.drain,
             args=(process.stderr,),
             name="lean-local-search-rg-stderr",
             daemon=True,
@@ -265,114 +388,22 @@ def lean_local_search(
         stderr_thread.start()
 
     try:
-        stdout = process.stdout
-        if stdout is None:
-            raise RuntimeError("ripgrep did not provide stdout pipe")
-
-        for line in stdout:
-            if not line or (event := _json_loads(line)).get("type") != "match":
-                continue
-
-            data = event["data"]
-            decl_match = _DECL_LINE_RE.match(data["lines"]["text"])
-            if decl_match is None:
-                continue
-
-            decl_kind, decl_name = decl_match.group("kind"), decl_match.group("name")
-            line_number = data.get("line_number", 0)
-            file_path = Path(data["path"]["text"])
-            abs_path = (
-                file_path if file_path.is_absolute() else (root / file_path).resolve()
-            )
-
-            try:
-                display_path = policy.display_path(abs_path)
-            except ValueError:
-                continue
-
-            matches.append({"name": decl_name, "kind": decl_kind, "file": display_path})
-            match_locations.append((abs_path, line_number))
-
-            if len(matches) >= max_candidates:
-                terminated_early = True
-                try:
-                    process.terminate()
-                except Exception:
-                    pass
-                break
-
-        try:
-            if terminated_early:
-                process.wait(timeout=5)
-            else:
-                process.wait()
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+        matches, locations, terminated_early = _read_ripgrep_matches(
+            process, root, policy, max_candidates
+        )
+        _wait_for_ripgrep(process, terminated_early=terminated_early)
     finally:
-        if process.returncode is None:
-            try:
-                process.terminate()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=5)
-            except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except Exception:
-                    pass
-        if stderr_thread is not None:
-            stderr_thread.join(timeout=1)
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
-
-    if stderr_chunks:
-        stderr_text = "".join(stderr_chunks)
-        if stderr_truncated:
-            stderr_text += "\n[stderr truncated]"
+        _close_ripgrep_process(process, stderr_thread)
 
     returncode = process.returncode if process.returncode is not None else 0
 
     if returncode not in (0, 1) and not matches:
         error_msg = f"ripgrep exited with code {returncode}"
-        if stderr_text:
+        if stderr_text := stderr.text():
             error_msg += f"\n{stderr_text}"
         raise RuntimeError(error_msg)
 
-    # Resolve enclosing namespaces and qualify declaration names.
-    file_lines: dict[Path, set[int]] = {}
-    for abs_path, line_num in match_locations:
-        file_lines.setdefault(abs_path, set()).add(line_num)
-    ns_cache: dict[Path, dict[int, str]] = {
-        fp: _resolve_namespaces(fp, lns) for fp, lns in file_lines.items()
-    }
-    for match, (abs_path, line_num) in zip(matches, match_locations):
-        prefix = ns_cache.get(abs_path, {}).get(line_num, "")
-        if prefix:
-            match["name"] = f"{prefix}.{match['name']}"
-
-    normalized_query = query.casefold()
-    matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
-
-    deduped: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for match in matches:
-        key = (match["name"], match["kind"], match["file"])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(match)
-        if len(deduped) >= limit:
-            break
-
-    return deduped
+    return _qualify_and_rank_matches(matches, locations, query, limit)
 
 
 # `workspace/symbol` answers with LSP's generic SymbolKind enum, which does not

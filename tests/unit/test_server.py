@@ -9,10 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lean_lsp_mcp import client_utils
+from lean_lsp_mcp import attempt_utils, client_utils
 from lean_lsp_mcp import server
+from lean_lsp_mcp import tool_utils
 from lean_lsp_mcp.models import DiagnosticSeverity
 from lean_lsp_mcp.repl import ReplProcessError, ReplRunResult
+from lean_lsp_mcp.tools import diagnostics as diagnostic_tools
+from lean_lsp_mcp.tools import goals as goal_tools
+from lean_lsp_mcp.tools import navigation as navigation_tools
 
 
 class _FakeTransport:
@@ -29,7 +33,7 @@ class DummyClient:
 
 
 def _async_setup(rel_path):
-    async def fake_setup(_ctx, _path):
+    async def fake_setup(_ctx, _path, **_kwargs):
         return rel_path
 
     return fake_setup
@@ -155,14 +159,14 @@ async def test_app_lifespan_does_not_close_shared_client(
 def test_close_shared_client_closes_client() -> None:
     """close_shared_client() kills the shared singleton's process group."""
     dummy = DummyClient()
-    client_utils._shared_clients[Path("/tmp/proj")] = dummy
+    client_utils.attach_shared_client(Path("/tmp/proj"), dummy)
 
     try:
         client_utils.close_shared_client()
         assert dummy._transport.kill_calls == 1
-        assert client_utils._shared_clients == {}
+        assert client_utils._project_runtimes == {}
     finally:
-        client_utils._shared_clients.clear()
+        client_utils._project_runtimes.clear()
 
 
 def test_close_shared_client_suppresses_error() -> None:
@@ -173,18 +177,18 @@ def test_close_shared_client_suppresses_error() -> None:
         raise PermissionError("operation not permitted")
 
     dummy._transport._kill_group = _boom
-    client_utils._shared_clients[Path("/tmp/proj")] = dummy
+    client_utils.attach_shared_client(Path("/tmp/proj"), dummy)
 
     try:
         client_utils.close_shared_client()  # should not raise
-        assert client_utils._shared_clients == {}
+        assert client_utils._project_runtimes == {}
     finally:
-        client_utils._shared_clients.clear()
+        client_utils._project_runtimes.clear()
 
 
 def test_close_shared_client_noop_when_none() -> None:
     """close_shared_client() is safe to call when no client exists."""
-    client_utils._shared_clients.clear()
+    client_utils._project_runtimes.clear()
     client_utils.close_shared_client()  # should not raise
 
 
@@ -260,7 +264,7 @@ def test_server_configures_required_bearer_auth(
 
 def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    monkeypatch.setattr(tool_utils.time, "time", lambda: next(times))
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
     def wrapped(*, ctx: types.SimpleNamespace) -> str:
@@ -274,7 +278,7 @@ def test_rate_limited_allows_within_limit(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_rate_limited_blocks_excess(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100, 101, 102])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    monkeypatch.setattr(tool_utils.time, "time", lambda: next(times))
 
     @server.rate_limited("test", max_requests=2, per_seconds=10)
     def wrapped(*, ctx: types.SimpleNamespace) -> str:
@@ -290,7 +294,7 @@ def test_rate_limited_blocks_excess(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([100])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    monkeypatch.setattr(tool_utils.time, "time", lambda: next(times))
 
     rate_limit = {"test": [80, 81]}
     ctx = _make_ctx(rate_limit=rate_limit)
@@ -307,7 +311,7 @@ def test_rate_limited_trims_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_rate_limited_bypass_skips_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """When bypass() is true (custom backend), the limit is not applied."""
     times = iter([100, 101, 102])
-    monkeypatch.setattr(server.time, "time", lambda: next(times))
+    monkeypatch.setattr(tool_utils.time, "time", lambda: next(times))
 
     @server.rate_limited("test", max_requests=1, per_seconds=10, bypass=lambda: True)
     def wrapped(*, ctx: types.SimpleNamespace) -> str:
@@ -611,8 +615,10 @@ async def test_multi_attempt_runs_on_scratch_pool_not_user_document(
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = fake_client
 
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
-    monkeypatch.setattr(server, "get_scratch_pool", lambda _ctx: fake_pool)
+    monkeypatch.setattr(
+        attempt_utils, "require_client_for_file", _async_setup("Foo.lean")
+    )
+    monkeypatch.setattr(attempt_utils, "get_scratch_pool", lambda _ctx: fake_pool)
 
     result = await server._multi_attempt_lsp(
         ctx, str(project / "Foo.lean"), line=2, snippets=["trivial", "simp"]
@@ -669,8 +675,10 @@ async def test_multi_attempt_diffs_new_diagnostics_against_baseline(
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = fake_client
 
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
-    monkeypatch.setattr(server, "get_scratch_pool", lambda _ctx: _Pool())
+    monkeypatch.setattr(
+        attempt_utils, "require_client_for_file", _async_setup("Foo.lean")
+    )
+    monkeypatch.setattr(attempt_utils, "get_scratch_pool", lambda _ctx: _Pool())
 
     result = await server._multi_attempt_lsp(
         ctx, str(project / "Foo.lean"), line=2, snippets=["trivial"]
@@ -712,7 +720,9 @@ async def test_declaration_file_sanitizes_dependency_path(
 
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Main.lean"))
+    monkeypatch.setattr(
+        navigation_tools, "require_client_for_file", _async_setup("Main.lean")
+    )
 
     result = await server.declaration_file(
         ctx=ctx, file_path=str(project / "Main.lean"), symbol="dep"
@@ -753,7 +763,9 @@ async def test_declaration_file_reads_utf8_source(
 
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Unicode.lean"))
+    monkeypatch.setattr(
+        navigation_tools, "require_client_for_file", _async_setup("Unicode.lean")
+    )
 
     result = await server.declaration_file(
         ctx=ctx, file_path=str(project / "Unicode.lean"), symbol="unicodeTarget"
@@ -807,7 +819,9 @@ async def test_references_sanitize_paths_and_skip_outside_policy(
 
     ctx = _make_ctx(lean_project_path=project)
     ctx.request_context.lifespan_context.client = FakeClient()
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Main.lean"))
+    monkeypatch.setattr(
+        navigation_tools, "require_client_for_file", _async_setup("Main.lean")
+    )
 
     result = await server.references(
         ctx=ctx,
@@ -1030,7 +1044,9 @@ async def test_diagnostic_messages_passes_severity_to_process(
         return DiagnosticsResult(success=build_success, items=[])
 
     monkeypatch.setattr(server, "_process_diagnostics", fake_process)
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
+    monkeypatch.setattr(
+        diagnostic_tools, "require_client_for_file", _async_setup("Foo.lean")
+    )
 
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.client = _DiagClient(
@@ -1073,7 +1089,9 @@ async def test_diagnostic_messages_default_severity_is_none(
         return DiagnosticsResult(success=build_success, items=[])
 
     monkeypatch.setattr(server, "_process_diagnostics", fake_process)
-    monkeypatch.setattr(server, "setup_client_for_file", _async_setup("Foo.lean"))
+    monkeypatch.setattr(
+        diagnostic_tools, "require_client_for_file", _async_setup("Foo.lean")
+    )
 
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.client = _DiagClient()
@@ -1115,7 +1133,7 @@ async def test_goal_reports_open_goals(monkeypatch: pytest.MonkeyPatch) -> None:
     from leanclient.aio import GoalResult
 
     monkeypatch.setattr(
-        server, "setup_client_for_file", _async_setup("GoalSample.lean")
+        goal_tools, "require_client_for_file", _async_setup("GoalSample.lean")
     )
     ctx = _make_ctx()
     fake = _GoalClient(_SAMPLE_TEXT, GoalResult(status="goals", goals=["⊢ True"]))
@@ -1138,7 +1156,7 @@ async def test_goal_distinguishes_complete_from_no_goal(
     from leanclient.aio import GoalResult
 
     monkeypatch.setattr(
-        server, "setup_client_for_file", _async_setup("GoalSample.lean")
+        goal_tools, "require_client_for_file", _async_setup("GoalSample.lean")
     )
 
     ctx = _make_ctx()
@@ -1167,7 +1185,7 @@ async def test_goal_structured_format_accepts_structured_goals(
     from leanclient.aio import GoalResult
 
     monkeypatch.setattr(
-        server, "setup_client_for_file", _async_setup("GoalSample.lean")
+        goal_tools, "require_client_for_file", _async_setup("GoalSample.lean")
     )
     ctx = _make_ctx()
     ctx.request_context.lifespan_context.client = _GoalClient(
@@ -1208,7 +1226,7 @@ async def test_multi_attempt_repl_does_not_autodiscover_binary(
     lifespan = ctx.request_context.lifespan_context
     lifespan.repl_enabled = True
     lifespan.repl = None
-    monkeypatch.setattr(server, "resolve_file_path", fail_resolve)
+    monkeypatch.setattr(attempt_utils, "resolve_file_path", fail_resolve)
 
     result = await server._multi_attempt_repl(
         ctx,

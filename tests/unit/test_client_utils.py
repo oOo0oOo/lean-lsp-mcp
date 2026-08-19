@@ -102,15 +102,9 @@ def _make_dependency(project: Path, dep_root: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _reset_shared_clients() -> None:
-    client_utils._shared_clients.clear()
-    client_utils._shared_pools.clear()
-    client_utils._shared_serial_pools.clear()
-    client_utils._builds_in_progress.clear()
+    client_utils._project_runtimes.clear()
     yield
-    client_utils._shared_clients.clear()
-    client_utils._shared_pools.clear()
-    client_utils._shared_serial_pools.clear()
-    client_utils._builds_in_progress.clear()
+    client_utils._project_runtimes.clear()
 
 
 @pytest.fixture
@@ -397,7 +391,7 @@ def test_close_shared_client_kills_process_group(tmp_path: Path) -> None:
     close_shared_client()
 
     assert client._transport.kill_calls == 1
-    assert client_utils._shared_clients == {}
+    assert client_utils._project_runtimes == {}
 
 
 def test_close_shared_client_suppresses_error(tmp_path: Path) -> None:
@@ -411,7 +405,7 @@ def test_close_shared_client_suppresses_error(tmp_path: Path) -> None:
     attach_shared_client(project, client)
 
     close_shared_client()  # should not raise
-    assert client_utils._shared_clients == {}
+    assert client_utils._project_runtimes == {}
 
 
 def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> None:

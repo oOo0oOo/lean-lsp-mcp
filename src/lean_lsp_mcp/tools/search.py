@@ -7,7 +7,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Annotated, List, Literal, Optional
+from typing import Annotated, Literal
 
 import orjson
 from mcp.types import ToolAnnotations
@@ -19,6 +19,7 @@ from lean_lsp_mcp.client_utils import (
     build_lean_path_policy,
     get_client,
     open_synced,
+    require_client_for_file,
     running_shared_client,
 )
 from lean_lsp_mcp.file_utils import LeanPathPolicy
@@ -41,6 +42,7 @@ from lean_lsp_mcp.models import (
     StateSearchResult,
     StateSearchResults,
 )
+from lean_lsp_mcp.tool_registry import tool
 
 
 class LocalSearchError(Exception):
@@ -91,7 +93,7 @@ async def _with_index_matches(
     )
 
 
-@server.mcp.tool(
+@tool(
     "lean_local_search",
     annotations=ToolAnnotations(
         title="Local Search",
@@ -105,7 +107,7 @@ async def local_search(
     query: Annotated[str, Field(description="Declaration name or prefix")],
     limit: Annotated[int, Field(description="Max matches", ge=1)] = 10,
     project_root: Annotated[
-        Optional[str], Field(description="Project root (inferred if omitted)")
+        str | None, Field(description="Project root (inferred if omitted)")
     ] = None,
 ) -> LocalSearchResults:
     """Fast local search to verify declarations exist. Use BEFORE trying a lemma name."""
@@ -156,7 +158,7 @@ async def local_search(
         raise LocalSearchError(f"Search failed: {exc}")
 
 
-@server.mcp.tool(
+@tool(
     "lean_leansearch",
     annotations=ToolAnnotations(
         title="LeanSearch",
@@ -211,7 +213,7 @@ async def leansearch(
     return LeanSearchResults(items=items)
 
 
-@server.mcp.tool(
+@tool(
     "lean_loogle",
     annotations=ToolAnnotations(
         title="Loogle",
@@ -286,7 +288,7 @@ async def loogle(
     return LoogleResults(items=result)
 
 
-@server.mcp.tool(
+@tool(
     "lean_leanfinder",
     annotations=ToolAnnotations(
         title="Lean Finder",
@@ -332,7 +334,7 @@ async def leanfinder(
     if isinstance(data, dict) and "error" in data:
         raise server.LeanToolError(str(data["error"]))
 
-    results: List[LeanFinderResult] = []
+    results: list[LeanFinderResult] = []
     for r in data.get("results", []):
         results.append(
             LeanFinderResult(
@@ -348,7 +350,7 @@ async def leanfinder(
     return LeanFinderResults(items=results)
 
 
-@server.mcp.tool(
+@tool(
     "lean_state_search",
     annotations=ToolAnnotations(
         title="State Search",
@@ -374,9 +376,7 @@ async def state_search(
     num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
 ) -> StateSearchResults:
     """Find lemmas to close the goal at a position. Searches premise-search.com."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)
@@ -407,7 +407,7 @@ async def state_search(
     return StateSearchResults(items=items)
 
 
-@server.mcp.tool(
+@tool(
     "lean_hammer_premise",
     annotations=ToolAnnotations(
         title="Hammer Premises",
@@ -434,9 +434,7 @@ async def hammer_premise(
 
     Returns lemma names to try with `simp only [...]`, `aesop`, or as hints.
     """
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)

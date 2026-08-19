@@ -5,7 +5,6 @@ import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 
 _LAKEFILE_NAMES = ("lakefile.lean", "lakefile.toml")
@@ -161,7 +160,7 @@ def resolve_input_path(
     return path_obj.resolve(strict=require_exists)
 
 
-def get_relative_file_path(lean_project_path: Path, file_path: str) -> Optional[str]:
+def get_relative_file_path(lean_project_path: Path, file_path: str) -> str | None:
     """Convert a file path into a leanclient-compatible path relative to the project root."""
     policy = build_lean_path_policy(lean_project_path)
     file_path_obj = Path(file_path)
@@ -190,9 +189,9 @@ def get_file_contents(abs_path: str | Path) -> str:
     path_obj = Path(abs_path)
     for enc in ("utf-8", "latin-1"):
         try:
-            with open(path_obj, "r", encoding=enc) as f:
+            with open(path_obj, encoding=enc) as f:
                 return f.read()
         except UnicodeDecodeError:
             continue
-    with open(path_obj, "r", encoding="utf-8", errors="replace") as f:
+    with open(path_obj, encoding="utf-8", errors="replace") as f:
         return f.read()

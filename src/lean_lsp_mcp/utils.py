@@ -6,7 +6,8 @@ import secrets
 import sys
 import tempfile
 from collections.abc import Iterable
-from typing import Any, List, Dict, Optional, Callable
+from typing import Any
+from collections.abc import Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
@@ -18,7 +19,7 @@ BUILD_ERROR_FILE_PATTERN = re.compile(
 )
 
 
-def extract_failed_dependency_paths(message: str) -> List[str]:
+def extract_failed_dependency_paths(message: str) -> list[str]:
     """Extract unique file paths from lake build stderr output.
 
     Returns sorted list of .lean file paths that had errors/warnings.
@@ -139,7 +140,7 @@ class PreSharedTokenVerifier(TokenVerifier):
 OptionalTokenVerifier = PreSharedTokenVerifier
 
 
-def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[str]:
+def format_diagnostics(diagnostics: list[dict], select_line: int = -1) -> list[str]:
     """Format the diagnostics messages.
 
     Args:
@@ -164,7 +165,7 @@ def format_diagnostics(diagnostics: List[Dict], select_line: int = -1) -> List[s
     return msgs
 
 
-def extract_goals_list(goal_response: dict | None) -> List[str]:
+def extract_goals_list(goal_response: dict | None) -> list[str]:
     """Extract goals list from LSP response, returning empty list if no goals."""
     if goal_response is None:
         return []
@@ -213,7 +214,7 @@ def extract_range(content: str, range: dict | None) -> str:
     if not lines:
         lines = [""]
 
-    line_offsets: List[int] = []
+    line_offsets: list[int] = []
     offset = 0
     for line in lines:
         line_offsets.append(offset)
@@ -260,8 +261,8 @@ def find_start_position(content: str, query: str) -> dict | None:
 def format_line(
     file_content: str,
     line_number: int,
-    column: Optional[int] = None,
-    cursor_tag: Optional[str] = "<cursor>",
+    column: int | None = None,
+    cursor_tag: str | None = "<cursor>",
 ) -> str:
     """Show a line and cursor position in a file.
 
@@ -288,14 +289,14 @@ def format_line(
 
 
 def filter_diagnostics_by_position(
-    diagnostics: Iterable[Dict], line: Optional[int], column: Optional[int]
-) -> List[Dict]:
+    diagnostics: Iterable[dict], line: int | None, column: int | None
+) -> list[dict]:
     """Return diagnostics that intersect the requested (0-indexed) position."""
 
     if line is None:
         return list(diagnostics)
 
-    matches: List[Dict] = []
+    matches: list[dict] = []
     for diagnostic in diagnostics:
         diagnostic_range = diagnostic.get("range") or diagnostic.get("fullRange")
         if not diagnostic_range:
@@ -345,7 +346,7 @@ def filter_diagnostics_by_position(
     return matches
 
 
-def search_symbols(symbols: List[Dict], target_name: str) -> Dict | None:
+def search_symbols(symbols: list[dict], target_name: str) -> dict | None:
     """Recursively search through symbols and their children.
 
     Args:
@@ -438,7 +439,7 @@ def deprecated(func_or_msg: str | Callable | None = None) -> Callable:
 
 # LSP CompletionItemKind enum
 # https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
-COMPLETION_KIND: Dict[int, str] = {
+COMPLETION_KIND: dict[int, str] = {
     1: "text",
     2: "method",
     3: "function",

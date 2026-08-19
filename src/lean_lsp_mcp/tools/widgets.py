@@ -8,11 +8,12 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_client, open_synced
+from lean_lsp_mcp.client_utils import get_client, open_synced, require_client_for_file
 from lean_lsp_mcp.models import WidgetsResult, WidgetSourceResult
+from lean_lsp_mcp.tool_registry import tool
 
 
-@server.mcp.tool(
+@tool(
     "lean_get_widgets",
     annotations=ToolAnnotations(
         title="Get Widgets",
@@ -28,9 +29,7 @@ async def get_widgets(
     column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
 ) -> WidgetsResult:
     """Get panel widgets at a position (proof visualizations, #html, custom widgets). Returns raw widget data - may be large."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)
@@ -38,7 +37,7 @@ async def get_widgets(
     return WidgetsResult(widgets=widgets)
 
 
-@server.mcp.tool(
+@tool(
     "lean_get_widget_source",
     annotations=ToolAnnotations(
         title="Widget Source",
@@ -55,9 +54,7 @@ async def get_widget_source(
     ],
 ) -> WidgetSourceResult:
     """Get JavaScript source of a widget by hash. Useful for understanding custom widget rendering logic. Returns full JS module - may be large."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path, wait=True)

@@ -3,7 +3,6 @@ from collections import OrderedDict
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional, Tuple
 
 from leanclient.aio import AsyncLeanLSPClient, ScratchPool
 from leanclient.utils import SYMBOL_KIND_MAP
@@ -14,14 +13,14 @@ METHOD_KIND = {6, "method"}
 KIND_TAGS = {"namespace": "Ns"}
 _OUTLINE_CACHE_MAX_SIZE = 32
 _OUTLINE_CACHE_LOCK = Lock()
-_OUTLINE_CACHE: "OrderedDict[Tuple[str, str, str, int, int], FileOutline]" = (
+_OUTLINE_CACHE: "OrderedDict[tuple[str, str, str, int, int], FileOutline]" = (
     OrderedDict()
 )
 
 
 def _outline_cache_key(
     client: AsyncLeanLSPClient, path: str, content: str
-) -> Tuple[str, str, str, int, int]:
+) -> tuple[str, str, str, int, int]:
     project_path = Path(getattr(client, "project_path", ""))
     digest = sha256(content.encode("utf-8")).hexdigest()
     try:
@@ -36,8 +35,8 @@ def _copy_outline(outline: FileOutline) -> FileOutline:
 
 
 def _get_cached_outline(
-    key: Tuple[str, str, str, int, int],
-) -> Optional[FileOutline]:
+    key: tuple[str, str, str, int, int],
+) -> FileOutline | None:
     with _OUTLINE_CACHE_LOCK:
         outline = _OUTLINE_CACHE.get(key)
         if outline is None:
@@ -47,7 +46,7 @@ def _get_cached_outline(
 
 
 def _store_cached_outline(
-    key: Tuple[str, str, str, int, int], outline: FileOutline
+    key: tuple[str, str, str, int, int], outline: FileOutline
 ) -> None:
     with _OUTLINE_CACHE_LOCK:
         _OUTLINE_CACHE[key] = _copy_outline(outline)
@@ -67,8 +66,8 @@ def _with_max_declarations(
 
 
 async def _get_info_trees(
-    pool: ScratchPool, content: str, symbols: List[Dict]
-) -> Dict[str, str]:
+    pool: ScratchPool, content: str, symbols: list[dict]
+) -> dict[str, str]:
     """Run a scratch copy with #info_trees insertions; the real doc is untouched."""
     if not symbols:
         return {}
@@ -93,7 +92,7 @@ async def _get_info_trees(
     return info_trees
 
 
-def _extract_type(info: str, name: str) -> Optional[str]:
+def _extract_type(info: str, name: str) -> str | None:
     """Extract type signature from info tree message."""
     if m := re.search(
         rf"  • \[Term\] {re.escape(name)} \(isBinder := true\) : ([^@]+) @", info
@@ -102,7 +101,7 @@ def _extract_type(info: str, name: str) -> Optional[str]:
     return None
 
 
-def _extract_fields(info: str, name: str) -> List[Tuple[str, str]]:
+def _extract_fields(info: str, name: str) -> list[tuple[str, str]]:
     """Extract structure/class fields from info tree message."""
     fields = []
     for pattern in [rf"{re.escape(name)}\.(\w+)", rf"@{re.escape(name)}\.(\w+)"]:
@@ -121,7 +120,7 @@ def _extract_fields(info: str, name: str) -> List[Tuple[str, str]]:
     return fields
 
 
-def _extract_declarations(content: str, start: int, end: int) -> List[Dict]:
+def _extract_declarations(content: str, start: int, end: int) -> list[dict]:
     """Extract theorem/lemma/def declarations from file content."""
     lines = content.splitlines()
     decls, i = [], start
@@ -170,8 +169,8 @@ def _extract_declarations(content: str, start: int, end: int) -> List[Dict]:
 
 
 def _flatten_symbols(
-    symbols: List[Dict], indent: int = 0, content: str = ""
-) -> List[Tuple[Dict, int]]:
+    symbols: list[dict], indent: int = 0, content: str = ""
+) -> list[tuple[dict, int]]:
     """Recursively flatten symbol hierarchy, extracting declarations from namespaces."""
     result = []
     for sym in symbols:
@@ -191,7 +190,7 @@ def _flatten_symbols(
 
 
 def _detect_tag(
-    name: str, kind: str, type_sig: str, has_fields: bool, keyword: Optional[str]
+    name: str, kind: str, type_sig: str, has_fields: bool, keyword: str | None
 ) -> str:
     """Determine the appropriate tag for a symbol."""
     if has_fields:
@@ -208,8 +207,8 @@ def _detect_tag(
 
 
 def _build_outline_entry(
-    sym: Dict, type_sigs: Dict, fields_map: Dict, indent: int
-) -> Optional[OutlineEntry]:
+    sym: dict, type_sigs: dict, fields_map: dict, indent: int
+) -> OutlineEntry | None:
     """Build a structured outline entry for a symbol."""
     name = sym["name"]
     type_sig = sym.get("_type") or type_sigs.get(name, "")

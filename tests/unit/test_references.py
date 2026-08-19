@@ -9,6 +9,7 @@ import pytest
 
 from lean_lsp_mcp import server
 from lean_lsp_mcp.models import ReferencesResult
+from lean_lsp_mcp.tools import navigation as navigation_tools
 
 
 def _make_project(root: Path) -> Path:
@@ -57,10 +58,12 @@ def _make_ctx(client, project_root: Path) -> types.SimpleNamespace:
 
 
 def _patch_setup(monkeypatch: pytest.MonkeyPatch, rel_path: str | None) -> None:
-    async def fake_setup(_ctx, _path):
+    async def fake_setup(_ctx, _path, **_kwargs):
+        if rel_path is None:
+            raise server.LeanToolError("Invalid Lean file path")
         return rel_path
 
-    monkeypatch.setattr(server, "setup_client_for_file", fake_setup)
+    monkeypatch.setattr(navigation_tools, "require_client_for_file", fake_setup)
 
 
 def _ref(path: str, start_line: int, start_char: int, end_line: int, end_char: int):

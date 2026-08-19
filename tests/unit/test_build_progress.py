@@ -77,8 +77,8 @@ def patch_build():
     client_cls = MagicMock()
     client_cls.return_value.start = AsyncMock()
     with (
-        patch("lean_lsp_mcp.server.asyncio.create_subprocess_exec") as mock_exec,
-        patch("lean_lsp_mcp.server.AsyncLeanLSPClient", client_cls),
+        patch("lean_lsp_mcp.build_utils.asyncio.create_subprocess_exec") as mock_exec,
+        patch("lean_lsp_mcp.build_utils.AsyncLeanLSPClient", client_cls),
     ):
         yield mock_exec
 

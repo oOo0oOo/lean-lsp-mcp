@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal
 
 from leanclient.aio import LeanRequestTimeout
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_client, open_synced
+from lean_lsp_mcp.client_utils import get_client, open_synced, require_client_for_file
 from lean_lsp_mcp.models import GoalState, StructuredGoal, TermGoalState
+from lean_lsp_mcp.tool_registry import tool
 
 
-@server.mcp.tool(
+@tool(
     "lean_goal",
     annotations=ToolAnnotations(
         title="Proof Goals",
@@ -29,7 +30,7 @@ async def goal(
     ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
-        Optional[int],
+        int | None,
         Field(description="Column (1-indexed). Omit for before/after", ge=1),
     ] = None,
     format: Annotated[
@@ -37,7 +38,7 @@ async def goal(
         Field(description="Output format: 'text' (default) or 'structured'"),
     ] = "text",
     timeout_s: Annotated[
-        Optional[float],
+        float | None,
         Field(
             description=(
                 "Max seconds to wait for elaboration. On timeout returns "
@@ -54,9 +55,7 @@ async def goal(
     proof is finished at this point; status='no_goal_at_position' means the
     position carries no proof state (e.g. outside a proof).
     """
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)
@@ -107,7 +106,7 @@ async def goal(
     )
 
 
-@server.mcp.tool(
+@tool(
     "lean_term_goal",
     annotations=ToolAnnotations(
         title="Term Goal",
@@ -123,13 +122,11 @@ async def term_goal(
     ],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
     column: Annotated[
-        Optional[int], Field(description="Column (defaults to end of line)", ge=1)
+        int | None, Field(description="Column (defaults to end of line)", ge=1)
     ] = None,
 ) -> TermGoalState:
     """Get the expected type at a position."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)

@@ -1,99 +1,69 @@
 import asyncio
-import functools
 import importlib
 import importlib.metadata
 import json
 import logging.config
 import os
 import re
-import ssl
-import time
-import urllib.request
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, NoReturn, Optional, cast
+from typing import Any, cast
 
-import certifi
 import orjson
-from leanclient.aio import (
-    AsyncLeanLSPClient,
-    GoalResult,
-    LeanClientError,
-)
+from leanclient.aio import AsyncLeanLSPClient, LeanClientError
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.utilities.logging import configure_logging, get_logger
 
+from lean_lsp_mcp.attempt_utils import (
+    build_attempt_text as _build_attempt_text,
+    close_repl_for_project_switch as _close_repl_for_project_switch,
+    multi_attempt_lsp as _multi_attempt_lsp,
+    multi_attempt_repl as _multi_attempt_repl,
+    run_code_repl as _run_code_repl,
+)
+from lean_lsp_mcp.build_utils import BuildCoordinator, run_build as _run_build
 from lean_lsp_mcp.client_utils import (
-    get_client,
     _active_transport,
     _project_switching_allowed,
-    attach_shared_client,
-    detach_shared_client,
-    get_scratch_pool,
-    infer_project_path,
-    open_synced,
     resolve_file_path,
-    set_build_in_progress,
     setup_client_for_file,
 )
-from lean_lsp_mcp.file_utils import (
-    build_lean_path_policy,
-    get_file_contents,
-    require_lean_project_path,
+from lean_lsp_mcp.diagnostic_utils import (
+    diagnostic_identity as _diagnostic_identity,
+    filter_diagnostics_by_line_range as _filter_diagnostics_by_line_range,
+    get_line_context as _get_line_context,
+    goal_strings as _goal_strings,
+    goal_to_structured as _goal_to_structured,
+    process_diagnostics as _process_diagnostics,
+    resolve_multi_attempt_column as _resolve_multi_attempt_column,
+    shift_baseline_keys as _shift_baseline_keys,
+    to_diagnostic_messages as _to_diagnostic_messages,
 )
+from lean_lsp_mcp.file_utils import get_file_contents, require_lean_project_path
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp import config
 from lean_lsp_mcp.loogle import LoogleManager
-from lean_lsp_mcp.repl import Repl, ReplProcessError, ReplRunResult, repl_enabled
-from lean_lsp_mcp.models import (
-    AttemptResult,
-    BuildResult,
-    DiagnosticMessage,
-    # Wrapper models for list-returning tools
-    DiagnosticsResult,
-    MultiAttemptResult,
-    GoalContextEntry,
-    RunResult,
-    StructuredGoal,
-)
+from lean_lsp_mcp.repl import Repl, repl_enabled
 
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
-from lean_lsp_mcp.utils import (
-    LeanToolError,
-    PreSharedTokenVerifier,
-    extract_failed_dependency_paths,
-    is_build_stderr,
+from lean_lsp_mcp.tool_utils import (
+    custom_backend as _custom_backend,
+    rate_limited,
+    safe_report_progress as _safe_report_progress,
+    urlopen_json as _urlopen_json,
 )
-
-# LSP Diagnostic severity: 1=error, 2=warning, 3=info, 4=hint
-DIAGNOSTIC_SEVERITY: Dict[int, str] = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-# Lean-specific diagnostic tags (Lean.Lsp.LeanDiagnosticTag)
-LEAN_DIAGNOSTIC_TAG: Dict[int, str] = {1: "unsolvedGoals", 2: "goalsAccomplished"}
-
-
-def _lean_tags(diag: Dict) -> Optional[List[str]]:
-    raw = diag.get("leanTags")
-    if not raw:
-        return None
-    return [LEAN_DIAGNOSTIC_TAG.get(t, str(t)) for t in raw]
+from lean_lsp_mcp.tool_registry import register_module_tools
+from lean_lsp_mcp.utils import LeanToolError, PreSharedTokenVerifier
 
 
 _DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
 _INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
-
-
-def _raise_invalid_path(file_path: str) -> NoReturn:
-    """Raise a descriptive error when a file can't be resolved to a Lean project."""
-    raise LeanToolError(
-        f"Invalid Lean file path: '{file_path}' not found in any Lean project "
-        "(no lean-toolchain ancestor or file does not exist)"
-    )
 
 
 def _validate_theorem_name(theorem_name: str) -> str:
@@ -105,17 +75,6 @@ def _validate_theorem_name(theorem_name: str) -> str:
             "Invalid theorem name. Use a Lean fully qualified name such as `Namespace.theorem`."
         )
     return theorem_name
-
-
-async def _urlopen_json(req: urllib.request.Request, timeout: float):
-    """Run urllib.request.urlopen in a worker thread to avoid blocking the event loop."""
-    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-
-    def _do_request():
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as response:
-            return orjson.loads(response.read())
-
-    return await asyncio.to_thread(_do_request)
 
 
 def _parse_disabled_tools(raw_value: str | None) -> set[str]:
@@ -181,11 +140,11 @@ if _LOG_FILE_CONFIG:
         if _LOG_FILE_CONFIG.endswith((".yaml", ".yml")):
             yaml = cast(Any, importlib.import_module("yaml"))
 
-            with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
+            with open(_LOG_FILE_CONFIG, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             logging.config.dictConfig(cfg)
         elif _LOG_FILE_CONFIG.endswith(".json"):
-            with open(_LOG_FILE_CONFIG, "r", encoding="utf-8") as f:
+            with open(_LOG_FILE_CONFIG, encoding="utf-8") as f:
                 cfg = orjson.loads(f.read())
             logging.config.dictConfig(cfg)
         else:
@@ -208,47 +167,6 @@ logger = get_logger(__name__)
 
 
 _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
-
-
-class BuildCoordinator:
-    def __init__(self, mode: str) -> None:
-        self.mode = mode
-        self._lock = asyncio.Lock()
-        self._current_task: asyncio.Task[BuildResult] | None = None
-
-    async def run(
-        self, build_factory: Callable[[], Coroutine[Any, Any, BuildResult]]
-    ) -> BuildResult:
-        if self.mode == "allow":
-            return await build_factory()
-
-        async with self._lock:
-            if self._current_task and not self._current_task.done():
-                self._current_task.cancel()
-            self._current_task = asyncio.create_task(build_factory())
-            task = self._current_task
-
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if not task.cancelled():
-                raise
-            # Task was superseded by a newer build
-            if self.mode == "cancel":
-                return BuildResult(
-                    success=False,
-                    output="",
-                    errors=["Build superseded by newer request."],
-                )
-            # share: wait for the latest build (follow the chain if it also got superseded)
-            while True:
-                latest = self._current_task
-                try:
-                    return await latest
-                except asyncio.CancelledError:
-                    if self._current_task is latest:
-                        raise
-                    continue
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +226,7 @@ async def _ensure_shared_loogle(
 class AppContext:
     lean_project_path: Path | None
     client: AsyncLeanLSPClient | None
-    rate_limit: Dict[str, List[int]]
+    rate_limit: dict[str, list[int]]
     lean_search_available: bool
     active_transport: str = "stdio"
     project_switching_allowed: bool = True
@@ -318,25 +236,16 @@ class AppContext:
     repl: Repl | None = None
     repl_enabled: bool = False
     build_coordinator: BuildCoordinator | None = None
-    project_cache: Dict[str, Path | str] = field(default_factory=dict)
+    project_cache: dict[str, Path | str] = field(default_factory=dict)
 
 
 ToolContext = Context[AppContext, Any]
 
 
-async def _safe_report_progress(
-    ctx: ToolContext, *, progress: int, total: int, message: str
-) -> None:
-    try:
-        await ctx.report_progress(progress=progress, total=total, message=message)
-    except Exception:
-        return
-
-
 _prewarm_started = False
 
 
-async def _prewarm_project_files(project_path: Path, files: List[str]) -> None:
+async def _prewarm_project_files(project_path: Path, files: list[str]) -> None:
     """Open/elaborate configured files in the background at server startup.
 
     Overlaps the expensive first elaboration with the agent's initial
@@ -494,857 +403,74 @@ __all__ = [
     "repl_enabled",
     "Repl",
     "LoogleManager",
+    "_custom_backend",
+    "_build_attempt_text",
+    "_close_repl_for_project_switch",
+    "_diagnostic_identity",
+    "_filter_diagnostics_by_line_range",
+    "_get_line_context",
+    "_goal_strings",
+    "_goal_to_structured",
+    "_multi_attempt_lsp",
+    "_multi_attempt_repl",
+    "_process_diagnostics",
+    "_resolve_multi_attempt_column",
+    "_run_code_repl",
+    "_run_build",
+    "_safe_report_progress",
+    "_shift_baseline_keys",
+    "_to_diagnostic_messages",
+    "_urlopen_json",
+    "rate_limited",
 ]
 
 
-def _custom_backend(env_var: str, default_url: str) -> bool:
-    """True when the user configured a self-hosted backend for a tool.
+# Import tool modules only after the runtime they depend on is fully defined.
+# Their decorators record metadata without binding to a particular MCPServer,
+# so reloads can register the same functions on a fresh server explicitly.
+from lean_lsp_mcp.tools import analysis as _analysis_tools  # noqa: E402
+from lean_lsp_mcp.tools import build as _build_tools  # noqa: E402
+from lean_lsp_mcp.tools import diagnostics as _diagnostic_tools  # noqa: E402
+from lean_lsp_mcp.tools import goals as _goal_tools  # noqa: E402
+from lean_lsp_mcp.tools import navigation as _navigation_tools  # noqa: E402
+from lean_lsp_mcp.tools import search as _search_tools  # noqa: E402
+from lean_lsp_mcp.tools import widgets as _widget_tools  # noqa: E402
 
-    A custom (non-default) URL means requests do not hit the shared public
-    service, so the rate limit no longer applies.
-    """
-    return config.is_custom_backend(env_var, default_url)
-
-
-def rate_limited(
-    category: str,
-    max_requests: int,
-    per_seconds: int,
-    bypass: Optional[Callable[[], bool]] = None,
+for _tool_module in (
+    _build_tools,
+    _diagnostic_tools,
+    _goal_tools,
+    _navigation_tools,
+    _search_tools,
+    _analysis_tools,
+    _widget_tools,
 ):
-    def decorator(func):
-        def _apply_rate_limit(args, kwargs):
-            if bypass is not None and bypass():
-                return True, None
-            ctx = kwargs.get("ctx")
-            if ctx is None:
-                if not args:
-                    raise KeyError(
-                        "rate_limited wrapper requires ctx as a keyword argument or the first positional argument"
-                    )
-                ctx = args[0]
-            rate_limit = ctx.request_context.lifespan_context.rate_limit
-            current_time = int(time.time())
-            rate_limit[category] = [
-                timestamp
-                for timestamp in rate_limit[category]
-                if timestamp > current_time - per_seconds
-            ]
-            if len(rate_limit[category]) >= max_requests:
-                return (
-                    False,
-                    f"Tool limit exceeded: {max_requests} requests per {per_seconds} s. Try again later.",
-                )
-            rate_limit[category].append(current_time)
-            return True, None
-
-        if asyncio.iscoroutinefunction(func):
-
-            @functools.wraps(func)
-            async def wrapper(*args, **kwargs):
-                allowed, msg = _apply_rate_limit(args, kwargs)
-                if not allowed:
-                    # Raising (not returning a string) keeps the structured
-                    # output model valid and reaches the agent as a clean
-                    # tool error instead of a pydantic validation failure.
-                    raise LeanToolError(msg)
-                return await func(*args, **kwargs)
-
-        else:
-
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                allowed, msg = _apply_rate_limit(args, kwargs)
-                if not allowed:
-                    raise LeanToolError(msg)
-                return func(*args, **kwargs)
-
-        doc = wrapper.__doc__ or ""
-        wrapper.__doc__ = f"Limit: {max_requests}req/{per_seconds}s. {doc}"
-        return wrapper
-
-    return decorator
-
-
-async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
-    repl = app_ctx.repl
-    app_ctx.repl_enabled = False
-    if repl is None:
-        return
-    app_ctx.repl = None
-    try:
-        await repl.close()
-    except Exception:
-        logger.exception("REPL close failed during project switch")
-
-
-async def _run_build(
-    ctx: ToolContext,
-    lean_project_path_obj: Path,
-    clean: bool,
-    fetch_cache: bool,
-    output_lines: int,
-) -> BuildResult:
-    log_lines: List[str] = []
-    errors: List[str] = []
-    active_proc: asyncio.subprocess.Process | None = None
-    build_flag_set = False
-
-    async def _run_proc(*args: str, **kwargs) -> asyncio.subprocess.Process:
-        nonlocal active_proc
-        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
-        active_proc = proc
-        return proc
-
-    async def _handle_build_output_line(line_str: str) -> None:
-        line_str = line_str.rstrip()
-
-        if line_str.startswith("trace:") or "LEAN_PATH=" in line_str:
-            return
-
-        log_lines.append(line_str)
-        if "error" in line_str.lower():
-            errors.append(line_str)
-
-        if m := re.search(
-            r"\[(\d+)/(\d+)\]\s*(.+?)(?:\s+\(\d+\.?\d*[ms]+\))?$", line_str
-        ):
-            await _safe_report_progress(
-                ctx,
-                progress=int(m.group(1)),
-                total=int(m.group(2)),
-                message=m.group(3) or "Building",
-            )
-
-    async def _consume_build_output(proc: asyncio.subprocess.Process) -> None:
-        assert proc.stdout is not None
-        remainder = ""
-        while chunk := await proc.stdout.read(64 * 1024):
-            parts = (remainder + chunk.decode("utf-8", errors="replace")).split("\n")
-            remainder = parts.pop()
-            for line_str in parts:
-                await _handle_build_output_line(line_str)
-
-        if remainder:
-            await _handle_build_output_line(remainder)
-
-    try:
-        set_build_in_progress(lean_project_path_obj, True)
-        build_flag_set = True
-        client = ctx.request_context.lifespan_context.client
-        ctx.request_context.lifespan_context.client = None
-        shared_client = await detach_shared_client(lean_project_path_obj)
-
-        clients_to_close: list[AsyncLeanLSPClient] = []
-        for candidate in (client, shared_client):
-            if candidate is None or candidate in clients_to_close:
-                continue
-            clients_to_close.append(candidate)
-
-        for client_to_close in clients_to_close:
-            try:
-                await client_to_close.close()
-            except Exception:
-                logger.exception("Lean client close failed during lsp_build restart")
-
-        if clean:
-            await _safe_report_progress(
-                ctx, progress=1, total=16, message="Running `lake clean`"
-            )
-            clean_proc = await _run_proc(
-                "lake",
-                "clean",
-                cwd=lean_project_path_obj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            await _consume_build_output(clean_proc)
-            await clean_proc.wait()
-
-        if fetch_cache:
-            await _safe_report_progress(
-                ctx, progress=2, total=16, message="Running `lake exe cache get`"
-            )
-            cache_proc = await _run_proc(
-                "lake",
-                "exe",
-                "cache",
-                "get",
-                cwd=lean_project_path_obj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            await _consume_build_output(cache_proc)
-            await cache_proc.wait()
-
-        # Run build with progress reporting
-        process = await _run_proc(
-            "lake",
-            "build",
-            cwd=lean_project_path_obj,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-
-        await _consume_build_output(process)
-        await process.wait()
-
-        if process.returncode != 0:
-            return BuildResult(
-                success=False,
-                output="\n".join(log_lines[-output_lines:]) if output_lines else "",
-                errors=errors
-                or [f"Build failed with return code {process.returncode}"],
-            )
-
-        # Start LSP client (without initial build since we just did it)
-        client = AsyncLeanLSPClient(
-            str(lean_project_path_obj),
-            max_workers=config.max_open_files(),
-        )
-        await client.start()
-
-        logger.info("Built project and re-started LSP client")
-        attach_shared_client(lean_project_path_obj, client)
-        ctx.request_context.lifespan_context.client = client
-
-        return BuildResult(
-            success=True,
-            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
-            errors=[],
-        )
-
-    except asyncio.CancelledError:
-        if active_proc and active_proc.returncode is None:
-            active_proc.terminate()
-            try:
-                await asyncio.wait_for(active_proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                active_proc.kill()
-                await active_proc.wait()
-        raise
-    except Exception as e:
-        return BuildResult(
-            success=False,
-            output="\n".join(log_lines[-output_lines:]) if output_lines else "",
-            errors=[str(e)],
-        )
-    finally:
-        if build_flag_set:
-            set_build_in_progress(lean_project_path_obj, False)
-
-
-def _to_diagnostic_messages(diagnostics: Iterable[Dict]) -> List[DiagnosticMessage]:
-    """Convert LSP diagnostics to DiagnosticMessage models."""
-    result = []
-    for diag in diagnostics:
-        r = diag.get("fullRange", diag.get("range"))
-        if r is None:
-            continue
-        severity_int = diag.get("severity", 1)
-        result.append(
-            DiagnosticMessage(
-                severity=DIAGNOSTIC_SEVERITY.get(
-                    severity_int, f"unknown({severity_int})"
-                ),
-                message=diag.get("message", ""),
-                line=r["start"]["line"] + 1,
-                column=r["start"]["character"] + 1,
-                lean_tags=_lean_tags(diag),
-            )
-        )
-    return result
-
-
-def _process_diagnostics(
-    diagnostics: List[Dict],
-    build_success: bool,
-    severity: Optional[str] = None,
-    timed_out: bool = False,
-    partial: bool = False,
-    processing_lines: Optional[List[List[int]]] = None,
-) -> DiagnosticsResult:
-    """Process diagnostics, extracting dependency paths from build stderr.
-
-    Args:
-        diagnostics: List of diagnostic dicts from leanclient
-        build_success: Whether the build succeeded (from leanclient.DiagnosticsResult.success)
-        timed_out: Whether the wait timed out (results may be partial)
-    """
-    items = []
-    failed_deps: List[str] = []
-
-    for diag in diagnostics:
-        r = diag.get("fullRange", diag.get("range"))
-        if r is None:
-            continue
-
-        severity_int = diag.get("severity", 1)
-        message = diag.get("message", "")
-        line = r["start"]["line"] + 1
-        column = r["start"]["character"] + 1
-
-        # Check if this is a build failure at (1,1) - extract dependency paths, skip the item
-        if line == 1 and column == 1 and is_build_stderr(message):
-            failed_deps = extract_failed_dependency_paths(message)
-            continue  # Don't include the build stderr blob as a diagnostic item
-
-        # Normal diagnostic from the queried file
-        severity_str = DIAGNOSTIC_SEVERITY.get(severity_int, f"unknown({severity_int})")
-        if severity is not None and severity_str != severity:
-            continue
-        items.append(
-            DiagnosticMessage(
-                severity=severity_str,
-                message=message,
-                line=line,
-                column=column,
-                lean_tags=_lean_tags(diag),
-            )
-        )
-
-    if partial:
-        # Elaboration still running at the caller's deadline: return an
-        # honest partial report ("poll again"), never a bare failure.
-        return DiagnosticsResult(
-            partial=True,
-            still_elaborating_lines=processing_lines,
-            success=False,
-            timed_out=True,
-            items=items,
-            failed_dependencies=failed_deps,
-        )
-
-    if (not build_success or timed_out) and not items:
-        reason = "diagnostics_timed_out" if timed_out else "diagnostics_unavailable"
-        items.append(
-            DiagnosticMessage(
-                severity="error",
-                message=f"{reason}: Lean did not finish; the file is not known clean.",
-                line=1,
-                column=1,
-            )
-        )
-    return DiagnosticsResult(
-        success=build_success,
-        timed_out=timed_out,
-        items=items,
-        failed_dependencies=failed_deps,
-    )
-
-
-def _goal_to_structured(goal_str: str) -> StructuredGoal:
-    goal_str = (goal_str or "").strip()
-
-    # Case: no goals (proof finished)
-    if goal_str == "" or goal_str.lower() == "no goals":
-        return StructuredGoal(
-            context=[],
-            goal=None,
-            status="complete",
-            pretty=goal_str,
-        )
-
-    # Case: no turnstile (fallback)
-    if "⊢" not in goal_str:
-        return StructuredGoal(
-            context=[],
-            goal=goal_str,
-            status="unknown",
-            pretty=goal_str,
-        )
-
-    before, after = goal_str.split("⊢", 1)
-
-    context: list[GoalContextEntry] = []
-    lines = before.splitlines()
-
-    current_name = None
-    current_type_lines = []
-
-    def flush():
-        nonlocal current_name, current_type_lines
-        if current_name is not None:
-            context.append(
-                GoalContextEntry(
-                    name=current_name,
-                    type=" ".join(line.strip() for line in current_type_lines).strip(),
-                )
-            )
-        current_name = None
-        current_type_lines = []
-
-    for line in lines:
-        stripped = line.strip()
-
-        if not stripped:
-            continue
-
-        # New hypothesis line
-        if ":" in stripped and not line.startswith(" "):
-            flush()
-            name, typ = stripped.split(":", 1)
-            current_name = name.strip()
-            current_type_lines = [typ.strip()]
-        else:
-            # continuation of previous type
-            if current_name is not None:
-                current_type_lines.append(stripped)
-
-    flush()
-
-    return StructuredGoal(
-        context=context,
-        goal=after.strip(),
-        status="open",
-        pretty=goal_str,
-    )
-
-
-def _goal_strings(goal: GoalResult) -> List[str]:
-    """Flatten a GoalResult to the legacy list-of-goals output shape."""
-    return list(goal.goals) if goal.status == "goals" else []
-
-
-def _get_line_context(lines: List[str], line: int) -> str:
-    """Return the requested line or raise a user-facing range error."""
-    if line < 1 or line > len(lines):
-        raise LeanToolError(f"Line {line} out of range (file has {len(lines)} lines)")
-    return lines[line - 1]
-
-
-def _resolve_multi_attempt_column(line_context: str, column: Optional[int]) -> int:
-    """Resolve a 0-indexed tactic insertion column for multi-attempt edits."""
-    if column is None:
-        return next((i for i, c in enumerate(line_context) if not c.isspace()), 0)
-
-    if column > len(line_context) + 1:
-        raise LeanToolError(
-            f"Column {column} out of range for line of length {len(line_context)}"
-        )
-
-    return column - 1
-
-
-def _diagnostic_identity(diagnostic: Dict) -> tuple:
-    """Stable identity for a diagnostic — used to compute new vs. baseline
-    diagnostics in multi_attempt, so that errors a snippet introduces at
-    lines outside the local edit window aren't silently dropped.
-
-    ``code`` and ``source`` are included to disambiguate cases where the
-    LSP emits two diagnostics with the same range/severity/message but
-    different metadata (e.g. one from a linter, one from the elaborator).
-    """
-    diagnostic_range = diagnostic.get("range") or diagnostic.get("fullRange") or {}
-    start = diagnostic_range.get("start") or {}
-    end = diagnostic_range.get("end") or {}
-    return (
-        start.get("line"),
-        start.get("character"),
-        end.get("line"),
-        end.get("character"),
-        diagnostic.get("severity"),
-        diagnostic.get("code"),
-        diagnostic.get("source"),
-        diagnostic.get("message"),
-    )
-
-
-def _shift_baseline_keys(
-    baseline_keys: set, edit_start_line: int, line_delta: int
-) -> set:
-    """Shift baseline diagnostic-identity entries to compensate for the
-    file-line shift introduced by a multi-attempt edit.
-
-    Entries at lines strictly before ``edit_start_line`` are unaffected.
-    Entries at or beyond it (which the LSP re-emits at line + line_delta
-    after the edit) get their start/end lines shifted accordingly so the
-    post-edit identity tuple matches.
-    """
-    if not line_delta:
-        return baseline_keys
-    shifted = set()
-    for key in baseline_keys:
-        start_line, start_char, end_line, end_char, severity, code, source, message = (
-            key
-        )
-        if start_line is None or start_line < edit_start_line:
-            shifted.add(key)
-            continue
-        new_start = start_line + line_delta
-        new_end = end_line + line_delta if end_line is not None else end_line
-        shifted.add(
-            (new_start, start_char, new_end, end_char, severity, code, source, message)
-        )
-    return shifted
-
-
-def _filter_diagnostics_by_line_range(
-    diagnostics: Iterable[Dict], start_line: int, end_line: int
-) -> List[Dict]:
-    """Return diagnostics that intersect the requested 0-indexed line range."""
-    matches: List[Dict] = []
-    for diagnostic in diagnostics:
-        diagnostic_range = diagnostic.get("range") or diagnostic.get("fullRange")
-        if not diagnostic_range:
-            continue
-
-        start = diagnostic_range.get("start", {})
-        end = diagnostic_range.get("end", {})
-        diagnostic_start = start.get("line")
-        diagnostic_end = end.get("line")
-
-        if diagnostic_start is None or diagnostic_end is None:
-            continue
-        if diagnostic_end < start_line or diagnostic_start > end_line:
-            continue
-
-        matches.append(diagnostic)
-
-    return matches
-
-
-def _build_attempt_text(
-    lines: List[str], line_context: str, target_column: int, snippet: str, line: int
-) -> tuple[str, str, int, int, int]:
-    """Build the full trial document for a snippet at (line, target_column).
-
-    Returns (snippet_str, text, goal_line, goal_column, line_delta) where
-    goal_* is the 0-indexed cursor position right after the inserted snippet
-    and line_delta is how many lines the document grew by (snippets replace
-    one source line per snippet line, clamped at end of file).
-    """
-    snippet_str = snippet.rstrip("\n")
-    snippet_lines = snippet_str.split("\n") if snippet_str else [""]
-    indent = line_context[:target_column]
-    payload_lines = [
-        line_context[:target_column] + snippet_lines[0],
-        *[f"{indent}{part}" for part in snippet_lines[1:]],
-    ]
-
-    replaced_line_count = max(len(snippet_lines), 1)
-    end_line = min(line - 1 + replaced_line_count, len(lines))
-    line_delta = len(payload_lines) - (end_line - (line - 1))
-
-    new_lines = lines[: line - 1] + payload_lines + lines[end_line:]
-    text = "\n".join(new_lines) + "\n"
-
-    goal_line = line - 1 + len(payload_lines) - 1
-    goal_column = len(payload_lines[-1])
-
-    return snippet_str, text, goal_line, goal_column, line_delta
-
-
-async def _multi_attempt_repl(
-    ctx: ToolContext,
-    file_path: str,
-    line: int,
-    column: Optional[int] = None,
-    snippets: Optional[List[str]] = None,
-) -> MultiAttemptResult | None:
-    """Try tactics using REPL (fast path)."""
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    if snippets is None:
-        snippets = []
-    # Column-aware attempts need the LSP path because the REPL implementation
-    # only reconstructs proof state from the start of the target line.
-    # Multiline snippets also need the LSP path so diagnostics/goals can be
-    # reported at the real end position of the inserted tactic block.
-    if (
-        column is not None
-        or any("\n" in snippet for snippet in snippets)
-        or not app_ctx.repl_enabled
-        or app_ctx.repl is None
-    ):
-        return None
-
-    try:
-        resolved_path = resolve_file_path(ctx, file_path)
-        project_path = infer_project_path(str(resolved_path), ctx=ctx)
-        if project_path is None:
-            return None
-        policy = build_lean_path_policy(project_path)
-        resolved_path = policy.validate_path(resolved_path)
-        if Path(app_ctx.repl.project_dir).resolve(strict=False) != project_path:
-            await _close_repl_for_project_switch(app_ctx)
-            return None
-        content = get_file_contents(str(resolved_path))
-        if content is None:
-            return None
-        lines = content.splitlines()
-        if line > len(lines):
-            return None
-
-        base_code = "\n".join(lines[: line - 1])
-        repl_results = await app_ctx.repl.run_snippets(base_code, snippets)
-
-        results = []
-        for snippet, pr in zip(snippets, repl_results):
-            diagnostics = [
-                DiagnosticMessage(
-                    severity=m.get("severity", "info"),
-                    message=m.get("data", ""),
-                    line=m.get("pos", {}).get("line", 0),
-                    column=m.get("pos", {}).get("column", 0),
-                )
-                for m in (pr.messages or [])
-            ]
-            if pr.error:
-                diagnostics.append(
-                    DiagnosticMessage(
-                        severity="error", message=pr.error, line=0, column=0
-                    )
-                )
-            if pr.proof_status and pr.proof_status != "Completed":
-                diagnostics.append(
-                    DiagnosticMessage(
-                        severity="warning",
-                        message=f"REPL proof status: {pr.proof_status}",
-                        line=0,
-                        column=0,
-                    )
-                )
-            results.append(
-                AttemptResult(
-                    snippet=snippet.rstrip("\n"),
-                    goals=pr.goals or [],
-                    diagnostics=diagnostics,
-                    proof_status=pr.proof_status,
-                )
-            )
-        return MultiAttemptResult(items=results)
-    except ReplProcessError as e:
-        await _disable_unhealthy_repl(app_ctx, "multi_attempt", e)
-        return None
-    except Exception as e:
-        logger.debug(f"REPL multi_attempt failed: {e}")
-        return None
-
-
-def _repl_run_diagnostics(result: ReplRunResult) -> List[DiagnosticMessage]:
-    """Convert Lean REPL messages to the existing run-code diagnostic shape."""
-    diagnostics = []
-    for message in result.messages:
-        pos = message.get("pos") or {}
-        severity = message.get("severity", "info")
-        if severity == "information":
-            severity = "info"
-        diagnostics.append(
-            DiagnosticMessage(
-                severity=severity,
-                message=str(message.get("data", "")),
-                line=max(1, int(pos.get("line", 1)) + result.line_offset),
-                column=max(1, int(pos.get("column", 0)) + 1),
-            )
-        )
-    if result.error:
-        diagnostics.append(
-            DiagnosticMessage(
-                severity="error",
-                message=str(result.error),
-                line=max(1, result.line_offset + 1),
-                column=1,
-            )
-        )
-    return diagnostics
-
-
-async def _disable_unhealthy_repl(
-    app_ctx: AppContext, operation: str, error: ReplProcessError
-) -> None:
-    """Disable a failed fast lane once instead of retrying it on every call."""
-    app_ctx.repl_enabled = False
-    logger.warning(
-        "REPL %s fast path is unhealthy; disabling it for this session and "
-        "falling back to LSP: %s",
-        operation,
-        error,
-    )
-    if app_ctx.repl is not None:
-        try:
-            await app_ctx.repl.close()
-        except Exception:
-            logger.exception("REPL close failed after %s failure", operation)
-
-
-async def _run_code_repl(ctx: ToolContext, code: str) -> RunResult | None:
-    """Run code through the session REPL when its import cache is healthy."""
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    if not app_ctx.repl_enabled or app_ctx.repl is None:
-        return None
-
-    project_path = app_ctx.lean_project_path
-    if project_path is None:
-        return None
-    if Path(app_ctx.repl.project_dir).resolve(strict=False) != Path(
-        project_path
-    ).resolve(strict=False):
-        await _close_repl_for_project_switch(app_ctx)
-        return None
-
-    try:
-        result = await app_ctx.repl.run_code(code)
-    except ReplProcessError as e:
-        await _disable_unhealthy_repl(app_ctx, "run_code", e)
-        return None
-    except Exception as e:
-        logger.debug(f"REPL run_code failed: {e}")
-        return None
-
-    diagnostics = _repl_run_diagnostics(result)
-    return RunResult(
-        success=not any(d.severity == "error" for d in diagnostics),
-        timed_out=False,
-        diagnostics=diagnostics,
-    )
-
-
-async def _multi_attempt_lsp(
-    ctx: ToolContext,
-    file_path: str,
-    line: int,
-    column: Optional[int] = None,
-    snippets: Optional[List[str]] = None,
-) -> MultiAttemptResult:
-    """Try tactics on pre-warmed scratch documents (the user's file is never edited)."""
-    if snippets is None:
-        snippets = []
-    rel_path = await setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client = get_client(ctx)
-    doc = await open_synced(ctx, rel_path)
-    original_content = doc.text
-
-    lines = original_content.splitlines() if original_content is not None else []
-    line_context = _get_line_context(lines, line)
-    target_column = _resolve_multi_attempt_column(line_context, column)
-
-    # Snapshot baseline diagnostics before any edit. The line-range filter
-    # alone misses errors that surface at distant lines (e.g. a `whnf`
-    # heartbeat timeout reported at the leaf-statement line when a snippet's
-    # tactic forces aggressive unfolding) — that would produce a misleading
-    # `goals=[], diagnostics=[]` result indistinguishable from genuine
-    # tactic success. Diff against baseline to surface any *new* diagnostic
-    # the snippet introduced, regardless of its line position. Use
-    # leanclient's default cutoffs so the baseline wait is symmetric with
-    # the per-snippet `get_diagnostics` call below: asymmetric timeouts
-    # would leave the baseline partial while the per-snippet snapshot is
-    # complete, causing pre-existing diagnostics to be reported as
-    # snippet-introduced.
-    try:
-        baseline_report = await client.diagnostics(rel_path)
-        baseline_keys = {_diagnostic_identity(d) for d in baseline_report.items}
-    except LeanClientError:
-        logger.warning(
-            "_multi_attempt_lsp: baseline diagnostics unavailable — "
-            "set-diff disabled; results limited to local line-range filter.",
-            exc_info=True,
-        )
-        baseline_keys = None
-
-    pool = get_scratch_pool(ctx)
-    prepared = [
-        _build_attempt_text(lines, line_context, target_column, snippet, line)
-        for snippet in snippets
-    ]
-
-    trials = await pool.run_texts(
-        [text for _, text, _, _, _ in prepared],
-        want_goal_at=[
-            (goal_line, goal_col) for _, _, goal_line, goal_col, _ in prepared
-        ],
-    )
-
-    results: List[AttemptResult] = []
-    for (snippet_str, _, goal_line, _, line_delta), trial in zip(prepared, trials):
-        diag_items = trial.diagnostics.items
-        filtered_diag = _filter_diagnostics_by_line_range(
-            diag_items, line - 1, goal_line
-        )
-        in_filtered = {id(d) for d in filtered_diag}
-        # Surface any new diagnostic — relative to the original file's
-        # baseline — even if outside the local line range (e.g. heartbeat
-        # timeouts reported at distant lines).
-        if baseline_keys is None:
-            extra_diag = []
-        else:
-            shifted_keys = (
-                _shift_baseline_keys(
-                    baseline_keys, edit_start_line=line - 1, line_delta=line_delta
-                )
-                if line_delta
-                else baseline_keys
-            )
-            extra_diag = [
-                d
-                for d in diag_items
-                if id(d) not in in_filtered
-                and _diagnostic_identity(d) not in shifted_keys
-            ]
-        results.append(
-            AttemptResult(
-                snippet=snippet_str,
-                goals=_goal_strings(trial.goal) if trial.goal else [],
-                diagnostics=_to_diagnostic_messages(filtered_diag + extra_diag),
-                timed_out=False,
-            )
-        )
-
-    return MultiAttemptResult(items=results)
-
-
-# Register the tool subpackage last: each submodule's @mcp.tool decorators run
-# on import and reference core symbols (helpers, mcp) defined above via this
-# module, so the imports must happen after the core is fully defined.
-#
-# `importlib.import_module` (rather than `from ... import`) is used with a prior
-# `sys.modules` pop so that reloading `server` (e.g. via importlib.reload in
-# tests) re-executes the submodules and re-registers their tools on the freshly
-# created `mcp` instance instead of leaving them bound to the previous one.
-import importlib as _importlib  # noqa: E402
-import sys as _sys  # noqa: E402
-
-TOOL_MODULES = (
-    "build",
-    "diagnostics",
-    "goals",
-    "navigation",
-    "search",
-    "analysis",
-    "widgets",
-)
-_tool_modules = {}
-for _name in TOOL_MODULES:
-    _qualified = f"lean_lsp_mcp.tools.{_name}"
-    _sys.modules.pop(_qualified, None)
-    _tool_modules[_name] = _importlib.import_module(_qualified)
-
-lsp_build = _tool_modules["build"].lsp_build
-file_outline = _tool_modules["diagnostics"].file_outline
-diagnostic_messages = _tool_modules["diagnostics"].diagnostic_messages
-code_actions = _tool_modules["diagnostics"].code_actions
-goal = _tool_modules["goals"].goal
-term_goal = _tool_modules["goals"].term_goal
-hover = _tool_modules["navigation"].hover
-completions = _tool_modules["navigation"].completions
-declaration_file = _tool_modules["navigation"].declaration_file
-references = _tool_modules["navigation"].references
-local_search = _tool_modules["search"].local_search
-leansearch = _tool_modules["search"].leansearch
-loogle = _tool_modules["search"].loogle
-leanfinder = _tool_modules["search"].leanfinder
-state_search = _tool_modules["search"].state_search
-hammer_premise = _tool_modules["search"].hammer_premise
-LocalSearchError = _tool_modules["search"].LocalSearchError
-multi_attempt = _tool_modules["analysis"].multi_attempt
-run_code = _tool_modules["analysis"].run_code
-verify_theorem = _tool_modules["analysis"].verify_theorem
-minimal_hypotheses = _tool_modules["analysis"].minimal_hypotheses
-profile_proof = _tool_modules["analysis"].profile_proof
-get_widgets = _tool_modules["widgets"].get_widgets
-get_widget_source = _tool_modules["widgets"].get_widget_source
+    register_module_tools(mcp, _tool_module)
+
+lsp_build = _build_tools.lsp_build
+file_outline = _diagnostic_tools.file_outline
+diagnostic_messages = _diagnostic_tools.diagnostic_messages
+code_actions = _diagnostic_tools.code_actions
+goal = _goal_tools.goal
+term_goal = _goal_tools.term_goal
+hover = _navigation_tools.hover
+completions = _navigation_tools.completions
+declaration_file = _navigation_tools.declaration_file
+references = _navigation_tools.references
+local_search = _search_tools.local_search
+leansearch = _search_tools.leansearch
+loogle = _search_tools.loogle
+leanfinder = _search_tools.leanfinder
+state_search = _search_tools.state_search
+hammer_premise = _search_tools.hammer_premise
+LocalSearchError = _search_tools.LocalSearchError
+multi_attempt = _analysis_tools.multi_attempt
+run_code = _analysis_tools.run_code
+verify_theorem = _analysis_tools.verify_theorem
+minimal_hypotheses = _analysis_tools.minimal_hypotheses
+profile_proof = _analysis_tools.profile_proof
+get_widgets = _widget_tools.get_widgets
+get_widget_source = _widget_tools.get_widget_source
 
 
 if __name__ == "__main__":

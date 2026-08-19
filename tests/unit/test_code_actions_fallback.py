@@ -16,6 +16,7 @@ import pytest
 from leanclient.aio import DiagnosticsReport
 
 from lean_lsp_mcp import server as srv
+from lean_lsp_mcp.tools import diagnostics as diagnostic_tools
 
 
 class _Client:
@@ -71,7 +72,7 @@ def _patch_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_setup(_ctx, path):
         return path
 
-    monkeypatch.setattr(srv, "setup_client_for_file", fake_setup)
+    monkeypatch.setattr(diagnostic_tools, "require_client_for_file", fake_setup)
 
 
 FILE_TEXT = "import Init\n\nexample : True := by\n  simp?\n"

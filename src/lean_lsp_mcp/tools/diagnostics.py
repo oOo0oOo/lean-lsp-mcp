@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal
 
 from leanclient.aio.convert import range_from_utf16
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_client, get_serial_scratch_pool, open_synced
+from lean_lsp_mcp.client_utils import (
+    get_client,
+    get_serial_scratch_pool,
+    open_synced,
+    require_client_for_file,
+)
 from lean_lsp_mcp.models import (
     CodeAction,
     CodeActionEdit,
@@ -19,6 +24,7 @@ from lean_lsp_mcp.models import (
     InteractiveDiagnosticsResult,
 )
 from lean_lsp_mcp.outline_utils import generate_outline_data
+from lean_lsp_mcp.tool_registry import tool
 from lean_lsp_mcp.utils import get_declaration_range
 
 _SEVERITY_LEVELS = ["error", "warning", "info", "hint"]
@@ -38,7 +44,52 @@ def _flatten_severity_schema(schema: dict) -> None:
     schema["enum"] = list(_SEVERITY_LEVELS)
 
 
-@server.mcp.tool(
+async def _append_unique_code_actions(
+    client,
+    rel_path: str,
+    ranges: list[tuple[int, int, int, int]],
+    actions: list[dict],
+    seen: set[str],
+) -> None:
+    for start_line, start_column, end_line, end_column in ranges:
+        for action in await client.code_actions(
+            rel_path, start_line, start_column, end_line, end_column
+        ):
+            title = action.get("title", "")
+            if title not in seen:
+                seen.add(title)
+                actions.append(action)
+
+
+async def _resolve_code_action(client, action: dict) -> dict | None:
+    if "edit" in action:
+        return action
+    try:
+        return await client.code_action_resolve(action)
+    except Exception:
+        return None
+
+
+def _code_action_edits(
+    resolved: dict, document_lines: list[str]
+) -> list[CodeActionEdit]:
+    edits: list[CodeActionEdit] = []
+    for change in (resolved.get("edit") or {}).get("documentChanges", []):
+        for edit in change.get("edits", []):
+            edit_range = range_from_utf16(document_lines, edit["range"])
+            edits.append(
+                CodeActionEdit(
+                    new_text=edit["newText"],
+                    start_line=edit_range["start"]["line"] + 1,
+                    start_column=edit_range["start"]["character"] + 1,
+                    end_line=edit_range["end"]["line"] + 1,
+                    end_column=edit_range["end"]["character"] + 1,
+                )
+            )
+    return edits
+
+
+@tool(
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
@@ -53,20 +104,18 @@ async def file_outline(
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
     max_declarations: Annotated[
-        Optional[int], Field(description="Max declarations to return", ge=1)
+        int | None, Field(description="Max declarations to return", ge=1)
     ] = None,
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     pool = get_serial_scratch_pool(ctx)
     return await generate_outline_data(client, pool, rel_path, max_declarations)
 
 
-@server.mcp.tool(
+@tool(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
         title="Diagnostics",
@@ -81,13 +130,11 @@ async def diagnostic_messages(
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
     start_line: Annotated[
-        Optional[int], Field(description="Filter from line", ge=1)
+        int | None, Field(description="Filter from line", ge=1)
     ] = None,
-    end_line: Annotated[
-        Optional[int], Field(description="Filter to line", ge=1)
-    ] = None,
+    end_line: Annotated[int | None, Field(description="Filter to line", ge=1)] = None,
     declaration_name: Annotated[
-        Optional[str], Field(description="Filter to declaration (slow)")
+        str | None, Field(description="Filter to declaration (slow)")
     ] = None,
     interactive: Annotated[
         bool,
@@ -96,7 +143,7 @@ async def diagnostic_messages(
         ),
     ] = False,
     timeout_s: Annotated[
-        Optional[float],
+        float | None,
         Field(
             description=(
                 "Max seconds to wait for elaboration. On timeout returns "
@@ -107,7 +154,7 @@ async def diagnostic_messages(
         ),
     ] = None,
     severity: Annotated[
-        Optional[Literal["error", "warning", "info", "hint"]],
+        Literal["error", "warning", "info", "hint"] | None,
         # Flatten the emitted schema to a single enum with an explicit
         # top-level `type` and no `anyOf`. Gemini/Vertex requires the `type`
         # (#185); Moonshot/Kimi rejects `type` alongside `anyOf` (#213). See
@@ -119,9 +166,7 @@ async def diagnostic_messages(
     ] = None,
 ) -> DiagnosticsResult | InteractiveDiagnosticsResult:
     """Get compiler diagnostics (errors, warnings, infos) for a Lean file."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)
@@ -180,7 +225,7 @@ async def diagnostic_messages(
     )
 
 
-@server.mcp.tool(
+@tool(
     "lean_code_actions",
     annotations=ToolAnnotations(
         title="Code Actions",
@@ -195,9 +240,7 @@ async def code_actions(
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
 ) -> CodeActionsResult:
     """Get LSP code actions for a line. Returns resolved edits for TryThis suggestions (simp?, exact?, apply?) and other quick fixes."""
-    rel_path = await server.setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        server._raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
     await open_synced(ctx, rel_path)
@@ -207,22 +250,19 @@ async def code_actions(
         report.items, line - 1, line - 1
     )
 
-    # Query code actions for each diagnostic's range, dedup by title.
-    # Ranges from the aio client are codepoint columns, matching the
-    # codepoint-based code_actions() API.
     seen: set[str] = set()
     raw_actions: list[dict] = []
-    for diag in line_diags:
-        r = diag.get("fullRange", diag.get("range"))
-        if not r:
-            continue
-        s, e = r["start"], r["end"]
-        for action in await client.code_actions(
-            rel_path, s["line"], s["character"], e["line"], e["character"]
-        ):
-            if action.get("title", "") not in seen:
-                seen.add(action.get("title", ""))
-                raw_actions.append(action)
+    diagnostic_ranges = []
+    for diagnostic in line_diags:
+        diagnostic_range = diagnostic.get("fullRange", diagnostic.get("range"))
+        if diagnostic_range:
+            start, end = diagnostic_range["start"], diagnostic_range["end"]
+            diagnostic_ranges.append(
+                (start["line"], start["character"], end["line"], end["character"])
+            )
+    await _append_unique_code_actions(
+        client, rel_path, diagnostic_ranges, raw_actions, seen
+    )
 
     # Fallback: if no diagnostics on the line, retry across the full line
     # range. Tactic `TryThis` suggestions (`simp?`, `exact?`, `apply?`) and
@@ -232,43 +272,27 @@ async def code_actions(
         lines = client.content(rel_path).splitlines()
         line_str = lines[line - 1] if 0 < line <= len(lines) else ""
         if line_str:
-            for action in await client.code_actions(
-                rel_path, line - 1, 0, line - 1, len(line_str)
-            ):
-                if action.get("title", "") not in seen:
-                    seen.add(action.get("title", ""))
-                    raw_actions.append(action)
+            await _append_unique_code_actions(
+                client,
+                rel_path,
+                [(line - 1, 0, line - 1, len(line_str))],
+                raw_actions,
+                seen,
+            )
 
     # Resolve and convert. Resolved edit ranges come straight from the LSP
     # (UTF-16 columns) — convert to codepoints against the document text.
     doc_lines = client.content(rel_path).splitlines()
     actions: list[CodeAction] = []
     for raw in raw_actions:
-        if "edit" in raw:
-            resolved = raw
-        else:
-            try:
-                resolved = await client.code_action_resolve(raw)
-            except Exception:
-                continue
-        edits = []
-        for dc in (resolved.get("edit") or {}).get("documentChanges", []):
-            for edit in dc.get("edits", []):
-                rng = range_from_utf16(doc_lines, edit["range"])
-                edits.append(
-                    CodeActionEdit(
-                        new_text=edit["newText"],
-                        start_line=rng["start"]["line"] + 1,
-                        start_column=rng["start"]["character"] + 1,
-                        end_line=rng["end"]["line"] + 1,
-                        end_column=rng["end"]["character"] + 1,
-                    )
-                )
+        resolved = await _resolve_code_action(client, raw)
+        if resolved is None:
+            continue
         actions.append(
             CodeAction(
                 title=raw.get("title", ""),
                 is_preferred=raw.get("isPreferred", False),
-                edits=edits,
+                edits=_code_action_edits(resolved, doc_lines),
             )
         )
 
