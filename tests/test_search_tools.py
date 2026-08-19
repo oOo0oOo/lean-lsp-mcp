@@ -168,8 +168,8 @@ async def test_search_tools(
 
 def _result_names(result) -> list[str]:
     """Every declaration name in a `{"items": [...]}` result."""
-    if result.structuredContent is not None:
-        return [item["name"] for item in result.structuredContent.get("items", [])]
+    if result.structured_content is not None:
+        return [item["name"] for item in result.structured_content.get("items", [])]
 
     for block in result.content:
         text = getattr(block, "text", "").strip()

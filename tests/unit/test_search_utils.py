@@ -4,7 +4,6 @@ import orjson
 from pathlib import Path
 import os
 import subprocess
-from urllib.parse import quote
 
 import pytest
 
@@ -987,24 +986,10 @@ def _index_policy(project_root: Path):
     )
 
 
-def _lean_uri(path: Path) -> str:
-    """The URI shape the Lean server sends, with the drive colon percent encoded.
-
-    `Path.as_uri()` leaves the colon alone, so it does not exercise the decoding
-    that a real `file:///c%3A/...` needs.
-    """
-    posix = path.as_posix()
-    if not posix.startswith("/"):
-        posix = "/" + posix
-    return "file://" + quote(posix, safe="/")
-
-
 class TestWorkspaceSymbolMatches:
-    @pytest.mark.parametrize(
-        "make_uri", [Path.as_uri, _lean_uri], ids=["plain", "quoted"]
-    )
+    @pytest.mark.parametrize("symbol_path", ["relative", "absolute"])
     def test_converts_symbols_to_repo_relative_matches(
-        self, make_uri, tmp_path, reload_search_utils
+        self, symbol_path, tmp_path, reload_search_utils
     ):
         search_utils = reload_search_utils
         declaration = tmp_path / ".lake" / "packages" / "mathlib" / "Mathlib" / "G.lean"
@@ -1015,7 +1000,13 @@ class TestWorkspaceSymbolMatches:
             [
                 {
                     "name": "add_neg_cancel_left",
-                    "location": {"uri": make_uri(declaration)},
+                    "location": {
+                        "path": (
+                            str(declaration.relative_to(tmp_path))
+                            if symbol_path == "relative"
+                            else str(declaration)
+                        )
+                    },
                 }
             ],
             _index_policy(tmp_path),
@@ -1036,7 +1027,7 @@ class TestWorkspaceSymbolMatches:
         outside.touch()
 
         matches = search_utils.workspace_symbol_matches(
-            [{"name": "outside_decl", "location": {"uri": outside.as_uri()}}],
+            [{"name": "outside_decl", "location": {"path": str(outside)}}],
             _index_policy(tmp_path),
         )
 
@@ -1045,11 +1036,11 @@ class TestWorkspaceSymbolMatches:
     @pytest.mark.parametrize(
         "symbol",
         [
-            {"location": {"uri": "file:///a.lean"}},
-            {"name": "", "location": {"uri": "file:///a.lean"}},
+            {"location": {"path": "/a.lean"}},
+            {"name": "", "location": {"path": "/a.lean"}},
             {"name": "no_location"},
             {"name": "location_not_a_mapping", "location": "nope"},
-            {"name": "no_uri", "location": {}},
+            {"name": "no_path", "location": {}},
         ],
     )
     def test_skips_malformed_symbols(self, symbol, tmp_path, reload_search_utils):

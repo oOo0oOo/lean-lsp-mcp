@@ -11,8 +11,6 @@ import subprocess
 import threading
 from orjson import loads as _json_loads
 from pathlib import Path
-from urllib.parse import unquote, urlparse
-from urllib.request import url2pathname
 
 from lean_lsp_mcp.file_utils import LeanPathPolicy, build_lean_path_policy
 
@@ -383,18 +381,6 @@ def lean_local_search(
 INDEX_MATCH_KIND = "declaration"
 
 
-def _uri_to_path(uri: str) -> str:
-    """Convert a ``file:`` URI from the language server into a local path.
-
-    Lean percent encodes the drive colon, sending ``file:///c%3A/dir/x.lean``.
-    ``url2pathname`` only recognises a drive letter once that is decoded, and
-    otherwise returns ``\\c:\\dir\\x.lean``, a leading separator that later
-    resolves to a drive relative path pointing somewhere else entirely. So
-    unquote first, then convert.
-    """
-    return url2pathname(unquote(urlparse(uri).path))
-
-
 def workspace_symbol_matches(
     symbols: Iterable[Mapping[str, object]],
     policy: LeanPathPolicy,
@@ -417,12 +403,15 @@ def workspace_symbol_matches(
         location = symbol.get("location")
         if not isinstance(location, Mapping):
             continue
-        uri = location.get("uri")
-        if not isinstance(uri, str) or not uri:
+        path = location.get("path")
+        if not isinstance(path, str) or not path:
             continue
 
+        local_path = Path(path)
+        if not local_path.is_absolute():
+            local_path = policy.project_root / local_path
         try:
-            display_path = policy.display_path(_uri_to_path(uri))
+            display_path = policy.display_path(local_path)
         except ValueError:
             continue
 

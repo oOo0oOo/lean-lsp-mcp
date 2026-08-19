@@ -50,7 +50,7 @@ async def test_index_matches_are_merged_when_a_client_is_running(monkeypatch, tm
     declaration = tmp_path / "Basic.lean"
     declaration.touch()
     client = _FakeClient(
-        symbols=[{"name": "Ns.thing", "location": {"uri": declaration.as_uri()}}]
+        symbols=[{"name": "Ns.thing", "location": {"path": str(declaration)}}]
     )
     monkeypatch.setattr(search_tool, "running_shared_client", lambda _root: client)
 
@@ -66,6 +66,7 @@ async def test_index_matches_are_merged_when_a_client_is_running(monkeypatch, tm
     assert kwargs["max_results"] == 10
     # Waiting for the index would stall a search that is meant to be fast.
     assert kwargs["wait_for_index"] == 0.0
+    assert kwargs["timeout"] == 2.0
 
 
 @pytest.mark.parametrize(

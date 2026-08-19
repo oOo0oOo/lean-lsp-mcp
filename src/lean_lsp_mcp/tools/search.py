@@ -15,9 +15,9 @@ from pydantic import Field
 
 from lean_lsp_mcp import config, server
 from lean_lsp_mcp.client_utils import (
-    get_client,
     bind_lean_project_path,
     build_lean_path_policy,
+    get_client,
     open_synced,
     running_shared_client,
 )
@@ -77,7 +77,7 @@ async def _with_index_matches(
         # wait_for_index=0: report what the index has now rather than stalling
         # a search behind index loading.
         symbols, _index_ready = await client.workspace_symbol(
-            query, max_results=limit, wait_for_index=0.0
+            query, max_results=limit, wait_for_index=0.0, timeout=2.0
         )
     except Exception as exc:  # a search must survive a symbol query failure
         server.logger.warning(f"workspace/symbol lookup failed: {exc}")
