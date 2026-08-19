@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from leanclient.aio import AsyncLeanLSPClient
 from leanclient.aio.convert import range_from_utf16
-from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
-from lean_lsp_mcp.client_utils import get_serial_scratch_pool, open_synced
+from lean_lsp_mcp.client_utils import get_client, get_serial_scratch_pool, open_synced
 from lean_lsp_mcp.models import (
     CodeAction,
     CodeActionEdit,
@@ -44,13 +42,13 @@ def _flatten_severity_schema(schema: dict) -> None:
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def file_outline(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -63,7 +61,7 @@ async def file_outline(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     pool = get_serial_scratch_pool(ctx)
     return await generate_outline_data(client, pool, rel_path, max_declarations)
 
@@ -72,13 +70,13 @@ async def file_outline(
     "lean_diagnostic_messages",
     annotations=ToolAnnotations(
         title="Diagnostics",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def diagnostic_messages(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -125,7 +123,7 @@ async def diagnostic_messages(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
 
     # If declaration_name is provided, get its range and use that for filtering
@@ -186,13 +184,13 @@ async def diagnostic_messages(
     "lean_code_actions",
     annotations=ToolAnnotations(
         title="Code Actions",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def code_actions(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
 ) -> CodeActionsResult:
@@ -201,7 +199,7 @@ async def code_actions(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     await open_synced(ctx, rel_path)
 
     report = await client.diagnostics(rel_path)

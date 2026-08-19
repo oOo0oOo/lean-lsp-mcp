@@ -105,4 +105,4 @@ async def test_verify_nonexistent_theorem(
             },
             expect_error=True,
         )
-        assert result.isError
+        assert result.is_error

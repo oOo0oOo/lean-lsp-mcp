@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from leanclient.aio import AsyncLeanLSPClient, ScratchPool
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.utilities.logging import get_logger
+from mcp.server.mcpserver.utilities.logging import get_logger
 
 from lean_lsp_mcp.file_utils import (
     LeanPathPolicy,
@@ -13,6 +15,9 @@ from lean_lsp_mcp.file_utils import (
     valid_lean_project_path,
 )
 from lean_lsp_mcp import config
+
+if TYPE_CHECKING:
+    from lean_lsp_mcp.server import ToolContext
 
 
 logger = get_logger(__name__)
@@ -26,7 +31,7 @@ _builds_in_progress: set[Path] = set()
 _MAX_SHARED_CLIENTS = 8
 
 
-def _active_transport(ctx: Context | None = None) -> str:
+def _active_transport(ctx: ToolContext | None = None) -> str:
     if ctx is not None:
         lifespan = ctx.request_context.lifespan_context
         transport = getattr(lifespan, "active_transport", None)
@@ -35,7 +40,7 @@ def _active_transport(ctx: Context | None = None) -> str:
     return config.active_transport()
 
 
-def _project_switching_allowed(ctx: Context | None = None) -> bool:
+def _project_switching_allowed(ctx: ToolContext | None = None) -> bool:
     if ctx is not None:
         lifespan = ctx.request_context.lifespan_context
         explicit = getattr(lifespan, "project_switching_allowed", None)
@@ -48,7 +53,7 @@ def _max_opened_files() -> int:
     return config.max_open_files()
 
 
-def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
+def bind_lean_project_path(ctx: ToolContext, project_path: Path | str) -> Path:
     lifespan = ctx.request_context.lifespan_context
     resolved_project = require_lean_project_path(project_path)
     current_root: Path | None = getattr(lifespan, "lean_project_path", None)
@@ -77,7 +82,9 @@ def bind_lean_project_path(ctx: Context, project_path: Path | str) -> Path:
     return resolved_project
 
 
-def get_path_policy(ctx: Context, project_path: Path | None = None) -> LeanPathPolicy:
+def get_path_policy(
+    ctx: ToolContext, project_path: Path | None = None
+) -> LeanPathPolicy:
     lifespan = ctx.request_context.lifespan_context
     root = project_path or getattr(lifespan, "lean_project_path", None)
     if root is None:
@@ -144,7 +151,7 @@ async def _get_or_create_shared_client(
     return client
 
 
-def get_scratch_pool(ctx: Context) -> ScratchPool:
+def get_scratch_pool(ctx: ToolContext) -> ScratchPool:
     """Per-project pre-warmed virtual-document pool for snippet trials.
 
     Slots warm lazily with empty content; the first trial that imports
@@ -171,7 +178,7 @@ def get_scratch_pool(ctx: Context) -> ScratchPool:
     return pool
 
 
-def get_serial_scratch_pool(ctx: Context) -> ScratchPool:
+def get_serial_scratch_pool(ctx: ToolContext) -> ScratchPool:
     """Single-slot pool for scratch tools that issue one trial at a time.
 
     Keeping sequential work separate from the parallel trial pool prevents
@@ -197,7 +204,7 @@ def get_serial_scratch_pool(ctx: Context) -> ScratchPool:
     return pool
 
 
-def get_run_code_pool(ctx: Context) -> ScratchPool:
+def get_run_code_pool(ctx: ToolContext) -> ScratchPool:
     """Backward-compatible name for the sequential scratch pool."""
     return get_serial_scratch_pool(ctx)
 
@@ -254,7 +261,7 @@ def close_shared_client(project_path: Path | str | None = None) -> None:
             logger.exception("Shared Lean client terminate failed during shutdown")
 
 
-async def startup_client(ctx: Context) -> AsyncLeanLSPClient:
+async def startup_client(ctx: ToolContext) -> AsyncLeanLSPClient:
     """Ensure the shared async Lean client for the session's project is up."""
     async with CLIENT_LOCK:
         configured_root = ctx.request_context.lifespan_context.lean_project_path
@@ -266,8 +273,15 @@ async def startup_client(ctx: Context) -> AsyncLeanLSPClient:
         return client
 
 
+def get_client(ctx: ToolContext) -> AsyncLeanLSPClient:
+    client = ctx.request_context.lifespan_context.client
+    if client is None:
+        raise ValueError("Lean client is not running for this project.")
+    return client
+
+
 def resolve_file_path(
-    ctx: Context, file_path: str, *, require_exists: bool = True
+    ctx: ToolContext, file_path: str, *, require_exists: bool = True
 ) -> Path:
     """Resolve a file path with support for project-root-relative inputs."""
     lifespan = ctx.request_context.lifespan_context
@@ -299,12 +313,10 @@ def _cacheable_project_dirs(project_path: Path, cache_dirs: list[str]) -> list[s
     ]
 
 
-def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | None:
+def infer_project_path(file_path: str, ctx: ToolContext | None = None) -> Path | None:
     """Infer and cache the Lean project path for a file WITHOUT starting the client."""
     if ctx:
         lifespan = ctx.request_context.lifespan_context
-        if not hasattr(lifespan, "project_cache"):
-            lifespan.project_cache = {}
 
     if ctx is not None:
         resolved_input = resolve_file_path(ctx, file_path, require_exists=False)
@@ -368,7 +380,7 @@ def infer_project_path(file_path: str, ctx: Context | None = None) -> Path | Non
     return None
 
 
-async def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
+async def setup_client_for_file(ctx: ToolContext, file_path: str) -> str | None:
     """Ensure the LSP client matches the file's Lean project and return its relative path."""
     try:
         resolved_file = str(resolve_file_path(ctx, file_path))
@@ -390,7 +402,7 @@ async def setup_client_for_file(ctx: Context, file_path: str) -> str | None:
     return policy.client_relative_path(resolved_file)
 
 
-async def open_synced(ctx: Context, rel_path: str, wait: bool = False):
+async def open_synced(ctx: ToolContext, rel_path: str, wait: bool = False):
     """Open the file and sync it with the current on-disk content."""
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     return await client.reload_from_disk(rel_path, wait=wait)
