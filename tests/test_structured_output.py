@@ -59,11 +59,11 @@ async def test_diagnostics_structured_output_not_double_encoded(
         )
 
         # structuredContent should be present
-        assert result.structuredContent is not None, (
+        assert result.structured_content is not None, (
             "Tool should return structured content"
         )
 
-        structured = result.structuredContent
+        structured = result.structured_content
 
         # FastMCP may wrap the model under a 'result' key
         if "result" in structured and isinstance(structured["result"], dict):

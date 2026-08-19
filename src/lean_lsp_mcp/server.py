@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import importlib
+import importlib.metadata
 import json
 import logging.config
 import os
@@ -10,7 +11,7 @@ import time
 import urllib.request
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, NoReturn, Optional, cast
 
@@ -22,10 +23,11 @@ from leanclient.aio import (
     LeanClientError,
 )
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.utilities.logging import configure_logging, get_logger
 
 from lean_lsp_mcp.client_utils import (
+    get_client,
     _active_transport,
     _project_switching_allowed,
     attach_shared_client,
@@ -116,15 +118,6 @@ async def _urlopen_json(req: urllib.request.Request, timeout: float):
     return await asyncio.to_thread(_do_request)
 
 
-async def _safe_report_progress(
-    ctx: Context, *, progress: int, total: int, message: str
-) -> None:
-    try:
-        await ctx.report_progress(progress=progress, total=total, message=message)
-    except Exception:
-        return
-
-
 def _parse_disabled_tools(raw_value: str | None) -> set[str]:
     if not raw_value:
         return set()
@@ -151,7 +144,7 @@ def _load_tool_description_overrides() -> dict[str, str]:
     return overrides
 
 
-def apply_tool_configuration(server: FastMCP) -> None:
+def apply_tool_configuration(server: MCPServer) -> None:
     """Apply optional runtime tool configuration from environment variables."""
     disabled = _parse_disabled_tools(config.disabled_tools_raw())
     for name in sorted(disabled):
@@ -164,7 +157,7 @@ def apply_tool_configuration(server: FastMCP) -> None:
 
     instructions_override = config.instructions_override()
     if instructions_override is not None:
-        server._mcp_server.instructions = instructions_override
+        server._lowlevel_server.instructions = instructions_override
         logger.info("Overrode server instructions via %s", _INSTRUCTIONS_ENV)
 
     description_overrides = _load_tool_description_overrides()
@@ -325,6 +318,19 @@ class AppContext:
     repl: Repl | None = None
     repl_enabled: bool = False
     build_coordinator: BuildCoordinator | None = None
+    project_cache: Dict[str, Path | str] = field(default_factory=dict)
+
+
+ToolContext = Context[AppContext, Any]
+
+
+async def _safe_report_progress(
+    ctx: ToolContext, *, progress: int, total: int, message: str
+) -> None:
+    try:
+        await ctx.report_progress(progress=progress, total=total, message=message)
+    except Exception:
+        return
 
 
 _prewarm_started = False
@@ -374,7 +380,7 @@ def _maybe_start_prewarm(lean_project_path: Path | None) -> None:
 
 
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     repl: Repl | None = None
     context: AppContext | None = None
 
@@ -457,9 +463,12 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 logger.exception("REPL close failed during app_lifespan teardown")
 
 
+VERSION = importlib.metadata.version("lean-lsp-mcp")
+
 mcp_kwargs: dict[str, Any] = dict(
     name="Lean LSP",
     instructions=INSTRUCTIONS,
+    version=VERSION,
     dependencies=["leanclient"],
     lifespan=app_lifespan,
 )
@@ -472,7 +481,7 @@ if auth_token:
     )
     mcp_kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
 
-mcp = FastMCP(**mcp_kwargs)
+mcp = MCPServer(**mcp_kwargs)
 
 # Symbols imported here but used only by the tool subpackage (via `server.X`)
 # or by tests through monkeypatching. Listing them in __all__ marks them as
@@ -570,7 +579,7 @@ async def _close_repl_for_project_switch(app_ctx: AppContext) -> None:
 
 
 async def _run_build(
-    ctx: Context,
+    ctx: ToolContext,
     lean_project_path_obj: Path,
     clean: bool,
     fetch_cache: bool,
@@ -1027,7 +1036,7 @@ def _build_attempt_text(
 
 
 async def _multi_attempt_repl(
-    ctx: Context,
+    ctx: ToolContext,
     file_path: str,
     line: int,
     column: Optional[int] = None,
@@ -1158,7 +1167,7 @@ async def _disable_unhealthy_repl(
             logger.exception("REPL close failed after %s failure", operation)
 
 
-async def _run_code_repl(ctx: Context, code: str) -> RunResult | None:
+async def _run_code_repl(ctx: ToolContext, code: str) -> RunResult | None:
     """Run code through the session REPL when its import cache is healthy."""
     app_ctx: AppContext = ctx.request_context.lifespan_context
     if not app_ctx.repl_enabled or app_ctx.repl is None:
@@ -1191,7 +1200,7 @@ async def _run_code_repl(ctx: Context, code: str) -> RunResult | None:
 
 
 async def _multi_attempt_lsp(
-    ctx: Context,
+    ctx: ToolContext,
     file_path: str,
     line: int,
     column: Optional[int] = None,
@@ -1204,7 +1213,7 @@ async def _multi_attempt_lsp(
     if not rel_path:
         _raise_invalid_path(file_path)
 
-    client: AsyncLeanLSPClient = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     doc = await open_synced(ctx, rel_path)
     original_content = doc.text
 

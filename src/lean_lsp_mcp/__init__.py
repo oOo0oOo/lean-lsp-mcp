@@ -2,12 +2,11 @@ import argparse
 import os
 import sys
 from contextlib import suppress
-from importlib.metadata import version
 
 import anyio
 from lean_lsp_mcp import config
 from lean_lsp_mcp.client_utils import close_shared_client, infer_project_path
-from lean_lsp_mcp.server import apply_tool_configuration, mcp
+from lean_lsp_mcp.server import VERSION, apply_tool_configuration, mcp
 
 _TRANSPORT_CLOSE_HINTS = (
     "transport closed",
@@ -66,7 +65,7 @@ def main():
         "-v",
         "--version",
         action="version",
-        version=f"%(prog)s {version('lean-lsp-mcp')}",
+        version=f"%(prog)s {VERSION}",
     )
     parser.add_argument(
         "--transport",
@@ -153,10 +152,11 @@ def main():
     os.environ[config.ACTIVE_TRANSPORT_ENV] = args.transport
 
     apply_tool_configuration(mcp)
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
     try:
-        mcp.run(transport=args.transport)
+        if args.transport == "stdio":
+            mcp.run(transport="stdio")
+        else:
+            mcp.run(transport=args.transport, host=args.host, port=args.port)
     except KeyboardInterrupt:
         return 130
     except Exception as exc:

@@ -54,7 +54,7 @@ class MCPClient:
         """Call a tool and optionally assert success."""
 
         result = await self._session.call_tool(name, arguments or {})
-        if result.isError and not expect_error:
+        if result.is_error and not expect_error:
             raise MCPToolError(name, result)
         return result
 

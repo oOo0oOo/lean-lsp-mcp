@@ -9,12 +9,12 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Dict, List, Optional
 
-from mcp.server.fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import (
+    get_client,
     get_path_policy,
     get_serial_scratch_pool,
     get_scratch_pool,
@@ -38,13 +38,13 @@ from lean_lsp_mcp.models import (
     "lean_multi_attempt",
     annotations=ToolAnnotations(
         title="Multi-Attempt",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def multi_attempt(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
@@ -72,13 +72,13 @@ async def multi_attempt(
     "lean_run_code",
     annotations=ToolAnnotations(
         title="Run Code",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def run_code(
-    ctx: Context,
+    ctx: server.ToolContext,
     code: Annotated[str, Field(description="Self-contained Lean code with imports")],
 ) -> RunResult:
     """Run a code snippet and return diagnostics. Must include all imports."""
@@ -110,13 +110,13 @@ async def run_code(
     "lean_verify",
     annotations=ToolAnnotations(
         title="Verify Theorem",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def verify_theorem(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     theorem_name: Annotated[
         str, Field(description="Fully qualified name (e.g. `Namespace.theorem`)")
@@ -200,13 +200,13 @@ async def verify_theorem(
     "lean_minimal_hypotheses",
     annotations=ToolAnnotations(
         title="Minimal Hypotheses",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def minimal_hypotheses(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[str, Field(description="Absolute path to Lean file")],
     theorem_name: Annotated[
         str,
@@ -247,7 +247,7 @@ async def minimal_hypotheses(
     if not rel_path:
         server._raise_invalid_path(file_path)
 
-    client = ctx.request_context.lifespan_context.client
+    client = get_client(ctx)
     doc = await open_synced(ctx, rel_path)
     original_content = doc.text
 
@@ -343,13 +343,13 @@ async def minimal_hypotheses(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
 async def profile_proof(
-    ctx: Context,
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],

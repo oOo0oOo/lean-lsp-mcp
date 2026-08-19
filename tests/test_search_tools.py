@@ -18,8 +18,8 @@ def _first_result_item(result) -> dict[str, str] | None:
     Handles both structured content and text content formats.
     """
     # Try structured content first (new format)
-    if result.structuredContent is not None:
-        items = result.structuredContent.get("items", [])
+    if result.structured_content is not None:
+        items = result.structured_content.get("items", [])
         return items[0] if items else None
 
     # Fall back to parsing text content

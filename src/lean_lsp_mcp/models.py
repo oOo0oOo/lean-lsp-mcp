@@ -206,7 +206,7 @@ class DeclarationInfo(BaseModel):
 
 
 # Wrapper models for list-returning tools
-# FastMCP flattens bare lists into separate TextContent blocks, causing serialization issues.
+# MCPServer flattens bare lists into separate TextContent blocks, causing serialization issues.
 # Wrapping in a model ensures proper JSON serialization.
 
 

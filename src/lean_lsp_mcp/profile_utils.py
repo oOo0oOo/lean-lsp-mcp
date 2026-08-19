@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import platform
 import re
 import tempfile
 from collections import defaultdict
@@ -10,6 +11,12 @@ from pathlib import Path
 from lean_lsp_mcp.models import LineProfile, ProofProfileResult
 
 _TRACE_RE = re.compile(r"^(\s*)\[([^\]]+)\]\s+\[([\d.]+)\]\s+(.+)$")
+# Every trace message is prefixed with the status of the traced action: Lean's
+# `TraceResult.toEmoji` renders success as U+2705, failure as U+274C and error
+# as U+1F4A5, each followed by the variation selector U+FE0F. The prefix has to
+# come off before a message can be compared against source text, or tested for
+# a known lead such as "expected type:".
+_TRACE_STATUS_RE = re.compile("^(?:\\u2705|\\u274c|\\U0001f4a5)\\ufe0f?\\s*")
 _CUMULATIVE_RE = re.compile(r"^\s+(\S+(?:\s+\S+)*)\s+([\d.]+)(ms|s)$")
 _DECL_RE = re.compile(r"^\s*(?:private\s+)?(theorem|lemma|def)\s+(\S+)")
 _HEADER_RE = re.compile(r"^(import|open|set_option|universe|variable)\s")
@@ -127,13 +134,21 @@ def _extract_line_times(
         elif in_value:
             if depth <= value_depth:
                 break
-            if cls == "Elab.step" and not msg.startswith("expected type:"):
-                tactic_depth = tactic_depth or depth
-                if depth == tactic_depth:
-                    tactic = msg.split("\n")[0].strip().lstrip("·*- \t")
-                    if ln := _match_line(tactic, not tactic, proof_items, used):
-                        line_times[ln] += ms
-                        used.add(ln)
+            if cls == "Elab.step":
+                head = _TRACE_STATUS_RE.sub("", msg.split("\n")[0].strip(), count=1)
+                # A step whose message is only the status prefix carries no
+                # tactic: those are the wrappers Lean emits around a tactic
+                # block. Skipping them before the depth is fixed is what lets
+                # the first real tactic set it, and stops an empty message from
+                # matching an arbitrary line (`content.startswith("")` is true
+                # for every line, and a bullet is matched on position alone).
+                if head and not head.startswith("expected type:"):
+                    tactic_depth = tactic_depth or depth
+                    if depth == tactic_depth:
+                        tactic = head.lstrip("·*- \t")
+                        if ln := _match_line(tactic, not tactic, proof_items, used):
+                            line_times[ln] += ms
+                            used.add(ln)
 
     return dict(line_times), total
 
@@ -147,10 +162,18 @@ def _filter_categories(cumulative: dict[str, float]) -> dict[str, float]:
     }
 
 
-def _kill_process_group(pid: int) -> None:
-    """Kill an entire process group. No-op if already dead."""
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill an entire process group. No-op if already dead.
+
+    Windows has no POSIX process groups and no os.killpg/os.getpgid, so
+    killing the process itself is the available equivalent there.  Same
+    branch Repl.close uses for this cleanup.
+    """
     try:
-        os.killpg(os.getpgid(pid), 9)
+        if platform.system() != "Windows":
+            os.killpg(os.getpgid(proc.pid), 9)
+        else:
+            proc.kill()
     except (ProcessLookupError, OSError):
         pass
 
@@ -181,7 +204,7 @@ async def _run_lean_profile(file_path: Path, project_path: Path, timeout: float)
     except asyncio.TimeoutError:
         raise TimeoutError(f"Profiling timed out after {timeout}s")
     finally:
-        _kill_process_group(proc.pid)
+        _kill_process_group(proc)
 
 
 def _find_proof_start(source_lines: list[str]) -> int:
