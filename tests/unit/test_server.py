@@ -12,11 +12,12 @@ import pytest
 from lean_lsp_mcp import attempt_utils, client_utils
 from lean_lsp_mcp import server
 from lean_lsp_mcp import tool_utils
-from lean_lsp_mcp.models import DiagnosticSeverity
+from lean_lsp_mcp.models import DiagnosticSeverity, IndexStatus
 from lean_lsp_mcp.repl import ReplProcessError, ReplRunResult
 from lean_lsp_mcp.tools import diagnostics as diagnostic_tools
 from lean_lsp_mcp.tools import goals as goal_tools
 from lean_lsp_mcp.tools import navigation as navigation_tools
+from lean_lsp_mcp.tools import search as search_tool
 
 
 class _FakeTransport:
@@ -398,6 +399,41 @@ def test_apply_tool_configuration_disables_and_overrides(
         mcp._tool_manager.get_tool("enabled_tool").description
         == "overridden description"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        IndexStatus.consulted,
+        IndexStatus.warming,
+        IndexStatus.unavailable,
+        IndexStatus.error,
+    ],
+)
+async def test_local_search_reports_whether_the_index_was_consulted(
+    status: IndexStatus, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The status has to reach the caller, or an empty result still means both
+    "this declaration does not exist" and "I could not look"."""
+    project_dir = _make_project(tmp_path / "proj")
+
+    def fake_search(*, query: str, limit: int, project_root: Path, path_policy):
+        return [{"name": "foo", "kind": "def", "file": "Foo.lean"}]
+
+    async def fake_index_matches(source_matches, query, limit, policy):
+        return source_matches, status
+
+    monkeypatch.setattr(server, "_RG_AVAILABLE", True)
+    monkeypatch.setattr(server, "lean_local_search", fake_search)
+    monkeypatch.setattr(search_tool, "_with_index_matches", fake_index_matches)
+
+    result = await server.local_search(
+        ctx=_make_ctx(), query="foo", limit=7, project_root=str(project_dir)
+    )
+
+    assert result.index is status
+    assert [item.name for item in result.items] == ["foo"]
 
 
 @pytest.mark.asyncio

@@ -6,10 +6,12 @@ import asyncio
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
 import orjson
+from leanclient.aio import AsyncLeanLSPClient
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -29,6 +31,7 @@ from lean_lsp_mcp.search_utils import (
     workspace_symbol_matches,
 )
 from lean_lsp_mcp.models import (
+    IndexStatus,
     LeanFinderResult,
     LeanFinderResults,
     LeanSearchResult,
@@ -49,47 +52,195 @@ class LocalSearchError(Exception):
     pass
 
 
+# The symbol index is the only source for declarations an attribute created:
+# `@[to_additive]` alone accounts for roughly sixteen thousand, and they are not
+# in the `.ilean` files either, which record source positions a generated
+# declaration does not have. Asking the server is therefore unavoidable, and it
+# is not cheap: measured on Mathlib with the index reported ready, the opening
+# queries of a session ran past 120s while every query from the fourth on
+# answered within 7.6s. Whatever the server is doing there, paying it inside a
+# search would stall a tool documented as fast, so the first search starts the
+# request and gives it only the budget below before returning source-only
+# results; the request survives to warm the server for the next one.
+INDEX_QUERY_TIMEOUT = 10.0
+# A ceiling, not a target: the opening queries above exceeded 120s, and this
+# only bounds how long a single request may stay in flight.
+INDEX_PROBE_TIMEOUT = 900.0
+
+
+@dataclass
+class _IndexProbe:
+    """Per project record of whether the server can answer symbol queries.
+
+    Kept beside the client it belongs to, so a restarted language server starts
+    over instead of inheriting a readiness that died with the old process.
+    """
+
+    client: AsyncLeanLSPClient
+    task: asyncio.Task | None = None
+    query: str = ""
+    ready: bool = False
+    failed: bool = False
+
+
+_index_probes: dict[Path, _IndexProbe] = {}
+
+
+def _forget_index_probes() -> None:
+    """Drop every probe, cancelling any request still in flight."""
+    for probe in _index_probes.values():
+        if probe.task is not None and not probe.task.done():
+            probe.task.cancel()
+    _index_probes.clear()
+
+
+def _log_probe_failure(task: asyncio.Task) -> None:
+    """Retrieve the exception so it is reported here rather than by asyncio.
+
+    Without this a probe that fails while nobody is looking is lost entirely:
+    the search that started it has already returned.
+    """
+    if task.cancelled():
+        return
+    if (failure := task.exception()) is not None:
+        server.logger.warning(f"symbol index lookup failed: {failure}")
+
+
+def _probe_failed(
+    probe: _IndexProbe,
+    request: asyncio.Task,
+    source_matches: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], IndexStatus]:
+    """Record that this server cannot answer, and stop asking it.
+
+    Remembered rather than retried on every search: a server that will never
+    answer would otherwise have the caller see `warming` and `error` alternate
+    forever, unable to conclude anything.
+
+    The failure itself is logged by the request's done callback, which fires
+    whether or not a search is still waiting on it.
+    """
+    del request  # the callback owns the reporting; this owns the state
+    probe.failed = True
+    probe.task = None
+    return source_matches, IndexStatus.error
+
+
 async def _with_index_matches(
     source_matches: list[dict[str, str]],
     query: str,
     limit: int,
     policy: LeanPathPolicy,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], IndexStatus]:
     """Add declarations that exist in the symbol index but not in source text.
 
-    Ripgrep can only match declarations someone wrote. Mathlib derives a large
-    part of its API from attributes: ``@[to_additive]`` alone accounts for
-    roughly sixteen thousand declarations, and ``@[simps]``, ``@[to_dual]`` and
-    ``@[mk_iff]`` add thousands more. Those names never appear as source text,
-    so a source-only search reports them as absent, which reads as "this lemma
-    does not exist" rather than "this search cannot see it".
-
-    The language server answers ``workspace/symbol`` from the compiled
-    ``.ilean`` index and does know them.
-
-    Returns *source_matches* unchanged when no language server is running for
-    the project. Starting one costs a full ``lake serve`` boot, and a search is
-    not the right moment to pay it.
+    Ripgrep can only match declarations someone wrote, so a source-only search
+    reports a generated one as absent, which reads as "this lemma does not
+    exist" rather than "this search cannot see it". The returned status is what
+    lets a caller tell those two apart.
     """
     client = running_shared_client(policy.project_root)
     if client is None:
-        return source_matches
+        # Starting a language server costs a full `lake serve` boot, and a
+        # search is not the right moment to pay it.
+        return source_matches, IndexStatus.unavailable
 
+    root = policy.project_root
+    probe = _index_probes.get(root)
+    if probe is None or probe.client is not client:
+        probe = _IndexProbe(client=client)
+        _index_probes[root] = probe
+
+    if probe.failed:
+        # Remembered rather than retried on every search, so a server that
+        # cannot answer says so consistently instead of alternating.
+        return source_matches, IndexStatus.error
+
+    if probe.ready:
+        return await _query_index(client, source_matches, query, limit, policy, probe)
+
+    if probe.task is None or probe.task.done():
+        try:
+            probe.task = asyncio.create_task(
+                client.workspace_symbol(
+                    query,
+                    max_results=limit,
+                    wait_for_index=0.0,
+                    timeout=INDEX_PROBE_TIMEOUT,
+                )
+            )
+        except Exception as exc:  # a search must survive a symbol query failure
+            server.logger.warning(f"symbol index lookup failed: {exc}")
+            probe.failed = True
+            return source_matches, IndexStatus.error
+        probe.task.add_done_callback(_log_probe_failure)
+        probe.query = query
+    elif probe.query != query:
+        # A request for a different query is already warming the server. Piling
+        # a second one on would not answer this search any sooner.
+        return source_matches, IndexStatus.warming
+
+    request = probe.task
     try:
-        # wait_for_index=0: report what the index has now rather than stalling
-        # a search behind index loading.
-        symbols, _index_ready = await client.workspace_symbol(
-            query, max_results=limit, wait_for_index=0.0, timeout=2.0
+        # shield: when the budget runs out the request keeps running, so the
+        # work this search paid for warms the server for the next one instead
+        # of being thrown away.
+        symbols, index_ready = await asyncio.wait_for(
+            asyncio.shield(request), INDEX_QUERY_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        if not request.done():
+            return source_matches, IndexStatus.warming
+        # The request itself timed out rather than our budget. Since 3.11
+        # `asyncio.TimeoutError` is `TimeoutError`, so only the state of the
+        # request tells the two apart.
+        return _probe_failed(probe, request, source_matches)
+    except Exception:  # a search must survive a symbol query failure
+        return _probe_failed(probe, request, source_matches)
+
+    probe.ready = True
+    probe.task = None
+    return (
+        merge_local_search_matches(
+            source_matches,
+            workspace_symbol_matches(symbols, policy),
+            query,
+            limit,
+        ),
+        IndexStatus.consulted if index_ready else IndexStatus.warming,
+    )
+
+
+async def _query_index(
+    client: AsyncLeanLSPClient,
+    source_matches: list[dict[str, str]],
+    query: str,
+    limit: int,
+    policy: LeanPathPolicy,
+    probe: _IndexProbe,
+) -> tuple[list[dict[str, str]], IndexStatus]:
+    """Ask a server that has already proven it can answer."""
+    try:
+        symbols, index_ready = await client.workspace_symbol(
+            query,
+            max_results=limit,
+            wait_for_index=0.0,
+            timeout=INDEX_QUERY_TIMEOUT,
         )
     except Exception as exc:  # a search must survive a symbol query failure
-        server.logger.warning(f"workspace/symbol lookup failed: {exc}")
-        return source_matches
+        server.logger.warning(f"symbol index lookup failed: {exc}")
+        return source_matches, IndexStatus.error
 
-    return merge_local_search_matches(
-        source_matches,
-        workspace_symbol_matches(symbols, policy),
-        query,
-        limit,
+    return (
+        merge_local_search_matches(
+            source_matches,
+            workspace_symbol_matches(symbols, policy),
+            query,
+            limit,
+        ),
+        # The server reports whether the index finished loading; saying
+        # "consulted" without it would promise a completeness nobody checked.
+        IndexStatus.consulted if index_ready else IndexStatus.warming,
     )
 
 
@@ -98,7 +249,10 @@ async def _with_index_matches(
     annotations=ToolAnnotations(
         title="Local Search",
         read_only_hint=True,
-        idempotent_hint=True,
+        # Not idempotent while the symbol index is warming: the same query
+        # returns source-only results first and index-backed results later,
+        # which the `index` field of the result reports.
+        idempotent_hint=False,
         open_world_hint=False,
     ),
 )
@@ -146,14 +300,14 @@ async def local_search(
             project_root=policy.project_root,
             path_policy=policy,
         )
-        raw_results = await _with_index_matches(
+        raw_results, index_status = await _with_index_matches(
             raw_results, normalized_query, limit, policy
         )
         results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
             for r in raw_results
         ]
-        return LocalSearchResults(items=results)
+        return LocalSearchResults(items=results, index=index_status)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
 
