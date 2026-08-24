@@ -364,6 +364,14 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
         # serve`` for all other sessions.  The shared client is cleaned up via
         # close_shared_client() at process exit (see __init__.py).
 
+        # A symbol index probe may be minutes from returning. Cancelling it here
+        # loses that warm-up, but leaving it would let a single request hold the
+        # event loop open past shutdown: closing the loop cancels pending tasks
+        # and waits for them anyway, with no deadline of ours.
+        from lean_lsp_mcp.tools.search import _forget_index_probes
+
+        _forget_index_probes()
+
         repl_to_close = context.repl if context and context.repl is not None else repl
         if repl_to_close:
             try:

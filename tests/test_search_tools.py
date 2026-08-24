@@ -166,10 +166,10 @@ async def test_search_tools(
             assert finder_text and len(finder_text) > 0
 
 
-def _result_names(result) -> list[str]:
-    """Every declaration name in a `{"items": [...]}` result."""
+def _result_payload(result) -> dict:
+    """The `{"items": [...], "index": ...}` body of a local search result."""
     if result.structured_content is not None:
-        return [item["name"] for item in result.structured_content.get("items", [])]
+        return result.structured_content
 
     for block in result.content:
         text = getattr(block, "text", "").strip()
@@ -180,8 +180,13 @@ def _result_names(result) -> list[str]:
         except orjson.JSONDecodeError:
             continue
         if isinstance(parsed, dict) and "items" in parsed:
-            return [item["name"] for item in parsed["items"]]
-    return []
+            return parsed
+    return {}
+
+
+def _result_names(result) -> list[str]:
+    """Every declaration name in a `{"items": [...]}` result."""
+    return [item["name"] for item in _result_payload(result).get("items", [])]
 
 
 async def test_local_search_finds_attribute_generated_declarations(
@@ -190,12 +195,15 @@ async def test_local_search_finds_attribute_generated_declarations(
 ) -> None:
     """`Finset.sum_range_succ` is derived from `Finset.prod_range_succ` by
     `@[to_additive]`, so it never appears as source text and ripgrep alone
-    reports it as missing. The language server's symbol index knows it.
+    reports it as missing. It is absent from the `.ilean` files too, which
+    index source positions a generated declaration does not have; the language
+    server knows it anyway, and that is why the search asks the server.
 
-    A search never blocks on index loading, so index backed results appear once
-    the server has finished reading `.ilean` files, which takes a couple of
-    minutes on a Mathlib project. Waiting for that belongs here, in the test,
-    rather than inside a tool documented as fast.
+    A search never blocks on the server's one-off symbol work, so index backed
+    results appear only once that finishes, which takes minutes on a Mathlib
+    project. Waiting for it belongs here, in the test, rather than inside a
+    tool documented as fast -- and the `index` field is what tells the two
+    states apart instead of leaving the test to poll blindly.
     """
     async with mcp_client_factory() as client:
         # Opening a file is what brings a language server up; without one the
@@ -205,8 +213,12 @@ async def test_local_search_finds_attribute_generated_declarations(
             {"file_path": str(test_project_path / "McpTestProject.lean")},
         )
 
-        deadline = time.monotonic() + 300
+        # The integration workflow runs pytest with --timeout=300, so a
+        # longer deadline here would be cut off mid wait and report a
+        # pytest timeout instead of what the index was doing.
+        deadline = time.monotonic() + 240
         names: list[str] = []
+        status = "unavailable"
         while time.monotonic() < deadline:
             result = await client.call_tool(
                 "lean_local_search",
@@ -215,13 +227,18 @@ async def test_local_search_finds_attribute_generated_declarations(
                     "project_root": str(test_project_path),
                 },
             )
-            names = _result_names(result)
-            if "Finset.sum_range_succ" in names:
+            payload = _result_payload(result)
+            names = [item["name"] for item in payload.get("items", [])]
+            status = payload.get("index", "unavailable")
+            if status == "consulted":
+                # The index answered, so an empty result would now be a real
+                # absence rather than a search that could not look.
+                assert "Finset.sum_range_succ" in names, names
                 return
-            if not names:
-                message = result_text(result).strip()
-                if "ripgrep" in message.lower():
-                    pytest.skip(message)
+            if not names and "ripgrep" in result_text(result).lower():
+                pytest.skip(result_text(result).strip())
             await asyncio.sleep(5)
 
-        pytest.fail(f"generated declaration never appeared in search results: {names}")
+        pytest.fail(
+            f"symbol index never became usable: last status {status!r}, names {names}"
+        )
