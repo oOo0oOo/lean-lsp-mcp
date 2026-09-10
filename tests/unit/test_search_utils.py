@@ -804,6 +804,7 @@ def test_lean_search_integration_mathlib_prefix_results(reload_search_utils):
     )
 
 
+@pytest.mark.skipif(not MATHLIB_DIR.is_dir(), reason="mathlib not downloaded")
 def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
     search_utils = reload_search_utils
     available, message = search_utils.check_ripgrep_status()
