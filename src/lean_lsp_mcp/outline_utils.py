@@ -120,6 +120,29 @@ def _extract_fields(info: str, name: str) -> list[tuple[str, str]]:
     return fields
 
 
+# `let`/`letI`/`haveI` each spend one `:=` inside a statement, before the one
+# that starts the declaration body.
+_STATEMENT_BINDER_RE = re.compile(r"(?<![A-Za-z0-9_\'])(?:let|letI|haveI)\s")
+
+
+def _body_assignment_index(text: str) -> int | None:
+    """Index of the `:=` that begins the declaration body, or None.
+
+    A statement may bind values of its own -- `let m := n + 1` ahead of the
+    conclusion -- and each binding spends one `:=`. Splitting on the first one
+    cuts the type at that binder and hides everything after it, including the
+    conclusion the caller is reading the outline for.
+    """
+    assignments = 0
+    position = 0
+    while (found := text.find(":=", position)) != -1:
+        assignments += 1
+        if assignments > len(_STATEMENT_BINDER_RE.findall(text[:found])):
+            return found
+        position = found + 2
+    return None
+
+
 def _extract_declarations(content: str, start: int, end: int) -> list[dict]:
     """Extract theorem/lemma/def declarations from file content."""
     lines = content.splitlines()
@@ -131,23 +154,25 @@ def _extract_declarations(content: str, start: int, end: int) -> list[dict]:
             if line.startswith(f"{keyword} "):
                 name = line[len(keyword) :].strip().split()[0]
                 if name and not name.startswith("_"):
-                    # Collect until :=
+                    # Collect until the body `:=`, not merely the first one.
                     decl_lines = [line]
                     j = i + 1
-                    while j < min(end, len(lines)) and ":=" not in " ".join(decl_lines):
+                    while (
+                        j < min(end, len(lines))
+                        and _body_assignment_index(" ".join(decl_lines)) is None
+                    ):
                         if (next_line := lines[j].strip()) and not next_line.startswith(
                             "--"
                         ):
                             decl_lines.append(next_line)
                         j += 1
 
-                    # Extract signature (everything before :=, minus keyword and name)
+                    # Extract signature (everything before the body `:=`,
+                    # minus keyword and name)
                     full_decl = " ".join(decl_lines)
                     type_sig = None
-                    if ":=" in full_decl:
-                        sig_part = (
-                            full_decl.split(":=", 1)[0].strip()[len(keyword) :].strip()
-                        )
+                    if (body_at := _body_assignment_index(full_decl)) is not None:
+                        sig_part = full_decl[:body_at].strip()[len(keyword) :].strip()
                         if sig_part.startswith(name):
                             type_sig = sig_part[len(name) :].strip()
 
