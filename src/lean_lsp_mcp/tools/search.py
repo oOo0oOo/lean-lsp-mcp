@@ -39,8 +39,6 @@ from lean_lsp_mcp.models import (
     LoogleResults,
     PremiseResult,
     PremiseResults,
-    StateSearchResult,
-    StateSearchResults,
 )
 from lean_lsp_mcp.tool_registry import tool
 
@@ -348,63 +346,6 @@ async def leanfinder(
         )
 
     return LeanFinderResults(items=results)
-
-
-@tool(
-    "lean_state_search",
-    annotations=ToolAnnotations(
-        title="State Search",
-        read_only_hint=True,
-        idempotent_hint=True,
-        open_world_hint=True,
-    ),
-)
-@server.rate_limited(
-    "lean_state_search",
-    *config.RATE_LIMITS["lean_state_search"],
-    bypass=lambda: server._custom_backend(
-        "LEAN_STATE_SEARCH_URL", config.DEFAULT_STATE_SEARCH_URL
-    ),
-)
-async def state_search(
-    ctx: server.ToolContext,
-    file_path: Annotated[
-        str, Field(description="Absolute or project-root-relative path to Lean file")
-    ],
-    line: Annotated[int, Field(description="Line number (1-indexed)", ge=1)],
-    column: Annotated[int, Field(description="Column number (1-indexed)", ge=1)],
-    num_results: Annotated[int, Field(description="Max results", ge=1)] = 5,
-) -> StateSearchResults:
-    """Find lemmas to close the goal at a position. Searches premise-search.com."""
-    rel_path = await require_client_for_file(ctx, file_path)
-
-    client = get_client(ctx)
-    await open_synced(ctx, rel_path)
-    goal = await client.goal(rel_path, line - 1, column - 1)
-
-    if goal.status != "goals":
-        raise server.LeanToolError(
-            f"No goals found at line {line}, column {column} "
-            f"(status: {goal.status}). Try a different position."
-        )
-
-    goal_str = urllib.parse.quote(goal.goals[0])
-
-    url = config.state_search_url()
-    req = urllib.request.Request(
-        f"{url}/api/search?query={goal_str}&results={num_results}"
-        f"&rev={config.state_search_rev()}",
-        headers={"User-Agent": "lean-lsp-mcp/0.1"},
-        method="GET",
-    )
-
-    await server._safe_report_progress(
-        ctx, progress=1, total=10, message=f"Awaiting response from {url}"
-    )
-    results = await server._urlopen_json(req, timeout=10)
-
-    items = [StateSearchResult(name=r["name"]) for r in results]
-    return StateSearchResults(items=items)
 
 
 @tool(
