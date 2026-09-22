@@ -29,6 +29,7 @@ from lean_lsp_mcp.search_utils import (
     workspace_symbol_matches,
 )
 from lean_lsp_mcp.models import (
+    IndexStatus,
     LeanFinderResult,
     LeanFinderResults,
     LeanSearchResult,
@@ -54,7 +55,7 @@ async def _with_index_matches(
     query: str,
     limit: int,
     policy: LeanPathPolicy,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], IndexStatus]:
     """Add declarations that exist in the symbol index but not in source text.
 
     Ripgrep can only match declarations someone wrote. Mathlib derives a large
@@ -64,32 +65,35 @@ async def _with_index_matches(
     so a source-only search reports them as absent, which reads as "this lemma
     does not exist" rather than "this search cannot see it".
 
-    The language server answers ``workspace/symbol`` from the compiled
-    ``.ilean`` index and does know them.
-
-    Returns *source_matches* unchanged when no language server is running for
-    the project. Starting one costs a full ``lake serve`` boot, and a search is
-    not the right moment to pay it.
+    The returned status is what lets a caller tell those two apart: only
+    ``consulted`` makes an empty result mean the declaration is absent.
     """
     client = running_shared_client(policy.project_root)
     if client is None:
-        return source_matches
+        # Starting a language server costs a full ``lake serve`` boot, and a
+        # search is not the right moment to pay it.
+        return source_matches, IndexStatus.unavailable
 
     try:
         # wait_for_index=0: report what the index has now rather than stalling
         # a search behind index loading.
-        symbols, _index_ready = await client.workspace_symbol(
+        symbols, index_ready = await client.workspace_symbol(
             query, max_results=limit, wait_for_index=0.0, timeout=2.0
         )
     except Exception as exc:  # a search must survive a symbol query failure
         server.logger.warning(f"workspace/symbol lookup failed: {exc}")
-        return source_matches
+        return source_matches, IndexStatus.error
 
-    return merge_local_search_matches(
-        source_matches,
-        workspace_symbol_matches(symbols, policy),
-        query,
-        limit,
+    return (
+        merge_local_search_matches(
+            source_matches,
+            workspace_symbol_matches(symbols, policy),
+            query,
+            limit,
+        ),
+        # The server reports whether the index finished loading. Claiming
+        # "consulted" without it would promise a completeness nobody checked.
+        IndexStatus.consulted if index_ready else IndexStatus.warming,
     )
 
 
@@ -146,14 +150,14 @@ async def local_search(
             project_root=policy.project_root,
             path_policy=policy,
         )
-        raw_results = await _with_index_matches(
+        raw_results, index_status = await _with_index_matches(
             raw_results, normalized_query, limit, policy
         )
         results = [
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
             for r in raw_results
         ]
-        return LocalSearchResults(items=results)
+        return LocalSearchResults(items=results, index=index_status)
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
 

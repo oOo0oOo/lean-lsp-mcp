@@ -22,7 +22,7 @@ INSTRUCTIONS = f"""## General Rules
 - **lean_term_goal**: Expected type at a position.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.
-- **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name.
+- **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name. Only `index: consulted` makes an empty result proof of absence; `warming` means the symbol index is still loading, `unavailable` means no language server is running, `error` means the lookup failed.
 - **lean_file_outline**: Token-efficient file skeleton (slow-ish).
 - **lean_multi_attempt**: Test tactics without editing at a proof position. Use `column` for an exact source position; omit it for fast line-based attempts: `["simp", "ring", "omega"]`
 - **lean_code_actions**: Quick fixes and `TryThis` suggestions (simp?, exact?) with resolved edits.
@@ -61,5 +61,5 @@ response with `partial: true` + `still_elaborating_lines` (or goal `status:
 error or a dead server.
 
 ## Error Handling
-Check `isError` in responses: `true` means failure (timeout/LSP error/rate limit), while an empty `items` with `isError: false` means no results found.
+Check `isError` in responses: `true` means failure (timeout/LSP error/rate limit), while an empty `items` with `isError: false` means no results found -- except lean_local_search, where that only holds when its `index` field says `consulted`; otherwise the index was not consulted and the name may still exist.
 """
