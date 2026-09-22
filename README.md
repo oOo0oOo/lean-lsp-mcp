@@ -212,6 +212,10 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_MCP_SCRATCH_SLOTS`: Number of parallel scratch documents used for snippet
   trials. Defaults to `1`; increase it only when parallel attempts are worth the
   additional Lean process memory.
+- `LEAN_MCP_MAX_OUTPUT_CHARS`: Per-field character budget for goal states and
+  diagnostic messages. Defaults to `6000`; oversized text is elided from the
+  middle so both the local context and the goal target survive. Set to `0` to
+  return everything untruncated.
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt` (see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` or `.lake/packages/REPL/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).

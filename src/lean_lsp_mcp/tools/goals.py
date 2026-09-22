@@ -12,6 +12,7 @@ from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import get_client, open_synced, require_client_for_file
 from lean_lsp_mcp.models import GoalState, StructuredGoal, TermGoalState
 from lean_lsp_mcp.tool_registry import tool
+from lean_lsp_mcp.utils import bound_output
 
 
 @tool(
@@ -71,7 +72,12 @@ async def goal(
     structured = format == "structured"
 
     def render(goals: list[str]) -> list[str | StructuredGoal]:
-        return [server._goal_to_structured(g) if structured else g for g in goals]
+        # Structured output is already a decomposition; the raw form is the
+        # one that arrives as a single wall of text.
+        return [
+            server._goal_to_structured(g) if structured else bound_output(g)
+            for g in goals
+        ]
 
     try:
         await client.barrier(rel_path, timeout=timeout_s)

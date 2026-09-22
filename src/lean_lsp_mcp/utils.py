@@ -19,6 +19,31 @@ BUILD_ERROR_FILE_PATTERN = re.compile(
 )
 
 
+def bound_output(text: str) -> str:
+    """Trim `text` to the configured per-field budget, cutting the middle.
+
+    The middle goes, not the tail: a Lean goal states its target last, after
+    the local context, and a caller that loses `\u22a2 ...` loses the one part
+    it came for. The elision says how much was removed so nobody mistakes the
+    result for the whole thing.
+    """
+    from lean_lsp_mcp import config
+
+    limit = config.max_output_chars()
+    if limit <= 0 or len(text) <= limit:
+        return text
+
+    elided = len(text) - limit
+    head = (limit * 2) // 3
+    tail = limit - head
+    return (
+        f"{text[:head]}"
+        f"\n\n[... {elided} characters elided; "
+        f"set {config.MAX_OUTPUT_CHARS_ENV}=0 for the full text ...]\n\n"
+        f"{text[-tail:]}"
+    )
+
+
 def extract_failed_dependency_paths(message: str) -> list[str]:
     """Extract unique file paths from lake build stderr output.
 

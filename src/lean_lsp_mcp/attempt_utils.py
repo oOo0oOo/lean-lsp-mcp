@@ -35,6 +35,7 @@ from lean_lsp_mcp.models import (
     RunResult,
 )
 from lean_lsp_mcp.repl import ReplProcessError, ReplRunResult
+from lean_lsp_mcp.utils import bound_output
 
 logger = get_logger(__name__)
 
@@ -103,7 +104,7 @@ def _attempt_results(
         results.append(
             AttemptResult(
                 snippet=snippet.rstrip("\n"),
-                goals=result.goals or [],
+                goals=[bound_output(goal) for goal in result.goals or []],
                 diagnostics=diagnostics,
                 proof_status=result.proof_status,
             )
@@ -171,7 +172,7 @@ def repl_run_diagnostics(result: ReplRunResult) -> list[DiagnosticMessage]:
         diagnostics.append(
             DiagnosticMessage(
                 severity=severity,
-                message=text,
+                message=bound_output(text),
                 line=max(1, int(position.get("line", 1)) + result.line_offset),
                 column=max(1, int(position.get("column", 0)) + 1),
                 category=diagnostic_category(severity, text),
@@ -183,7 +184,7 @@ def repl_run_diagnostics(result: ReplRunResult) -> list[DiagnosticMessage]:
         diagnostics.append(
             DiagnosticMessage(
                 severity="error",
-                message=error_text,
+                message=bound_output(error_text),
                 line=max(1, result.line_offset + 1),
                 column=1,
                 category=diagnostic_category("error", error_text),
@@ -305,7 +306,10 @@ async def multi_attempt_lsp(
         results.append(
             AttemptResult(
                 snippet=snippet,
-                goals=goal_strings(trial.goal) if trial.goal else [],
+                goals=[
+                    bound_output(goal)
+                    for goal in (goal_strings(trial.goal) if trial.goal else [])
+                ],
                 diagnostics=to_diagnostic_messages(
                     local_diagnostics + extra_diagnostics
                 ),

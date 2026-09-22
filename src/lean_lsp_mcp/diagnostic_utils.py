@@ -15,6 +15,7 @@ from lean_lsp_mcp.models import (
 )
 from lean_lsp_mcp.utils import (
     LeanToolError,
+    bound_output,
     extract_failed_dependency_paths,
     is_build_stderr,
 )
@@ -104,9 +105,11 @@ def _diagnostic_message(diagnostic: dict) -> DiagnosticMessage | None:
     start = diagnostic_range["start"]
     severity_name = DIAGNOSTIC_SEVERITY.get(severity, f"unknown({severity})")
     message = diagnostic.get("message", "")
+    # Classify on the full text; a marker may sit in the part the budget
+    # elides. Only what is returned is trimmed.
     return DiagnosticMessage(
         severity=severity_name,
-        message=message,
+        message=bound_output(message),
         line=start["line"] + 1,
         column=start["character"] + 1,
         lean_tags=_lean_tags(diagnostic),
