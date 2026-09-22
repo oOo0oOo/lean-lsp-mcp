@@ -40,6 +40,36 @@ def parse_axioms(diagnostics: list[dict]) -> list[str]:
     return axioms
 
 
+# The three axioms all of Mathlib rests on. Anything else changes what a
+# `#print axioms` result means, and the flat list alone does not say so.
+STANDARD_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
+
+# `sorry` leaves this behind: the theorem is not proved at all.
+_INCOMPLETE_AXIOMS = frozenset({"sorryAx"})
+
+# `native_decide` discharges a goal by running compiled code, so the result
+# rests on the compiler and the runtime rather than on the kernel.
+_NATIVE_AXIOMS = frozenset({"Lean.ofReduceBool", "Lean.trustCompiler"})
+
+
+def classify_axioms(axioms: list[str]) -> tuple[str, list[str]]:
+    """Summarise an axiom list as a trust verdict plus the axioms behind it.
+
+    The verdict is the worst case present, because that is what bounds what
+    the theorem is worth: an incomplete proof cannot be redeemed by the rest
+    of the list being ordinary.
+    """
+    non_standard = [axiom for axiom in axioms if axiom not in STANDARD_AXIOMS]
+
+    if any(axiom in _INCOMPLETE_AXIOMS for axiom in axioms):
+        return "incomplete", non_standard
+    if any(axiom in _NATIVE_AXIOMS for axiom in axioms):
+        return "native", non_standard
+    if non_standard:
+        return "custom", non_standard
+    return "standard", non_standard
+
+
 def check_axiom_errors(diagnostics: list[dict]) -> str | None:
     """Return joined error messages if any, else None."""
     errors = [d.get("message", "") for d in diagnostics if d.get("severity") == 1]

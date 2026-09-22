@@ -398,10 +398,33 @@ class SourceWarning(BaseModel):
     pattern: str = Field(description="Matched pattern text")
 
 
+class AxiomTrust(str, Enum):
+    standard = "standard"
+    # `sorryAx`: the theorem is not proved.
+    incomplete = "incomplete"
+    # `native_decide`: rests on the compiler and runtime, not the kernel.
+    native = "native"
+    # Project or other axioms beyond the standard three.
+    custom = "custom"
+
+
 class VerifyResult(BaseModel):
     axioms: list[str] = Field(
         default_factory=list,
         description="Axioms used. Standard 3: propext, Classical.choice, Quot.sound",
+    )
+    trust: AxiomTrust = Field(
+        AxiomTrust.standard,
+        description=(
+            "Worst case in `axioms`. 'standard' is the ordinary Mathlib basis; "
+            "'incomplete' means sorryAx, so it is not a proof; 'native' means "
+            "native_decide, trusting the compiler rather than the kernel; "
+            "'custom' means other axioms are in play."
+        ),
+    )
+    non_standard_axioms: list[str] = Field(
+        default_factory=list,
+        description="Axioms outside the standard 3 — the reason for `trust`",
     )
     warnings: list[SourceWarning] = Field(
         default_factory=list,

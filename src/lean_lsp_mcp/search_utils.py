@@ -225,9 +225,7 @@ def _qualify_and_rank_matches(
         # namespace, keep only those the query actually names: `A.B.foo` must
         # not admit `C.D.foo`, while the partially qualified `B.foo` still does.
         matches = [
-            match
-            for match in matches
-            if normalized_query in match["name"].casefold()
+            match for match in matches if normalized_query in match["name"].casefold()
         ]
     matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
 

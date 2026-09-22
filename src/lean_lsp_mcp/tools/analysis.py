@@ -24,6 +24,7 @@ from lean_lsp_mcp.client_utils import (
     startup_client,
 )
 from lean_lsp_mcp.models import (
+    AxiomTrust,
     HypothesisStatus,
     HypothesisVerdict,
     MinimalHypothesesResult,
@@ -130,6 +131,7 @@ async def verify_theorem(
     """Check theorem axioms + optional source scan. Only scans the given file, not imports."""
     from lean_lsp_mcp.verify import (
         check_axiom_errors,
+        classify_axioms,
         parse_axioms,
         scan_warnings,
     )
@@ -193,7 +195,13 @@ async def verify_theorem(
                 )
             ]
 
-    return VerifyResult(axioms=axioms, warnings=w)
+    trust, non_standard = classify_axioms(axioms)
+    return VerifyResult(
+        axioms=axioms,
+        trust=AxiomTrust(trust),
+        non_standard_axioms=non_standard,
+        warnings=w,
+    )
 
 
 @tool(

@@ -101,3 +101,33 @@ class TestScanWarnings:
 
     def test_nonexistent(self, tmp_path: Path):
         assert scan_warnings(tmp_path / "nope.lean") == []
+
+
+def test_classify_axioms_reports_the_worst_case_present() -> None:
+    """The verdict bounds what the theorem is worth, so the worst case wins.
+
+    An incomplete proof is not redeemed by the rest of the list being ordinary,
+    and `native_decide` moves the trust base off the kernel even when every
+    other axiom is standard.
+    """
+    from lean_lsp_mcp.verify import classify_axioms
+
+    standard = ["propext", "Classical.choice", "Quot.sound"]
+
+    assert classify_axioms(standard) == ("standard", [])
+    assert classify_axioms([]) == ("standard", [])
+
+    trust, non_standard = classify_axioms([*standard, "Lean.ofReduceBool"])
+    assert trust == "native"
+    assert non_standard == ["Lean.ofReduceBool"]
+
+    trust, non_standard = classify_axioms([*standard, "MyProject.myAxiom"])
+    assert trust == "custom"
+    assert non_standard == ["MyProject.myAxiom"]
+
+    # sorryAx outranks both: the theorem is not proved at all.
+    trust, non_standard = classify_axioms(
+        [*standard, "Lean.ofReduceBool", "sorryAx", "MyProject.myAxiom"]
+    )
+    assert trust == "incomplete"
+    assert non_standard == ["Lean.ofReduceBool", "sorryAx", "MyProject.myAxiom"]

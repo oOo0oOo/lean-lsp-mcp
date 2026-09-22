@@ -417,3 +417,53 @@ def test_resolve_file_path_uses_project_root_for_relative(tmp_path: Path) -> Non
     ctx = _Context(_LifespanContext(project, None))
     resolved = resolve_file_path(ctx, "src/Example.lean")
     assert resolved == target.resolve()
+
+
+def test_nested_project_owns_its_files_over_the_active_project(tmp_path: Path) -> None:
+    """A Lean project checked out inside another belongs to itself.
+
+    The usual case is a git worktree under the outer repository. The file is
+    path-contained in the active project, so the containment shortcut would
+    claim it and serve it from the wrong `lake` environment.
+    """
+    outer = _make_project(tmp_path / "outer")
+    (outer / ".worktrees").mkdir()
+    inner = _make_project(outer / ".worktrees" / "feature")
+    nested_file = inner / "Feature.lean"
+    nested_file.write_text("theorem t : True := by trivial\n")
+
+    ctx = _Context(_LifespanContext(outer, None))
+
+    assert client_utils.infer_project_path(str(nested_file), ctx=ctx) == inner
+
+
+def test_dependency_files_still_resolve_to_the_depending_project(
+    tmp_path: Path,
+) -> None:
+    """A vendored package is a project directory, but its files are not its own.
+
+    `.lake/packages/<dep>` has a lakefile and a toolchain, so treating it as a
+    nested project would hand every dependency file to the wrong root.
+    """
+    project = _make_project(tmp_path / "proj")
+    (project / ".lake" / "packages").mkdir(parents=True)
+    dep = _make_project(project / ".lake" / "packages" / "mathlib")
+    dep_file = dep / "Mathlib" / "Foo.lean"
+    dep_file.parent.mkdir(parents=True)
+    dep_file.write_text("theorem dep : True := by trivial\n")
+
+    ctx = _Context(_LifespanContext(project, None))
+
+    assert client_utils.infer_project_path(str(dep_file), ctx=ctx) == project
+
+
+def test_active_project_still_serves_its_own_files(tmp_path: Path) -> None:
+    """The containment shortcut must survive for the ordinary case."""
+    project = _make_project(tmp_path / "proj")
+    source = project / "Sub" / "Dir" / "Main.lean"
+    source.parent.mkdir(parents=True)
+    source.write_text("theorem t : True := by trivial\n")
+
+    ctx = _Context(_LifespanContext(project, None))
+
+    assert client_utils.infer_project_path(str(source), ctx=ctx) == project

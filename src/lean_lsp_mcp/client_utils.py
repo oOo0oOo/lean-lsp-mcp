@@ -399,6 +399,35 @@ def _cached_project_path(
     return None
 
 
+def _encloses_nearer_project(start_dir: Path, project_path: Path) -> bool:
+    """Is there a Lean project root between ``start_dir`` and ``project_path``?
+
+    A project checked out *inside* another one -- a git worktree under
+    ``repo/.worktrees/x`` is the usual case -- is path-contained in the outer
+    project while belonging to itself. Only the innermost root owns the file.
+
+    Files under ``.lake/packages`` are excluded: a vendored dependency is a
+    valid project directory, but its files are served by the project that
+    depends on it, which is what ``_pick_project_root`` decides.
+    """
+    try:
+        relative = start_dir.relative_to(project_path)
+    except ValueError:
+        return False
+    if relative.parts[:2] == (".lake", "packages"):
+        return False
+
+    current = start_dir
+    while current != project_path:
+        if valid_lean_project_path(current):
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+    return False
+
+
 def _bound_project_path(
     ctx: ToolContext | None, resolved_input: Path, file_dir: str
 ) -> Path | None:
@@ -412,6 +441,13 @@ def _bound_project_path(
     except ValueError:
         return None
     if not policy.contains(resolved_input):
+        return None
+    # Containment alone does not make the active project the owner; a nested
+    # project inside it owns its own files. Fall through to the full walk,
+    # which picks the innermost root.
+    if _encloses_nearer_project(
+        Path(file_dir), Path(project_path).resolve(strict=False)
+    ):
         return None
     return _cache_project_path(ctx, project_path, [file_dir])
 
