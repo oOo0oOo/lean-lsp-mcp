@@ -432,9 +432,33 @@ def lean_local_search(
 INDEX_MATCH_KIND = "declaration"
 
 
+def _is_compiler_helper(name: str) -> bool:
+    """Is *name* a helper the elaborator generated for its own bookkeeping?
+
+    `workspace/symbol` answers from the environment, which holds names no one
+    wrote and no one can refer to: macro-expansion auxiliaries and
+    hygiene-renamed locals. They crowd out real declarations in a limited
+    result window and mean nothing to the caller.
+    """
+    bare = name.removeprefix("_root_.")
+    leaf = bare.rsplit(".", 1)[-1]
+    # Lean brackets a name containing otherwise illegal characters.
+    if leaf.startswith("\u00ab") and leaf.endswith("\u00bb"):
+        leaf = leaf[1:-1]
+
+    macro_helper = (
+        bare.startswith("_private.")
+        and leaf.startswith("_aux_")
+        and "_macroRules_" in leaf
+    )
+    hygienic = "._@." in bare and "._hygCtx._hyg." in bare
+    return macro_helper or hygienic
+
+
 def workspace_symbol_matches(
     symbols: Iterable[Mapping[str, object]],
     policy: LeanPathPolicy,
+    query: str = "",
 ) -> list[dict[str, str]]:
     """Convert ``workspace/symbol`` results into local search match dicts.
 
@@ -444,11 +468,17 @@ def workspace_symbol_matches(
 
     Symbols outside the project, its dependencies and the stdlib are skipped so
     that ``file`` keeps the repo relative shape the ripgrep path produces.
+    Compiler-generated helpers are skipped too -- unless *query* names one
+    exactly, since a search must never hide what it was asked for.
     """
+    wanted = query.strip().removeprefix("_root_.")
     matches: list[dict[str, str]] = []
     for symbol in symbols:
         name = symbol.get("name")
         if not isinstance(name, str) or not name:
+            continue
+
+        if _is_compiler_helper(name) and name.removeprefix("_root_.") != wanted:
             continue
 
         location = symbol.get("location")

@@ -120,6 +120,32 @@ def _extract_fields(info: str, name: str) -> list[tuple[str, str]]:
     return fields
 
 
+def _strip_line_comment(text: str) -> str:
+    """Drop a trailing `--` comment, ignoring one inside a string literal.
+
+    The `--` must be at the start or follow whitespace, which keeps `/--` (a
+    doc comment) and any `--` inside an identifier out of it.
+    """
+    in_string = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and in_string:
+            index += 2
+            continue
+        if char == '"':
+            in_string = not in_string
+        elif (
+            not in_string
+            and char == "-"
+            and text.startswith("--", index)
+            and (index == 0 or text[index - 1].isspace())
+        ):
+            return text[:index].rstrip()
+        index += 1
+    return text
+
+
 # `let`/`letI`/`haveI` each spend one `:=` inside a statement, before the one
 # that starts the declaration body.
 _STATEMENT_BINDER_RE = re.compile(r"(?<![A-Za-z0-9_\'])(?:let|letI|haveI)\s")
@@ -155,15 +181,17 @@ def _extract_declarations(content: str, start: int, end: int) -> list[dict]:
                 name = line[len(keyword) :].strip().split()[0]
                 if name and not name.startswith("_"):
                     # Collect until the body `:=`, not merely the first one.
-                    decl_lines = [line]
+                    # Each line sheds its trailing comment first: a comment
+                    # belongs to its physical line, and joining before stripping
+                    # would let it swallow the rest of the signature.
+                    decl_lines = [_strip_line_comment(line)]
                     j = i + 1
                     while (
                         j < min(end, len(lines))
                         and _body_assignment_index(" ".join(decl_lines)) is None
                     ):
-                        if (next_line := lines[j].strip()) and not next_line.startswith(
-                            "--"
-                        ):
+                        next_line = _strip_line_comment(lines[j].strip())
+                        if next_line and not next_line.startswith(("--", "/-")):
                             decl_lines.append(next_line)
                         j += 1
 

@@ -113,3 +113,56 @@ async def test_a_partial_index_is_reported_as_warming_not_consulted(
 
     assert index is IndexStatus.warming
     assert [match["name"] for match in result] == ["Ns.thing", "Ns.thing_long"]
+
+
+def test_compiler_helpers_are_kept_out_of_index_results(tmp_path) -> None:
+    """`workspace/symbol` answers from the environment, which holds names the
+    elaborator invented for itself.
+
+    A macro-expansion auxiliary or a hygiene-renamed local means nothing to the
+    caller and crowds real declarations out of a limited result window.
+    """
+    from lean_lsp_mcp.search_utils import workspace_symbol_matches
+
+    declaration = tmp_path / "Basic.lean"
+    declaration.touch()
+    symbols = [
+        {"name": name, "location": {"path": str(declaration)}}
+        for name in (
+            "_private.Demo.BumpFunction.0._aux_Demo_macroRules_term_1",
+            "_private.Demo.BumpFunction.0.«_aux_Demo_macroRules_term#_1»",
+            "Demo.definition._@.Demo.Facts.123._hygCtx._hyg.2",
+            "Demo.mk",
+            "Demo._hyg",
+            "_private.Demo.0.BumpFunction_theorem",
+        )
+    ]
+
+    names = [
+        match["name"] for match in workspace_symbol_matches(symbols, _policy(tmp_path))
+    ]
+
+    # Ordinary private declarations and names that merely look hygienic stay.
+    assert names == ["Demo.mk", "Demo._hyg", "_private.Demo.0.BumpFunction_theorem"]
+
+
+def test_a_helper_named_exactly_is_still_returned(tmp_path) -> None:
+    """A search must never hide what it was asked for."""
+    from lean_lsp_mcp.search_utils import workspace_symbol_matches
+
+    declaration = tmp_path / "Basic.lean"
+    declaration.touch()
+    helper = "Demo.definition._@.Demo.Facts.123._hygCtx._hyg.2"
+    symbols = [{"name": helper, "location": {"path": str(declaration)}}]
+
+    assert workspace_symbol_matches(symbols, _policy(tmp_path)) == []
+    assert [
+        match["name"]
+        for match in workspace_symbol_matches(symbols, _policy(tmp_path), helper)
+    ] == [helper]
+    assert [
+        match["name"]
+        for match in workspace_symbol_matches(
+            symbols, _policy(tmp_path), f"_root_.{helper}"
+        )
+    ] == [helper]

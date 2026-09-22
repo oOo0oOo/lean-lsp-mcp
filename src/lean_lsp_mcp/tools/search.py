@@ -87,7 +87,7 @@ async def _with_index_matches(
     return (
         merge_local_search_matches(
             source_matches,
-            workspace_symbol_matches(symbols, policy),
+            workspace_symbol_matches(symbols, policy, query),
             query,
             limit,
         ),

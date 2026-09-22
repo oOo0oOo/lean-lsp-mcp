@@ -77,3 +77,56 @@ def test_a_multiline_plain_statement_is_unchanged() -> None:
     assert signature is not None
     assert signature.endswith("n ≥ 1"), signature
     assert "(h : n > 0)" in signature
+
+
+def test_a_trailing_comment_does_not_become_part_of_the_signature() -> None:
+    """A `--` comment ends the code on its line, not the declaration."""
+    signature = _signature("theorem t (n : Nat) : n = n := rfl  -- TODO: generalise")
+
+    assert signature == "(n : Nat) : n = n"
+
+
+def test_a_comment_on_a_continuation_line_is_dropped_too() -> None:
+    """Stripping happens per physical line, before the lines are joined.
+
+    Joining first would let one line's comment swallow the rest of the
+    signature, including the conclusion.
+    """
+    source = "\n".join(
+        [
+            "theorem wrapped (n : Nat)  -- the argument",
+            "    (h : n > 0) :  -- the hypothesis",
+            "    n ≥ 1 := by",
+            "  omega",
+        ]
+    )
+
+    signature = _signature(source)
+
+    assert signature is not None
+    assert "--" not in signature, signature
+    assert "(h : n > 0)" in signature
+    assert signature.endswith("n ≥ 1")
+
+
+def test_a_doc_comment_opener_is_not_mistaken_for_a_line_comment() -> None:
+    """`/--` contains `--`, but the `--` does not follow whitespace."""
+    from lean_lsp_mcp.outline_utils import _strip_line_comment
+
+    assert _strip_line_comment("/-- doc -/") == "/-- doc -/"
+
+
+def test_a_dash_pair_inside_a_string_survives() -> None:
+    from lean_lsp_mcp.outline_utils import _strip_line_comment
+
+    assert (
+        _strip_line_comment('def t : String := "a -- b"')
+        == 'def t : String := "a -- b"'
+    )
+    assert _strip_line_comment('def t : String := "a" -- b') == 'def t : String := "a"'
+
+
+def test_a_dash_pair_inside_an_identifier_survives() -> None:
+    from lean_lsp_mcp.outline_utils import _strip_line_comment
+
+    assert _strip_line_comment("theorem a--b : True") == "theorem a--b : True"
