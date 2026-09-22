@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from leanclient.aio import GoalResult
 
 from lean_lsp_mcp.models import (
+    DiagnosticCategory,
     DiagnosticMessage,
     DiagnosticsResult,
     GoalContextEntry,
@@ -29,18 +30,88 @@ def _lean_tags(diagnostic: dict) -> list[str] | None:
     return [LEAN_DIAGNOSTIC_TAG.get(tag, str(tag)) for tag in tags]
 
 
+# Substrings that mark style noise rather than a compilation failure. Lean
+# reports these at warning severity alongside real warnings, so severity alone
+# cannot tell a caller which ones it may ignore.
+_LINTER_MARKERS = (
+    "this linter can be disabled",
+    "declaration uses 'sorry'",
+    "declaration uses `sorry`",
+    "unused variable",
+    "automatically included section variable",
+)
+
+# Guidance for failure modes whose message states the symptom but not the
+# remedy. Each entry is (substring in the message, hint). Errors only: a
+# warning is not blocking anyone.
+_ERROR_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "failed to synthesize instance of type class\n  DecidableEq ",
+        "add `classical` locally, or supply the `DecidableEq` instance",
+    ),
+    (
+        "synthesized type class instance is not definitionally equal to "
+        "expression inferred by typing rules",
+        "construct both expressions under the same local instance; introduce "
+        "`classical` before either one when decidability is involved",
+    ),
+    (
+        "elaboration function for `Mathlib.Tactic.subscriptTerm` has not been "
+        "implemented",
+        "this notation is not active; open its scoped notation or use the "
+        "named declaration",
+    ),
+)
+
+_UNRESOLVED_BINDER = "invalid binder annotation, type is not a class instance"
+
+
+def diagnostic_hint(severity: str, message: str) -> str | None:
+    """Guidance for a recognised failure mode, or None."""
+    if severity != "error":
+        return None
+
+    for marker, hint in _ERROR_HINTS:
+        if marker in message:
+            return hint
+
+    # An unresolved metavariable as the binder type means the class name did
+    # not resolve, which is a different problem from the binder being wrong.
+    if _UNRESOLVED_BINDER in message:
+        _, _, rest = message.partition(_UNRESOLVED_BINDER)
+        if (head := rest.split(maxsplit=1)) and head[0].startswith("?m."):
+            return (
+                "the binder type is unresolved; check that its class name "
+                "resolves here (imports, namespace, shadowing) before changing "
+                "the binder"
+            )
+    return None
+
+
+def diagnostic_category(severity: str, message: str) -> DiagnosticCategory:
+    if "Try this:" in message:
+        return DiagnosticCategory.suggestion
+    if severity == "warning" and any(marker in message for marker in _LINTER_MARKERS):
+        return DiagnosticCategory.linter
+    return DiagnosticCategory.diagnostic
+
+
 def _diagnostic_message(diagnostic: dict) -> DiagnosticMessage | None:
     diagnostic_range = diagnostic.get("fullRange", diagnostic.get("range"))
     if diagnostic_range is None:
         return None
     severity = diagnostic.get("severity", 1)
     start = diagnostic_range["start"]
+    severity_name = DIAGNOSTIC_SEVERITY.get(severity, f"unknown({severity})")
+    message = diagnostic.get("message", "")
     return DiagnosticMessage(
-        severity=DIAGNOSTIC_SEVERITY.get(severity, f"unknown({severity})"),
-        message=diagnostic.get("message", ""),
+        severity=severity_name,
+        message=message,
         line=start["line"] + 1,
         column=start["character"] + 1,
         lean_tags=_lean_tags(diagnostic),
+        category=diagnostic_category(severity_name, message),
+        hint=diagnostic_hint(severity_name, message),
     )
 
 
@@ -64,6 +135,10 @@ def process_diagnostics(
     """Convert diagnostics, filtering severity and extracting build failures."""
     items: list[DiagnosticMessage] = []
     failed_dependencies: list[str] = []
+    # Lean can report the same diagnostic twice for one position, typically
+    # when a declaration is re-elaborated. Source order is preserved; only
+    # exact repeats are dropped.
+    seen: set[tuple[str, int, int, str]] = set()
 
     for diagnostic in diagnostics:
         message = _diagnostic_message(diagnostic)
@@ -76,8 +151,13 @@ def process_diagnostics(
         ):
             failed_dependencies = extract_failed_dependency_paths(message.message)
             continue
-        if severity is None or message.severity == severity:
-            items.append(message)
+        if severity is not None and message.severity != severity:
+            continue
+        identity = (message.severity, message.line, message.column, message.message)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        items.append(message)
 
     if partial:
         return DiagnosticsResult(

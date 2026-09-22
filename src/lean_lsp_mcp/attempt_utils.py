@@ -17,6 +17,8 @@ from lean_lsp_mcp.client_utils import (
     resolve_file_path,
 )
 from lean_lsp_mcp.diagnostic_utils import (
+    diagnostic_category,
+    diagnostic_hint,
     diagnostic_identity,
     filter_diagnostics_by_line_range,
     get_line_context,
@@ -165,21 +167,27 @@ def repl_run_diagnostics(result: ReplRunResult) -> list[DiagnosticMessage]:
         severity = message.get("severity", "info")
         if severity == "information":
             severity = "info"
+        text = str(message.get("data", ""))
         diagnostics.append(
             DiagnosticMessage(
                 severity=severity,
-                message=str(message.get("data", "")),
+                message=text,
                 line=max(1, int(position.get("line", 1)) + result.line_offset),
                 column=max(1, int(position.get("column", 0)) + 1),
+                category=diagnostic_category(severity, text),
+                hint=diagnostic_hint(severity, text),
             )
         )
     if result.error:
+        error_text = str(result.error)
         diagnostics.append(
             DiagnosticMessage(
                 severity="error",
-                message=str(result.error),
+                message=error_text,
                 line=max(1, result.line_offset + 1),
                 column=1,
+                category=diagnostic_category("error", error_text),
+                hint=diagnostic_hint("error", error_text),
             )
         )
     return diagnostics

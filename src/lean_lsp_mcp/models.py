@@ -54,6 +54,12 @@ class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
 
 
+class DiagnosticCategory(str, Enum):
+    diagnostic = "diagnostic"
+    linter = "linter"
+    suggestion = "suggestion"
+
+
 class DiagnosticMessage(BaseModel):
     severity: str = Field(description="error, warning, info, or hint")
     message: str = Field(description="Diagnostic message text")
@@ -66,6 +72,18 @@ class DiagnosticMessage(BaseModel):
             "'goalsAccomplished' (proof finished). Machine-readable proof "
             "status - prefer over string-matching the message."
         ),
+    )
+    category: DiagnosticCategory = Field(
+        DiagnosticCategory.diagnostic,
+        description=(
+            "'linter' is style noise (sorry usage, unused variables) that does "
+            "not block compilation; 'suggestion' carries a `Try this:` "
+            "replacement; 'diagnostic' is everything else."
+        ),
+    )
+    hint: str | None = Field(
+        None,
+        description="Guidance for a recognised failure mode, when one applies",
     )
 
 
