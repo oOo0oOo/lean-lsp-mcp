@@ -219,6 +219,16 @@ def _qualify_and_rank_matches(
             match["name"] = f"{prefix}.{match['name']}"
 
     normalized_query = query.casefold()
+    if "." in normalized_query:
+        # The ripgrep pass searched the bare final component, so it is wider
+        # than a qualified query asked for. Now that every name carries its
+        # namespace, keep only those the query actually names: `A.B.foo` must
+        # not admit `C.D.foo`, while the partially qualified `B.foo` still does.
+        matches = [
+            match
+            for match in matches
+            if normalized_query in match["name"].casefold()
+        ]
     matches.sort(key=lambda match: _local_search_sort_key(match, normalized_query))
 
     deduped: list[dict[str, str]] = []
@@ -344,12 +354,20 @@ def lean_local_search(
         policy = build_lean_path_policy(root)
     root = policy.project_root
 
+    # A declaration carries only its bare name in source text; the enclosing
+    # `namespace` is declared once, far above, and is stitched back on by
+    # _qualify_and_rank_matches. Matching a qualified query here can therefore
+    # never succeed, so search the final component and narrow afterwards, once
+    # every candidate knows its namespace.
+    search_term = query.rsplit(".", 1)[-1]
     pattern = (
         # Optional attributes (`@[simp]`) and modifiers (`protected`, `private`,
         # `noncomputable`, ...) may precede the declaration keyword.
         _DECL_LEAD
         + rf"(?:{_DECL_KEYWORD_ALT})\s+"
-        + rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(query)}[A-Za-z0-9_'.]*(?:\s|:)"
+        # `$`: a long signature may begin on the next line, leaving the name at
+        # the end of its own line with no trailing space or colon.
+        + rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(search_term)}[A-Za-z0-9_'.]*(?:\s|:|$)"
     )
 
     command = [
@@ -375,7 +393,11 @@ def lean_local_search(
         command.append(str(policy.stdlib_root))
 
     process = _create_ripgrep_process(command, cwd=str(root))
-    max_candidates = min(max(limit * 8, limit), 2048)
+    # A qualified query searched only its final component, so most candidates
+    # will be discarded below. Read more of them before the cap, or the one
+    # declaration actually asked for can fall outside the window.
+    breadth = 32 if "." in query else 8
+    max_candidates = min(max(limit * breadth, limit), 2048)
     stderr = _StderrCapture()
     stderr_thread: threading.Thread | None = None
     if process.stderr is not None:

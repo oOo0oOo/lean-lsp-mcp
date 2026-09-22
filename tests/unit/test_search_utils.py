@@ -804,6 +804,7 @@ def test_lean_search_integration_mathlib_prefix_results(reload_search_utils):
     )
 
 
+@pytest.mark.skipif(not MATHLIB_DIR.is_dir(), reason="mathlib not downloaded")
 def test_lean_search_integration_mathlib_prefix_limit(reload_search_utils):
     search_utils = reload_search_utils
     available, message = search_utils.check_ripgrep_status()
@@ -1128,3 +1129,96 @@ class TestMergeLocalSearchMatches:
         merged = search_utils.merge_local_search_matches([], index, "decl", limit=3)
 
         assert len(merged) == 3
+
+
+def test_declaration_whose_name_ends_its_line_is_found(tmp_path, reload_search_utils):
+    """A long signature may begin on the line below the declaration name.
+
+    The name then ends its own line, with no trailing space or colon. A pattern
+    anchored on one of those never matches, and the search returns `[]` -- which
+    the caller cannot distinguish from the declaration not existing.
+    """
+    search_utils = reload_search_utils
+    available, message = search_utils.check_ripgrep_status()
+    if not available:
+        pytest.skip(message)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lakefile.toml").write_text('name = "proj"\n')
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+    (project / "Sample.lean").write_text(
+        "namespace Demo\n\n"
+        "theorem ends_the_line\n"
+        "    (h : True) : True := h\n\n"
+        "theorem has_a_trailing_space (h : True) : True := h\n\n"
+        "end Demo\n"
+    )
+
+    control = search_utils.lean_local_search(
+        "has_a_trailing_space", project_root=project
+    )
+    assert [m["name"] for m in control] == ["Demo.has_a_trailing_space"], (
+        f"control case must resolve; got {control}"
+    )
+
+    found = search_utils.lean_local_search("ends_the_line", project_root=project)
+    assert [m["name"] for m in found] == ["Demo.ends_the_line"], (
+        f"a declaration whose name ends its line must be findable; got {found}"
+    )
+
+
+def test_fully_qualified_query_resolves_to_its_own_namespace(
+    tmp_path, reload_search_utils
+):
+    """The canonical form -- what a caller copies from a goal -- must work.
+
+    ripgrep sees source text, where a declaration carries only its bare name,
+    so a qualified query cannot match at that stage. Searching the final
+    component and narrowing after namespaces are attached both finds the
+    declaration and keeps the same bare name in another namespace out.
+    """
+    search_utils = reload_search_utils
+    available, message = search_utils.check_ripgrep_status()
+    if not available:
+        pytest.skip(message)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lakefile.toml").write_text('name = "proj"\n')
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+    (project / "A.lean").write_text(
+        "namespace Alpha.Inner\ntheorem shared (h : True) : True := h\nend Alpha.Inner\n"
+    )
+    (project / "B.lean").write_text(
+        "namespace Beta\ntheorem shared (h : True) : True := h\nend Beta\n"
+    )
+
+    bare = {
+        m["name"]
+        for m in search_utils.lean_local_search(
+            "shared", limit=200, project_root=project
+        )
+    }
+    assert {"Alpha.Inner.shared", "Beta.shared"} <= bare, f"bare control; got {bare}"
+
+    exact = search_utils.lean_local_search("Alpha.Inner.shared", project_root=project)
+    assert [m["name"] for m in exact] == ["Alpha.Inner.shared"], (
+        f"a qualified name must resolve to its declaration; got {exact}"
+    )
+
+    scoped = {
+        m["name"]
+        for m in search_utils.lean_local_search("Beta.shared", project_root=project)
+    }
+    assert scoped == {"Beta.shared"}, (
+        f"a qualified query must not admit the same leaf elsewhere; got {scoped}"
+    )
+
+    partial = {
+        m["name"]
+        for m in search_utils.lean_local_search("Inner.shared", project_root=project)
+    }
+    assert partial == {"Alpha.Inner.shared"}, (
+        f"a partially qualified query must still resolve; got {partial}"
+    )
