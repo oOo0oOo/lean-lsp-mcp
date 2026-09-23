@@ -38,7 +38,6 @@ INSTRUCTIONS = f"""## General Rules
 - **lean_leansearch** ({_limit("leansearch")}): Natural language -> mathlib
 - **lean_loogle** ({_limit("loogle")}): Type pattern -> mathlib
 - **lean_leanfinder** ({_limit("leanfinder")}): Semantic/conceptual search
-- **lean_state_search** ({_limit("lean_state_search")}): Goal -> closing lemmas
 - **lean_hammer_premise** ({_limit("hammer_premise")}): Goal -> premises for simp/aesop
 
 ## Search Decision Tree
@@ -46,8 +45,7 @@ INSTRUCTIONS = f"""## General Rules
 2. "I need a lemma that says X" -> lean_leansearch
 3. "Find lemma with type pattern" -> lean_loogle
 4. "What's the Lean name for concept X?" -> lean_leanfinder
-5. "What closes this goal?" -> lean_state_search
-6. "What to feed simp?" -> lean_hammer_premise
+5. "What to feed simp?" -> lean_hammer_premise
 
 After finding a name: lean_local_search to verify, lean_hover_info for signature.
 
