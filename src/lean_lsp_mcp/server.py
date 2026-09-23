@@ -342,7 +342,6 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
                 "leansearch": [],
                 "loogle": [],
                 "leanfinder": [],
-                "lean_state_search": [],
                 "hammer_premise": [],
             },
             lean_search_available=_RG_AVAILABLE,
@@ -461,7 +460,6 @@ local_search = _search_tools.local_search
 leansearch = _search_tools.leansearch
 loogle = _search_tools.loogle
 leanfinder = _search_tools.leanfinder
-state_search = _search_tools.state_search
 hammer_premise = _search_tools.hammer_premise
 LocalSearchError = _search_tools.LocalSearchError
 multi_attempt = _analysis_tools.multi_attempt

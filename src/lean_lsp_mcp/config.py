@@ -34,12 +34,10 @@ REPL_ENV = "LEAN_REPL"
 REPL_PATH_ENV = "LEAN_REPL_PATH"
 REPL_TIMEOUT_ENV = "LEAN_REPL_TIMEOUT"
 REPL_MEM_MB_ENV = "LEAN_REPL_MEM_MB"
-STATE_SEARCH_URL_ENV = "LEAN_STATE_SEARCH_URL"
 HAMMER_URL_ENV = "LEAN_HAMMER_URL"
 
 # --- Default backends (the shared public services) ---
 DEFAULT_LOOGLE_URL = "https://loogle.lean-lang.org"
-DEFAULT_STATE_SEARCH_URL = "https://premise-search.com"
 DEFAULT_HAMMER_URL = "http://leanpremise.net"
 
 _TRUTHY = ("1", "true", "yes")
@@ -156,25 +154,13 @@ RATE_LIMITS: dict[str, tuple[int, int]] = {
     "leansearch": (90, 30),
     "loogle": (3, 30),
     "leanfinder": (10, 30),
-    "lean_state_search": (6, 30),
     "hammer_premise": (6, 30),
 }
-
-STATE_SEARCH_REV_ENV = "LEAN_STATE_SEARCH_REV"
-DEFAULT_STATE_SEARCH_REV = "v4.22.0"
 
 LEANFINDER_URL_ENV = "LEAN_FINDER_URL"
 DEFAULT_LEANFINDER_URL = (
     "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
 )
-
-
-def state_search_url() -> str:
-    return os.environ.get(STATE_SEARCH_URL_ENV, DEFAULT_STATE_SEARCH_URL)
-
-
-def state_search_rev() -> str:
-    return os.environ.get(STATE_SEARCH_REV_ENV, DEFAULT_STATE_SEARCH_REV)
 
 
 def leanfinder_url() -> str:

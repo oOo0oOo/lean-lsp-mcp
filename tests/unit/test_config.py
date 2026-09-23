@@ -59,11 +59,6 @@ def test_truthy_flags(monkeypatch: pytest.MonkeyPatch, value, expected):
 def test_url_defaults(monkeypatch: pytest.MonkeyPatch):
     for getter, env, default in [
         (config.loogle_url, config.LOOGLE_URL_ENV, config.DEFAULT_LOOGLE_URL),
-        (
-            config.state_search_url,
-            config.STATE_SEARCH_URL_ENV,
-            config.DEFAULT_STATE_SEARCH_URL,
-        ),
         (config.hammer_url, config.HAMMER_URL_ENV, config.DEFAULT_HAMMER_URL),
     ]:
         monkeypatch.delenv(env, raising=False)
@@ -73,27 +68,19 @@ def test_url_defaults(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_is_custom_backend(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv(config.STATE_SEARCH_URL_ENV, raising=False)
+    monkeypatch.delenv(config.HAMMER_URL_ENV, raising=False)
     assert (
-        config.is_custom_backend(
-            config.STATE_SEARCH_URL_ENV, config.DEFAULT_STATE_SEARCH_URL
-        )
+        config.is_custom_backend(config.HAMMER_URL_ENV, config.DEFAULT_HAMMER_URL)
         is False
     )
-    monkeypatch.setenv(
-        config.STATE_SEARCH_URL_ENV, config.DEFAULT_STATE_SEARCH_URL + "/"
-    )
+    monkeypatch.setenv(config.HAMMER_URL_ENV, config.DEFAULT_HAMMER_URL + "/")
     assert (
-        config.is_custom_backend(
-            config.STATE_SEARCH_URL_ENV, config.DEFAULT_STATE_SEARCH_URL
-        )
+        config.is_custom_backend(config.HAMMER_URL_ENV, config.DEFAULT_HAMMER_URL)
         is False
     )
-    monkeypatch.setenv(config.STATE_SEARCH_URL_ENV, "http://localhost:8000")
+    monkeypatch.setenv(config.HAMMER_URL_ENV, "http://localhost:8000")
     assert (
-        config.is_custom_backend(
-            config.STATE_SEARCH_URL_ENV, config.DEFAULT_STATE_SEARCH_URL
-        )
+        config.is_custom_backend(config.HAMMER_URL_ENV, config.DEFAULT_HAMMER_URL)
         is True
     )
 

@@ -21,7 +21,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
-* **External Search Tools**: Use `LeanSearch`, `Loogle`, `Lean Finder`, `Lean Hammer` and `Lean State Search` to find relevant theorems and definitions.
+* **External Search Tools**: Use `LeanSearch`, `Loogle`, `Lean Finder` and `Lean Hammer` to find relevant theorems and definitions.
 * **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
@@ -218,7 +218,6 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 16384). Only enforced on Linux/macOS.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport. If set, bearer auth is required for every request.
 - `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
-- `LEAN_STATE_SEARCH_URL`: URL for a self-hosted [premise-search.com](https://premise-search.com) instance. Rate limits are skipped when set to a custom backend.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance. Rate limits are skipped when set to a custom backend.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
@@ -406,7 +405,7 @@ The included Docker image defaults to:
 Notes:
 
 - `LEAN_MCP_DISABLED_TOOLS` is a startup default and can be overridden by `docker run -e`.
-- Using `--network none` can break tools that require network access (`leansearch`, `loogle`, `leanfinder`, `state_search`, `hammer_premise`) and dependency downloads.
+- Using `--network none` can break tools that require network access (`leansearch`, `loogle`, `leanfinder`, `hammer_premise`) and dependency downloads.
 - The entrypoint exits immediately if `LEAN_PROJECT_PATH` does not exist.
 
 For more information, you can use [Awesome MCP Security](https://github.com/Puliczek/awesome-mcp-security) as a starting point.
