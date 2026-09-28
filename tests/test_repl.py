@@ -198,8 +198,19 @@ async def test_run_snippets_uses_last_sorry(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_run_snippets_matches_body_indentation(tmp_path: Path):
-    """Injected sorry matches the indentation of surrounding tactic lines."""
+@pytest.mark.parametrize(
+    "body,expected_indent",
+    [
+        ("theorem t : True := by\n    intro h", "    "),
+        ("theorem t : True := by", "  "),
+        ("theorem t : True := by -- first tactic", "  "),
+        ("theorem t : True := by\n  have h : True := by", "    "),
+    ],
+)
+async def test_run_snippets_matches_body_indentation(
+    tmp_path: Path, body: str, expected_indent: str
+):
+    """Align with existing tactics, or enter a newly opened proof block."""
     from unittest.mock import AsyncMock
 
     repl = Repl(project_dir=str(tmp_path))
@@ -214,15 +225,10 @@ async def test_run_snippets_matches_body_indentation(tmp_path: Path):
     repl._send_cmd = AsyncMock(return_value=cmd_resp)
     repl._send_tactic = AsyncMock(return_value=tactic_resp)
 
-    # Body has 4-space indented tactics
-    await repl.run_snippets(
-        "import Foo\n\ntheorem t : True := by\n    intro h",
-        ["trivial"],
-    )
+    await repl.run_snippets("import Foo\n\n" + body, ["trivial"])
 
-    # Verify the sorry was appended with 4-space indent, not hard-coded 2
     sent_code = repl._send_cmd.call_args[0][0]
-    assert sent_code.endswith("    sorry"), (
+    assert sent_code.endswith("\n" + expected_indent + "sorry"), (
         f"Expected 4-space indent, got: {sent_code!r}"
     )
 

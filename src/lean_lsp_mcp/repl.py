@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -282,6 +283,11 @@ class Repl:
                 body_lines = body.splitlines()
                 last_line = next((ln for ln in reversed(body_lines) if ln.strip()), "")
                 indent = last_line[: len(last_line) - len(last_line.lstrip())]
+                # A fresh `by` block has no preceding tactic to align with.
+                # Lean 4.34 requires its first tactic to be indented further
+                # than the line introducing the block.
+                if re.search(r"\bby\s*(?:--.*)?$", last_line):
+                    indent += "  "
                 body_with_sorry = body.rstrip() + "\n" + indent + "sorry"
                 resp = await asyncio.wait_for(
                     self._send_cmd(body_with_sorry, env=header_env),

@@ -114,8 +114,11 @@ async def test_multi_attempt_does_not_report_false_success_for_multiline_snippet
         diagnostic_messages = [
             item["message"] for item in result_json(diagnostics)["items"]
         ]
+        # Lean 4.34 rejects dsimp before omega is reached. Either diagnostic
+        # establishes the failing tactic sequence this regression exercises.
         assert any(
-            "omega could not prove the goal" in msg for msg in diagnostic_messages
+            "omega could not prove the goal" in msg or "`dsimp` made no progress" in msg
+            for msg in diagnostic_messages
         )
 
         result = await client.call_tool(
