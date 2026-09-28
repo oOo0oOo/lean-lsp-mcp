@@ -50,6 +50,9 @@ _INCOMPLETE_AXIOMS = frozenset({"sorryAx"})
 # `native_decide` discharges a goal by running compiled code, so the result
 # rests on the compiler and the runtime rather than on the kernel.
 _NATIVE_AXIOMS = frozenset({"Lean.ofReduceBool", "Lean.trustCompiler"})
+# Recent Lean versions generate a per-declaration axiom for native_decide
+# (Lean.Meta.nativeEqTrue) instead of using the older global axiom.
+_NATIVE_DECIDE_AXIOM = re.compile(r"(?:^|\.)_native\.native_decide\.ax(?:_\d+)*$")
 
 
 def classify_axioms(axioms: list[str]) -> tuple[str, list[str]]:
@@ -63,7 +66,10 @@ def classify_axioms(axioms: list[str]) -> tuple[str, list[str]]:
 
     if any(axiom in _INCOMPLETE_AXIOMS for axiom in axioms):
         return "incomplete", non_standard
-    if any(axiom in _NATIVE_AXIOMS for axiom in axioms):
+    if any(
+        axiom in _NATIVE_AXIOMS or _NATIVE_DECIDE_AXIOM.search(axiom)
+        for axiom in axioms
+    ):
         return "native", non_standard
     if non_standard:
         return "custom", non_standard

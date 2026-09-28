@@ -80,3 +80,27 @@ def test_diagnostics_are_classified_on_the_full_text(monkeypatch) -> None:
     assert item.hint is not None
     assert "characters elided" in item.message
     assert len(item.message) < len(message)
+
+
+def test_distinct_diagnostics_survive_identical_truncation(monkeypatch) -> None:
+    monkeypatch.setenv(config.MAX_OUTPUT_CHARS_ENV, "200")
+    first = "A" * 500 + "first error" + "Z" * 500
+    second = "A" * 500 + "other error" + "Z" * 500
+    assert bound_output(first) == bound_output(second)
+
+    result = process_diagnostics(
+        [_diag(first), _diag(second), _diag(first)], build_success=False
+    )
+    assert len(result.items) == 2
+
+
+def test_build_failures_are_extracted_before_truncation(monkeypatch) -> None:
+    monkeypatch.setenv(config.MAX_OUTPUT_CHARS_ENV, "200")
+    message = (
+        "lake setup-file failed\n"
+        + "padding\n" * 100
+        + "error: Dependency.lean:12:3: unknown identifier\n"
+        + "padding\n" * 100
+    )
+    result = process_diagnostics([_diag(message)], build_success=False)
+    assert result.failed_dependencies == ["Dependency.lean"]

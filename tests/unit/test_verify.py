@@ -131,3 +131,20 @@ def test_classify_axioms_reports_the_worst_case_present() -> None:
     )
     assert trust == "incomplete"
     assert non_standard == ["Lean.ofReduceBool", "sorryAx", "MyProject.myAxiom"]
+
+
+@pytest.mark.parametrize(
+    "axiom",
+    ["proof._native.native_decide.ax_1_1", "Ns.proof._native.native_decide.ax_2"],
+)
+def test_classify_generated_native_decide_axioms(axiom) -> None:
+    from lean_lsp_mcp.verify import classify_axioms
+
+    assert classify_axioms([axiom]) == ("native", [axiom])
+
+
+def test_native_decide_substring_does_not_classify_custom_axiom() -> None:
+    from lean_lsp_mcp.verify import classify_axioms
+
+    axiom = "Project.native_decide_custom_axiom"
+    assert classify_axioms([axiom]) == ("custom", [axiom])

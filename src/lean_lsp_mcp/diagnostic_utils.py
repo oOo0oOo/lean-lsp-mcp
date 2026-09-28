@@ -147,16 +147,15 @@ def process_diagnostics(
         message = _diagnostic_message(diagnostic)
         if message is None:
             continue
-        if (
-            message.line == 1
-            and message.column == 1
-            and is_build_stderr(message.message)
-        ):
-            failed_dependencies = extract_failed_dependency_paths(message.message)
+        # Truncation is presentation only: it must not hide build failures
+        # or make distinct diagnostics look like duplicates.
+        full_message = diagnostic.get("message", "")
+        if message.line == 1 and message.column == 1 and is_build_stderr(full_message):
+            failed_dependencies = extract_failed_dependency_paths(full_message)
             continue
         if severity is not None and message.severity != severity:
             continue
-        identity = (message.severity, message.line, message.column, message.message)
+        identity = (message.severity, message.line, message.column, full_message)
         if identity in seen:
             continue
         seen.add(identity)
