@@ -61,10 +61,6 @@ class LeanFinderResult(BaseModel):
     )
 
 
-class StateSearchResult(BaseModel):
-    name: str = Field(description="Theorem/lemma name")
-
-
 class PremiseResult(BaseModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
 
@@ -326,14 +322,6 @@ class LeanFinderResults(BaseModel):
 
     items: list[LeanFinderResult] = Field(
         default_factory=list, description="List of Lean Finder results"
-    )
-
-
-class StateSearchResults(BaseModel):
-    """Wrapper for state search results list."""
-
-    items: list[StateSearchResult] = Field(
-        default_factory=list, description="List of state search results"
     )
 
 

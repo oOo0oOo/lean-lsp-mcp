@@ -113,7 +113,6 @@ async def test_app_lifespan_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
             "leansearch": [],
             "loogle": [],
             "leanfinder": [],
-            "lean_state_search": [],
             "hammer_premise": [],
         }
 
@@ -325,20 +324,20 @@ def test_rate_limited_bypass_skips_limit(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_custom_backend_detection(monkeypatch: pytest.MonkeyPatch) -> None:
-    default = "https://premise-search.com"
+    default = "http://leanpremise.net"
 
-    monkeypatch.delenv("LEAN_STATE_SEARCH_URL", raising=False)
-    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is False
+    monkeypatch.delenv("LEAN_HAMMER_URL", raising=False)
+    assert server._custom_backend("LEAN_HAMMER_URL", default) is False
 
-    monkeypatch.setenv("LEAN_STATE_SEARCH_URL", default)
-    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is False
+    monkeypatch.setenv("LEAN_HAMMER_URL", default)
+    assert server._custom_backend("LEAN_HAMMER_URL", default) is False
 
     # Trailing-slash difference should still count as the default.
-    monkeypatch.setenv("LEAN_STATE_SEARCH_URL", default + "/")
-    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is False
+    monkeypatch.setenv("LEAN_HAMMER_URL", default + "/")
+    assert server._custom_backend("LEAN_HAMMER_URL", default) is False
 
-    monkeypatch.setenv("LEAN_STATE_SEARCH_URL", "http://localhost:8000")
-    assert server._custom_backend("LEAN_STATE_SEARCH_URL", default) is True
+    monkeypatch.setenv("LEAN_HAMMER_URL", "http://localhost:8000")
+    assert server._custom_backend("LEAN_HAMMER_URL", default) is True
 
 
 def test_parse_disabled_tools() -> None:
