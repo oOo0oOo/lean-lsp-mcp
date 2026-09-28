@@ -41,7 +41,9 @@ jobs:
 
       - name: Build test project
         working-directory: tests/test_project
-        run: lake build
+        run: |
+          lake build
+          lake build @REPL/repl
 
       - name: Run all tests
         run: uv run pytest tests/ -v --timeout=300 -m "not slow"

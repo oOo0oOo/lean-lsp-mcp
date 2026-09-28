@@ -7,7 +7,7 @@ from typing import Final, Sequence
 __all__ = ["ensure_test_project"]
 
 PROJECT_DIRNAME: Final[str] = "test_project"
-LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.30.0\n"
+LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.34.1\n"
 
 LAKEFILE_TOML: Final[str] = """name = \"McpTestProject\"
 version = \"0.1.0\"
@@ -16,12 +16,12 @@ defaultTargets = [\"McpTestProject\"]
 [[require]]
 name = \"mathlib\"
 scope = \"leanprover-community\"
-rev = \"v4.30.0\"
+rev = \"v4.34.1\"
 
 [[require]]
 name = \"REPL\"
 git = \"https://github.com/leanprover-community/repl\"
-rev = \"v4.30.0\"
+rev = \"v4.34.0\"
 
 [[lean_lib]]
 name = \"McpTestProject\"
@@ -67,20 +67,21 @@ def _write_if_changed(path: Path, content: str) -> None:
 def _should_refresh(project_root: Path) -> bool:
     mathlib_dir = project_root / ".lake" / "packages" / "mathlib"
     olean_dir = project_root / ".lake" / "build"
-    return not mathlib_dir.exists() or not olean_dir.exists()
+    if not mathlib_dir.exists() or not olean_dir.exists():
+        return True
+    # A checkout can retain .lake from the previous test-project toolchain.
+    # Directory existence alone does not make those cached artifacts usable.
+    toolchain = mathlib_dir / "lean-toolchain"
+    return (
+        not toolchain.is_file()
+        or toolchain.read_text(encoding="utf-8").strip() != LEAN_TOOLCHAIN.strip()
+    )
 
 
 def _run_lake_steps(project_root: Path) -> None:
-    manifest_path = project_root / "lake-manifest.json"
-    if not manifest_path.exists():
-        try:
-            subprocess.run(LAKE_UPDATE, cwd=project_root, check=True)
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "`lake` executable is required for end-to-end tests"
-            ) from exc
-
-    for args in LAKE_BUILD_STEPS:
+    # Even with a checked-in manifest, existing package checkouts may still
+    # belong to the old toolchain. Update them before fetching build artifacts.
+    for args in (LAKE_UPDATE, *LAKE_BUILD_STEPS):
         try:
             subprocess.run(args, cwd=project_root, check=True)
         except (

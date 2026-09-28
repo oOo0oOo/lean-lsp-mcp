@@ -7,6 +7,8 @@ import subprocess
 
 import pytest
 
+from tests.helpers.test_project import LEAN_TOOLCHAIN
+
 
 @pytest.fixture(autouse=True)
 def reload_search_utils():
@@ -1146,7 +1148,7 @@ def test_declaration_whose_name_ends_its_line_is_found(tmp_path, reload_search_u
     project = tmp_path / "proj"
     project.mkdir()
     (project / "lakefile.toml").write_text('name = "proj"\n')
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+    (project / "lean-toolchain").write_text(LEAN_TOOLCHAIN)
     (project / "Sample.lean").write_text(
         "namespace Demo\n\n"
         "theorem ends_the_line\n"
@@ -1186,7 +1188,7 @@ def test_fully_qualified_query_resolves_to_its_own_namespace(
     project = tmp_path / "proj"
     project.mkdir()
     (project / "lakefile.toml").write_text('name = "proj"\n')
-    (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+    (project / "lean-toolchain").write_text(LEAN_TOOLCHAIN)
     (project / "A.lean").write_text(
         "namespace Alpha.Inner\ntheorem shared (h : True) : True := h\nend Alpha.Inner\n"
     )

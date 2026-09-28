@@ -5,12 +5,12 @@ defaultTargets = ["McpTestProject"]
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"
-rev = "v4.30.0"
+rev = "v4.34.1"
 
 [[require]]
 name = "REPL"
 git = "https://github.com/leanprover-community/repl"
-rev = "v4.30.0"
+rev = "v4.34.0"
 
 [[lean_lib]]
 name = "McpTestProject"
