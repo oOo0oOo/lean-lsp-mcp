@@ -164,9 +164,7 @@ STATE_SEARCH_REV_ENV = "LEAN_STATE_SEARCH_REV"
 DEFAULT_STATE_SEARCH_REV = "v4.22.0"
 
 LEANFINDER_URL_ENV = "LEAN_FINDER_URL"
-DEFAULT_LEANFINDER_URL = (
-    "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
-)
+DEFAULT_LEANFINDER_URL = "https://lean-lsp-proxy.leanfinder.workers.dev"
 
 
 def state_search_url() -> str:
