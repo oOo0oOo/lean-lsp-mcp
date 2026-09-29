@@ -158,9 +158,7 @@ RATE_LIMITS: dict[str, tuple[int, int]] = {
 }
 
 LEANFINDER_URL_ENV = "LEAN_FINDER_URL"
-DEFAULT_LEANFINDER_URL = (
-    "https://bxrituxuhpc70w8w.us-east-1.aws.endpoints.huggingface.cloud"
-)
+DEFAULT_LEANFINDER_URL = "https://lean-lsp-proxy.leanfinder.workers.dev"
 
 
 def leanfinder_url() -> str:
