@@ -21,7 +21,7 @@ MCP server that allows agentic interaction with the [Lean theorem prover](https:
 ## Key Features
 
 * **Rich Lean Interaction**: Access diagnostics, goal states, term information, hover documentation and more.
-* **External Search Tools**: Use `LeanSearch`, `Loogle`, `Lean Finder`, `Lean Hammer` and `Lean State Search` to find relevant theorems and definitions.
+* **External Search Tools**: Use `LeanSearch`, `Loogle`, `Lean Finder` and `Lean Hammer` to find relevant theorems and definitions.
 * **Easy Setup**: Simple configuration for various clients, including VSCode, Cursor and Claude Code.
 
 ## Setup
