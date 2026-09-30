@@ -18,7 +18,7 @@ INSTRUCTIONS = f"""## General Rules
 
 ## Key Tools
 - **lean_goal**: Proof state at position. Omit `column` for before/after. `status` field: 'goals', 'complete' (proof done here), or 'no_goal_at_position' (not inside a proof).
-- **lean_diagnostic_messages**: Compiler errors/warnings. "no goals to be solved" = remove tactics. Each item carries `category`: 'linter' is style noise (sorry usage, unused variables) that does not block compilation, 'suggestion' holds a `Try this:` replacement. A `hint` field appears on recognised failure modes.
+- **lean_diagnostic_messages**: Compiler errors/warnings. "no goals to be solved" = remove tactics. Each item carries `category`: 'linter' is style noise (unused variables and the like) that does not block compilation, 'sorry' marks an unproved declaration (not noise), 'suggestion' holds a `Try this:` replacement. A `hint` field appears on recognised failure modes.
 - **lean_term_goal**: Expected type at a position.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.

@@ -68,6 +68,7 @@ class PremiseResult(BaseModel):
 class DiagnosticCategory(str, Enum):
     diagnostic = "diagnostic"
     linter = "linter"
+    sorry = "sorry"
     suggestion = "suggestion"
 
 
@@ -87,9 +88,10 @@ class DiagnosticMessage(BaseModel):
     category: DiagnosticCategory = Field(
         DiagnosticCategory.diagnostic,
         description=(
-            "'linter' is style noise (sorry usage, unused variables) that does "
-            "not block compilation; 'suggestion' carries a `Try this:` "
-            "replacement; 'diagnostic' is everything else."
+            "'linter' is style noise (unused variables and the like) that does "
+            "not block compilation; 'sorry' marks an unproved declaration and "
+            "is never noise; 'suggestion' carries a `Try this:` replacement; "
+            "'diagnostic' is everything else."
         ),
     )
     hint: str | None = Field(

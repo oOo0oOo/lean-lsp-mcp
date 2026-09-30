@@ -18,12 +18,11 @@ def _diag(message: str, severity: int = 1, line: int = 0) -> dict:
 def test_linter_noise_is_separated_from_real_warnings() -> None:
     """Severity alone cannot say which warnings a caller may ignore.
 
-    Lean reports `sorry` usage and unused variables at the same severity as a
-    warning that matters, so a caller triaging by severity treats them alike.
+    Lean reports unused variables at the same severity as a warning that
+    matters, so a caller triaging by severity treats them alike.
     """
     result = process_diagnostics(
         [
-            _diag("declaration uses 'sorry'", severity=2, line=0),
             _diag("unused variable `h`\nnote: this linter can be disabled", 2, 1),
             _diag("this looks genuinely suspicious", severity=2, line=2),
         ],
@@ -33,8 +32,24 @@ def test_linter_noise_is_separated_from_real_warnings() -> None:
     categories = [item.category for item in result.items]
     assert categories == [
         DiagnosticCategory.linter,
-        DiagnosticCategory.linter,
         DiagnosticCategory.diagnostic,
+    ]
+
+
+def test_sorry_is_not_ignorable_linter_noise() -> None:
+    """A sorry'd declaration is unproved; filtering out linter output must
+    not hide it."""
+    result = process_diagnostics(
+        [
+            _diag("declaration uses 'sorry'", severity=2, line=0),
+            _diag("declaration uses `sorry`", severity=2, line=1),
+        ],
+        build_success=True,
+    )
+
+    assert [item.category for item in result.items] == [
+        DiagnosticCategory.sorry,
+        DiagnosticCategory.sorry,
     ]
 
 

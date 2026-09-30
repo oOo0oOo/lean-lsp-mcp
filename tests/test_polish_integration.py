@@ -40,7 +40,7 @@ async def test_large_goal_and_diagnostic_output(mcp_client_factory, test_project
                 )
             )
             assert any(
-                "sorry" in item["message"] and item["category"] == "linter"
+                "sorry" in item["message"] and item["category"] == "sorry"
                 for item in diagnostics["items"]
             )
     finally:

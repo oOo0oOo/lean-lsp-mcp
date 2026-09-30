@@ -36,10 +36,16 @@ def _lean_tags(diagnostic: dict) -> list[str] | None:
 # cannot tell a caller which ones it may ignore.
 _LINTER_MARKERS = (
     "this linter can be disabled",
-    "declaration uses 'sorry'",
-    "declaration uses `sorry`",
     "unused variable",
     "automatically included section variable",
+)
+
+# A `sorry` is reported at the same warning severity, but it is not noise: the
+# declaration is unproved. It gets its own category so no caller filtering out
+# linter output drops it too.
+_SORRY_MARKERS = (
+    "declaration uses 'sorry'",
+    "declaration uses `sorry`",
 )
 
 # Guidance for failure modes whose message states the symptom but not the
@@ -90,6 +96,8 @@ def diagnostic_hint(severity: str, message: str) -> str | None:
 
 
 def diagnostic_category(severity: str, message: str) -> DiagnosticCategory:
+    if any(marker in message for marker in _SORRY_MARKERS):
+        return DiagnosticCategory.sorry
     if "Try this:" in message:
         return DiagnosticCategory.suggestion
     if severity == "warning" and any(marker in message for marker in _LINTER_MARKERS):
