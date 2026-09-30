@@ -330,7 +330,7 @@ async def leanfinder(
         ctx,
         progress=1,
         total=10,
-        message="Awaiting response from Lean Finder (Hugging Face)",
+        message="Awaiting response from Lean Finder",
     )
     data = await server._urlopen_json(req, timeout=10)
     if isinstance(data, dict) and "error" in data:

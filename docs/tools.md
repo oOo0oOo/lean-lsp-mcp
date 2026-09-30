@@ -349,9 +349,11 @@ Search for Lean definitions and theorems using [loogle.lean-lang.org](https://lo
 
 #### lean_leanfinder
 
-Semantic search for Mathlib theorems using [Lean Finder](https://huggingface.co/spaces/delta-lab-ai/Lean-Finder).
+Semantic search for Mathlib theorems using Lean Finder.
 
-[Arxiv Paper](https://arxiv.org/abs/2510.15940)
+[Demo](https://huggingface.co/spaces/delta-lab-ai/Lean-Finder) | [Arxiv Paper](https://arxiv.org/abs/2510.15940)
+
+Queries go to the Lean Finder API at `https://lean-lsp-proxy.leanfinder.workers.dev`. You can set an environment variable `LEAN_FINDER_URL` to point to another endpoint.
 
 - Supports informal descriptions, user questions, proof states, and statement fragments.
 - Examples: `algebraic elements x,y over K with same minimal polynomial`, `Does y being a root of minpoly(x) imply minpoly(x)=minpoly(y)?`, `⊢ |re z| ≤ ‖z‖` + `transform to squared norm inequality`, `theorem restrict Ioi: restrict Ioi e = restrict Ici e`
