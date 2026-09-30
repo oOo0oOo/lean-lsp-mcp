@@ -19,6 +19,9 @@ fi
 # Update version in pyproject.toml
 sed -i 's/^version = ".*"/version = "'$new_version'"/' pyproject.toml
 
+# Record the new project version in the lockfile so the release commit has it
+uv lock
+
 # Commit the changes
 git commit -am "Release $new_version"
 
