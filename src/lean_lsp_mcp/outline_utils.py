@@ -126,6 +126,8 @@ def _strip_line_comment(text: str) -> str:
     The `--` must be at the start or follow whitespace, which keeps `/--` (a
     doc comment) and any `--` inside an identifier out of it.
     """
+    if "--" not in text:
+        return text
     in_string = False
     index = 0
     while index < len(text):
