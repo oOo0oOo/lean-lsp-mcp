@@ -148,8 +148,9 @@ def _strip_line_comment(text: str) -> str:
 
 # `let`/`letI`/`haveI` each spend one `:=` inside a statement, before the one
 # that starts the declaration body.
+# A `let x ← e` in `do` notation binds without `:=`, so it is not counted.
 _ASSIGNMENT_OR_BINDER_RE = re.compile(
-    r"(?P<binder>(?<![A-Za-z0-9_\'])(?:let|letI|haveI)\s)|:="
+    r"(?P<binder>(?<![A-Za-z0-9_\'])(?:let|letI|haveI)\s(?!(?:(?!:=|;).)*←))|:="
 )
 
 # Lines that end a signature which has no body `:=` of its own. A match arm
@@ -159,8 +160,11 @@ _MATCH_ARM_RE = re.compile(r"^\|.*=>")
 # `where` introduces a structure-instance body or auxiliary definitions.
 _WHERE_RE = re.compile(r"(?<![A-Za-z0-9_\'.])where(?![A-Za-z0-9_\'])")
 # The next declaration or command: the current one is over, whatever it was.
+# `#check` and friends count only at column 0: an indented `#` is cardinality
+# notation (`#s ≤ n`) continuing the signature.
+_HASH_COMMAND_RE = re.compile(r"^#[A-Za-z_]")
 _NEXT_COMMAND_RE = re.compile(
-    r"^(?:@\[|/--|#|"
+    r"^(?:@\[|/--|"
     r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+)*"
     r"(?:theorem|lemma|def|abbrev|instance|example|structure|class|inductive"
     r"|axiom|opaque|namespace|section|end|open|variable|universe|attribute"
@@ -212,7 +216,7 @@ def _signature_text(lines: list[str], start: int, end: int) -> str | None:
                 continue
             if _MATCH_ARM_RE.match(line):
                 return " ".join(parts)
-            if _NEXT_COMMAND_RE.match(line):
+            if _NEXT_COMMAND_RE.match(line) or _HASH_COMMAND_RE.match(lines[index]):
                 return None
         if (where := _WHERE_RE.search(line)) is not None:
             line = line[: where.start()]

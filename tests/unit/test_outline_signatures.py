@@ -188,3 +188,31 @@ def test_a_header_without_body_does_not_borrow_the_next_declaration() -> None:
 
     assert declarations[0]["_type"] is None
     assert declarations[1]["_type"] == ": True"
+
+
+def test_an_indented_cardinality_line_continues_the_signature() -> None:
+    source = "\n".join(
+        [
+            "theorem card_le (s : Finset α) :",
+            "    #s ≤ #s := le_rfl",
+        ]
+    )
+    assert _signature(source) == "(s : Finset α) : #s ≤ #s"
+
+
+def test_a_hash_command_at_column_zero_ends_the_header() -> None:
+    source = "\n".join(["theorem t : True", "#check t"])
+    assert _signature(source) is None
+
+
+def test_a_do_arrow_let_spends_no_assignment() -> None:
+    source = "\n".join(
+        [
+            "theorem e (f : Nat → Option Nat) :",
+            "    (do {let x ← f 0; f x}) = f 0 >>= f := rfl",
+        ]
+    )
+    assert (
+        _signature(source)
+        == "(f : Nat → Option Nat) : (do {let x ← f 0; f x}) = f 0 >>= f"
+    )
