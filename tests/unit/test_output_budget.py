@@ -104,3 +104,12 @@ def test_build_failures_are_extracted_before_truncation(monkeypatch) -> None:
     )
     result = process_diagnostics([_diag(message)], build_success=False)
     assert result.failed_dependencies == ["Dependency.lean"]
+
+
+def test_text_just_over_the_budget_is_not_lengthened(monkeypatch) -> None:
+    """Eliding a few characters would add a notice longer than the cut."""
+    monkeypatch.setenv(config.MAX_OUTPUT_CHARS_ENV, "100")
+
+    text = "X" * 101
+
+    assert bound_output(text) == text

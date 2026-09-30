@@ -36,12 +36,14 @@ def bound_output(text: str) -> str:
     elided = len(text) - limit
     head = (limit * 2) // 3
     tail = limit - head
-    return (
+    bounded = (
         f"{text[:head]}"
         f"\n\n[... {elided} characters elided; "
         f"set {config.MAX_OUTPUT_CHARS_ENV}=0 for the full text ...]\n\n"
         f"{text[-tail:]}"
     )
+    # Just over the budget, the notice costs more than the cut saves.
+    return bounded if len(bounded) < len(text) else text
 
 
 def extract_failed_dependency_paths(message: str) -> list[str]:
