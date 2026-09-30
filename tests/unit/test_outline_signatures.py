@@ -130,3 +130,61 @@ def test_a_dash_pair_inside_an_identifier_survives() -> None:
     from lean_lsp_mcp.outline_utils import _strip_line_comment
 
     assert _strip_line_comment("theorem a--b : True") == "theorem a--b : True"
+
+
+def _arms(count: int) -> list[str]:
+    return [f"  | {i} => let a{i} := {i}; a{i}" for i in range(count)]
+
+
+def test_match_arms_end_the_signature() -> None:
+    """A `let` in an arm spends a `:=` of the body, not of the statement.
+
+    Counting it as a statement binder let the header run on through every
+    arm and into the next declaration's.
+    """
+    source = "\n".join(["def f : Nat → Nat", *_arms(3), "theorem g : True := trivial"])
+
+    declarations = _extract_declarations(source, 0, len(source.splitlines()))
+
+    assert [d["_type"] for d in declarations] == [": Nat → Nat", ": True"]
+
+
+def test_many_let_arms_stay_linear() -> None:
+    import time
+
+    source = "\n".join(
+        ["def f : Nat → Nat", *_arms(2000), "theorem g : True := trivial"]
+    )
+
+    started = time.perf_counter()
+    declarations = _extract_declarations(source, 0, len(source.splitlines()))
+    elapsed = time.perf_counter() - started
+
+    assert declarations[0]["_type"] == ": Nat → Nat"
+    assert elapsed < 1.0, elapsed
+
+
+def test_where_ends_the_signature() -> None:
+    source = "\n".join(["def origin : Point where", "  x := 0", "  y := 0"])
+
+    assert _signature(source) == ": Point"
+
+
+def test_an_absolute_value_line_is_not_a_match_arm() -> None:
+    source = "\n".join(
+        ["theorem abs_bound (x : Int) :", "    |x| ≤ |x| + 1 := by", "  omega"]
+    )
+
+    signature = _signature(source)
+
+    assert signature is not None
+    assert signature.endswith("|x| ≤ |x| + 1"), signature
+
+
+def test_a_header_without_body_does_not_borrow_the_next_declaration() -> None:
+    source = "\n".join(["def broken : Nat", "theorem g : True := trivial"])
+
+    declarations = _extract_declarations(source, 0, len(source.splitlines()))
+
+    assert declarations[0]["_type"] is None
+    assert declarations[1]["_type"] == ": True"

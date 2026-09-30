@@ -148,7 +148,41 @@ def _strip_line_comment(text: str) -> str:
 
 # `let`/`letI`/`haveI` each spend one `:=` inside a statement, before the one
 # that starts the declaration body.
-_STATEMENT_BINDER_RE = re.compile(r"(?<![A-Za-z0-9_\'])(?:let|letI|haveI)\s")
+_ASSIGNMENT_OR_BINDER_RE = re.compile(
+    r"(?P<binder>(?<![A-Za-z0-9_\'])(?:let|letI|haveI)\s)|:="
+)
+
+# Lines that end a signature which has no body `:=` of its own. A match arm
+# (`| 0 => ...`) begins an equation-compiled body; checking for `=>` keeps an
+# absolute value (`|x| ≤ 1`) that opens a continuation line in the signature.
+_MATCH_ARM_RE = re.compile(r"^\|.*=>")
+# `where` introduces a structure-instance body or auxiliary definitions.
+_WHERE_RE = re.compile(r"(?<![A-Za-z0-9_\'.])where(?![A-Za-z0-9_\'])")
+# The next declaration or command: the current one is over, whatever it was.
+_NEXT_COMMAND_RE = re.compile(
+    r"^(?:@\[|/--|#|"
+    r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+)*"
+    r"(?:theorem|lemma|def|abbrev|instance|example|structure|class|inductive"
+    r"|axiom|opaque|namespace|section|end|open|variable|universe|attribute"
+    r"|set_option|mutual|macro|syntax|notation|elab)\b)"
+)
+
+
+def _scan_assignments(text: str, pending: int = 0) -> tuple[int | None, int]:
+    """Find the body `:=` in *text*, carrying unspent binders across calls.
+
+    *pending* counts statement binders seen earlier whose own `:=` has not
+    appeared yet. Returns the body index (or None) and the updated count, so a
+    caller reading line by line never rescans what it has already seen.
+    """
+    for match in _ASSIGNMENT_OR_BINDER_RE.finditer(text):
+        if match.group("binder"):
+            pending += 1
+        elif pending:
+            pending -= 1
+        else:
+            return match.start(), pending
+    return None, pending
 
 
 def _body_assignment_index(text: str) -> int | None:
@@ -159,13 +193,36 @@ def _body_assignment_index(text: str) -> int | None:
     cuts the type at that binder and hides everything after it, including the
     conclusion the caller is reading the outline for.
     """
-    assignments = 0
-    position = 0
-    while (found := text.find(":=", position)) != -1:
-        assignments += 1
-        if assignments > len(_STATEMENT_BINDER_RE.findall(text[:found])):
-            return found
-        position = found + 2
+    return _scan_assignments(text)[0]
+
+
+def _signature_text(lines: list[str], start: int, end: int) -> str | None:
+    """Source text of the declaration header at *start*, up to its body.
+
+    The header ends at the body `:=`, at a `where`, or before a match arm.
+    Reaching another command first means no header was recognised, and None
+    is returned rather than text that belongs to something else.
+    """
+    parts: list[str] = []
+    pending = 0
+    for index in range(start, end):
+        line = _strip_line_comment(lines[index].strip())
+        if index > start:
+            if not line or line.startswith(("--", "/-")):
+                continue
+            if _MATCH_ARM_RE.match(line):
+                return " ".join(parts)
+            if _NEXT_COMMAND_RE.match(line):
+                return None
+        if (where := _WHERE_RE.search(line)) is not None:
+            line = line[: where.start()]
+        body_at, pending = _scan_assignments(line, pending)
+        if body_at is not None:
+            parts.append(line[:body_at])
+            return " ".join(parts)
+        parts.append(line)
+        if where is not None:
+            return " ".join(parts)
     return None
 
 
@@ -173,34 +230,22 @@ def _extract_declarations(content: str, start: int, end: int) -> list[dict]:
     """Extract theorem/lemma/def declarations from file content."""
     lines = content.splitlines()
     decls, i = [], start
+    stop = min(end, len(lines))
 
-    while i < min(end, len(lines)):
+    while i < stop:
         line = lines[i].strip()
         for keyword in ["theorem", "lemma", "def"]:
             if line.startswith(f"{keyword} "):
                 name = line[len(keyword) :].strip().split()[0]
                 if name and not name.startswith("_"):
-                    # Collect until the body `:=`, not merely the first one.
                     # Each line sheds its trailing comment first: a comment
                     # belongs to its physical line, and joining before stripping
                     # would let it swallow the rest of the signature.
-                    decl_lines = [_strip_line_comment(line)]
-                    j = i + 1
-                    while (
-                        j < min(end, len(lines))
-                        and _body_assignment_index(" ".join(decl_lines)) is None
-                    ):
-                        next_line = _strip_line_comment(lines[j].strip())
-                        if next_line and not next_line.startswith(("--", "/-")):
-                            decl_lines.append(next_line)
-                        j += 1
-
-                    # Extract signature (everything before the body `:=`,
-                    # minus keyword and name)
-                    full_decl = " ".join(decl_lines)
+                    header = _signature_text(lines, i, stop)
                     type_sig = None
-                    if (body_at := _body_assignment_index(full_decl)) is not None:
-                        sig_part = full_decl[:body_at].strip()[len(keyword) :].strip()
+                    if header is not None:
+                        # Everything before the body, minus keyword and name.
+                        sig_part = header.strip()[len(keyword) :].strip()
                         if sig_part.startswith(name):
                             type_sig = sig_part[len(name) :].strip()
 
