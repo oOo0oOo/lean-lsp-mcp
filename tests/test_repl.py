@@ -205,6 +205,7 @@ async def test_run_snippets_uses_last_sorry(tmp_path: Path):
         ("theorem t : True := by", "  "),
         ("theorem t : True := by -- first tactic", "  "),
         ("theorem t : True := by\n  have h : True := by", "    "),
+        ("theorem t : True := by\n  simp -- closed by", "  "),
     ],
 )
 async def test_run_snippets_matches_body_indentation(
