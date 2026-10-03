@@ -29,7 +29,8 @@ def test_find_repl_binary_from_lake_packages(tmp_path: Path, monkeypatch):
     (repl_path / "repl").touch()
 
     found = find_repl_binary(str(tmp_path))
-    assert found == str(repl_path / "repl")
+    assert found is not None
+    assert Path(found).samefile(repl_path / "repl")
 
 
 def test_find_repl_binary_from_uppercase_lake_package(tmp_path: Path, monkeypatch):
@@ -38,7 +39,9 @@ def test_find_repl_binary_from_uppercase_lake_package(tmp_path: Path, monkeypatc
     repl_path.mkdir(parents=True)
     (repl_path / "repl").touch()
 
-    assert find_repl_binary(str(tmp_path)) == str(repl_path / "repl")
+    found = find_repl_binary(str(tmp_path))
+    assert found is not None
+    assert Path(found).samefile(repl_path / "repl")
 
 
 def test_find_repl_binary_env_var_takes_precedence(tmp_path: Path, monkeypatch):
@@ -85,6 +88,11 @@ def test_split_imports_preserves_specific_mathlib():
 def test_memory_limit_preexec_uses_configured_mebibytes(monkeypatch):
     calls = []
     monkeypatch.setattr(repl_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        repl_module.resource,
+        "getrlimit",
+        lambda _: (-1, repl_module.resource.RLIM_INFINITY),
+    )
     monkeypatch.setattr(
         repl_module.resource,
         "setrlimit",
