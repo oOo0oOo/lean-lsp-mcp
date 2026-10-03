@@ -10,6 +10,7 @@ from typing import Any
 from collections.abc import Callable
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 # Pattern to extract file paths from build stderr: "error: path/file.lean:line:col: message"
@@ -63,8 +64,8 @@ def is_build_stderr(message: str) -> bool:
     )
 
 
-class LeanToolError(Exception):
-    """Exception raised when a Lean MCP tool operation fails."""
+class LeanToolError(ToolError):
+    """Expected tool failure whose actionable message is safe for the client."""
 
     pass
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 import lean_lsp_mcp
 import pytest
@@ -16,7 +17,9 @@ def test_main_handles_keyboard_interrupt(monkeypatch) -> None:
     def raise_interrupt(*_args, **_kwargs) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", raise_interrupt)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=raise_interrupt)
+    )
     monkeypatch.setattr(sys, "argv", ["lean-lsp-mcp"])
 
     assert lean_lsp_mcp.main() == 130
@@ -29,7 +32,9 @@ def test_main_sets_active_transport_env_before_run(monkeypatch) -> None:
         observed["transport_arg"] = kwargs["transport"]
         observed["transport_env"] = os.environ.get("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "")
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", capture_transport)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=capture_transport)
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -52,7 +57,9 @@ def test_main_handles_transport_disconnect_stdio(monkeypatch) -> None:
     def mark_silenced() -> None:
         silenced.append(True)
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", raise_broken_pipe)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=raise_broken_pipe)
+    )
     monkeypatch.setattr(lean_lsp_mcp, "_silence_stdout", mark_silenced)
     monkeypatch.setattr(sys, "argv", ["lean-lsp-mcp", "--transport", "stdio"])
 
@@ -75,7 +82,9 @@ def test_main_handles_nested_transport_disconnect(monkeypatch) -> None:
 
     silenced: list[bool] = []
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", raise_nested_group)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=raise_nested_group)
+    )
     monkeypatch.setattr(lean_lsp_mcp, "_silence_stdout", lambda: silenced.append(True))
     monkeypatch.setattr(sys, "argv", ["lean-lsp-mcp", "--transport", "stdio"])
 
@@ -87,7 +96,9 @@ def test_main_does_not_mask_unrelated_exception(monkeypatch) -> None:
     def raise_runtime_error(*_args, **_kwargs) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", raise_runtime_error)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=raise_runtime_error)
+    )
     monkeypatch.setattr(sys, "argv", ["lean-lsp-mcp", "--transport", "stdio"])
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -98,7 +109,9 @@ def test_main_only_swallows_transport_disconnect_for_stdio(monkeypatch) -> None:
     def raise_broken_pipe(*_args, **_kwargs) -> None:
         raise BrokenPipeError("broken pipe")
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", raise_broken_pipe)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=raise_broken_pipe)
+    )
     monkeypatch.setattr(sys, "argv", ["lean-lsp-mcp", "--transport", "streamable-http"])
 
     with pytest.raises(BrokenPipeError, match="broken pipe"):

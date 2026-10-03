@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Sequence
 
+from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import (
@@ -37,6 +38,7 @@ class MCPClient:
 
     def __init__(self, session: ClientSession) -> None:
         self._session = session
+        self._output_schemas: dict[str, dict[str, Any]] | None = None
 
     async def list_tools(self) -> list[str]:
         """Return the tool names exposed by the server."""
@@ -53,9 +55,20 @@ class MCPClient:
     ) -> CallToolResult:
         """Call a tool and optionally assert success."""
 
+        if self._output_schemas is None:
+            catalog = await self._session.list_tools()
+            self._output_schemas = {
+                tool.name: tool.output_schema
+                for tool in catalog.tools
+                if tool.output_schema is not None
+            }
         result = await self._session.call_tool(name, arguments or {})
         if result.is_error and not expect_error:
             raise MCPToolError(name, result)
+        if not result.is_error and name in self._output_schemas:
+            Draft202012Validator(self._output_schemas[name]).validate(
+                result.structured_content
+            )
         return result
 
 
