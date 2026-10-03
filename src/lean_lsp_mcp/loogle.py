@@ -8,8 +8,11 @@ import json
 import logging
 import os
 import shutil
+import signal
 import ssl
 import subprocess
+import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -17,6 +20,7 @@ from typing import Any
 
 import certifi
 import orjson
+import psutil
 
 from lean_lsp_mcp.models import LoogleResult
 from lean_lsp_mcp import config
@@ -98,6 +102,14 @@ class LoogleManager:
         self.process: asyncio.subprocess.Process | None = None
         self._ready = False
         self._lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
+        self._process_group: int | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._stderr_tail = b""
+        self._install_cancel = threading.Event()
+        self._stop_task: asyncio.Task[None] | None = None
+        self._generation = 0
+        self._install_task: asyncio.Task[bool] | None = None
 
     def _get_project_toolchain(self) -> str | None:
         if self.project_path is None:
@@ -160,15 +172,45 @@ class LoogleManager:
     ) -> subprocess.CompletedProcess:
         run_env = env if env is not None else os.environ.copy()
         run_env["LAKE_ARTIFACT_CACHE"] = "false"
-        return subprocess.run(
+        # Git and Lake can launch children. A timed-out or cancelled install
+        # must reap the entire command, not leave compilers in the background.
+        with subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            timeout=timeout,
             cwd=cwd or self.repo_dir,
             env=run_env,
-        )
+            start_new_session=os.name == "posix",
+        ) as process:
+            deadline = time.monotonic() + timeout
+            try:
+                while True:
+                    if self._install_cancel.is_set():
+                        raise RuntimeError("Loogle installation cancelled")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    try:
+                        stdout, stderr = process.communicate(
+                            timeout=min(0.2, remaining)
+                        )
+                        return subprocess.CompletedProcess(
+                            cmd, process.returncode, stdout, stderr
+                        )
+                    except subprocess.TimeoutExpired:
+                        continue
+            except BaseException:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
 
     def _checkout_repo_ref(self) -> bool:
         try:
@@ -288,6 +330,11 @@ class LoogleManager:
         if self.project_path is None or self._get_project_toolchain() is None:
             logger.warning("A Lean project with a lean-toolchain file is required")
             return False
+        # The cache key includes the pinned revision and project toolchain.
+        # A completed installation needs neither a writable Git checkout nor
+        # another fetch/build (and can be used while offline).
+        if self.is_installed:
+            return True
         ok, err = self._check_prerequisites()
         if not ok:
             logger.warning(f"Prerequisites: {err}")
@@ -298,76 +345,120 @@ class LoogleManager:
             return False
         return self.is_installed
 
-    async def start(self) -> bool:
-        if self.process is not None and self.process.returncode is None:
-            return self._ready
-        if not self.is_installed and not await asyncio.to_thread(self.ensure_installed):
-            return False
-        ok, err = self.check_environment()
-        if not ok:
-            logger.error(f"Loogle environment check failed: {err}")
-            return False
-
-        self.index_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            "lake",
-            "env",
-            str(self.binary_path),
-            "--json",
-            "--interactive",
-            "--index-file",
-            str(self.index_path),
-        ]
-
-        logger.info("Starting loogle for project %s...", self.project_path)
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.project_path,
-                env=self._project_env(),
+    async def _drain_stderr(self, process: asyncio.subprocess.Process) -> None:
+        assert process.stderr is not None
+        while chunk := await process.stderr.read(4096):
+            self._stderr_tail = (self._stderr_tail + chunk)[-8192:]
+            logger.debug(
+                "Loogle stderr: %s", chunk.decode("utf-8", errors="replace").rstrip()
             )
-            assert self.process.stdout is not None and self.process.stderr is not None
-            # Loading a pre-built index is fast (~seconds), but Loogle's default
-            # `use` mode builds a missing or stale Mathlib index first. Allow
-            # for the initial build, which can take a couple of minutes.
-            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=300)
+
+    async def _wait_ready(self, process: asyncio.subprocess.Process) -> bool:
+        assert process.stdout is not None
+        while line := await process.stdout.readline():
             decoded = line.decode("utf-8", errors="replace")
             if self.READY_SIGNAL in decoded:
-                self._ready = True
-                logger.info("Loogle ready")
                 return True
-            # Check stderr for error messages
+            logger.debug("Loogle startup: %s", decoded.rstrip())
+        return False
+
+    async def start(self) -> bool:
+        # Startup is independent of the query lock because application setup
+        # can also call start directly. Never overwrite a live child owner.
+        async with self._start_lock:
+            if self.is_running:
+                return True
+            if self.process is not None or self._stop_task is not None:
+                await self.stop()
+            generation = self._generation
+            if not self.is_installed:
+                self._install_cancel.clear()
+                install = asyncio.create_task(asyncio.to_thread(self.ensure_installed))
+                self._install_task = install
+                try:
+                    installed = await asyncio.shield(install)
+                except asyncio.CancelledError:
+                    self._install_cancel.set()
+                    # Cancellation must wait for the thread to reap its Git /
+                    # Lake process; another cancellation cannot abandon it.
+                    while not install.done():
+                        try:
+                            await asyncio.shield(install)
+                        except asyncio.CancelledError:
+                            continue
+                    raise
+                finally:
+                    if self._install_task is install:
+                        self._install_task = None
+                if not installed:
+                    return False
+            if generation != self._generation:
+                return False
+            ok, err = self.check_environment()
+            if not ok:
+                logger.error("Loogle environment check failed: %s", err)
+                return False
+
+            self.index_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                "lake",
+                "env",
+                str(self.binary_path),
+                "--json",
+                "--interactive",
+                "--index-file",
+                str(self.index_path),
+            ]
+            logger.info("Starting loogle for project %s...", self.project_path)
+            self._stderr_tail = b""
             try:
-                stderr_data = await asyncio.wait_for(
-                    self.process.stderr.read(), timeout=1
+                self.process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self.project_path,
+                    env=self._project_env(),
+                    start_new_session=os.name == "posix",
                 )
-                if stderr_data:
-                    logger.error(
-                        f"Loogle stderr: {stderr_data.decode('utf-8', errors='replace').strip()}"
-                    )
+                # lake env launches a native Loogle child. The session belongs
+                # solely to this manager, so shutdown includes that child even
+                # when the Lake launcher has already exited.
+                if os.name == "posix" and isinstance(self.process.pid, int):
+                    self._process_group = self.process.pid
+                process = self.process
+                self._stderr_task = asyncio.create_task(self._drain_stderr(process))
+                if generation != self._generation:
+                    await self.stop()
+                    return False
+                # A fresh Mathlib index is substantially slower than reading
+                # the reusable on-disk cache; both use the native use-index mode.
+                ready = await asyncio.wait_for(self._wait_ready(process), timeout=300)
+                self._ready = (
+                    ready and self.process is process and generation == self._generation
+                )
+                if self._ready:
+                    logger.info("Loogle ready")
+                    return True
+                logger.error("Loogle exited before ready")
             except asyncio.TimeoutError:
-                pass
-            logger.error(f"Loogle failed to start. stdout: {decoded.strip()}")
-            return False
-        except asyncio.TimeoutError:
-            logger.error("Loogle startup timeout")
-            return False
-        except Exception as e:
-            logger.error(f"Start failed: {e}")
+                logger.error("Loogle startup timeout")
+            except asyncio.CancelledError:
+                await self.stop()
+                raise
+            except Exception as exc:
+                logger.error("Start failed: %s", exc)
+            await self.stop()
+            if self._stderr_tail:
+                logger.error(
+                    "Loogle stderr: %s",
+                    self._stderr_tail.decode("utf-8", errors="replace").rstrip(),
+                )
             return False
 
     async def _desync_stop(self) -> None:
-        """Kill the subprocess after a stream desync (timeout/garbage)."""
-        self._ready = False
-        if self.process is not None:
-            try:
-                self.process.kill()
-            except ProcessLookupError:
-                pass
-            self.process = None
+        """Kill and reap the owned process after stream desynchronization."""
+        await self._stop_owned(force=True)
 
     async def query(self, q: str, num_results: int = 8) -> list[dict[str, Any]]:
         async with self._lock:
@@ -414,6 +505,11 @@ class LoogleManager:
                         }
                         for h in response.get("hits", [])[:num_results]
                     ]
+                except asyncio.CancelledError:
+                    # A cancelled read can leave the old response queued for
+                    # the next query, just as a timeout does.
+                    await self._desync_stop()
+                    raise
                 except asyncio.TimeoutError:
                     # The late response would be attributed to the NEXT query;
                     # kill the subprocess so a restart resyncs the stream.
@@ -425,18 +521,112 @@ class LoogleManager:
 
             raise RuntimeError("Loogle subprocess not ready")
 
-    async def stop(self) -> None:
-        if self.process:
-            try:
-                self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self.process.kill()
+    async def _stop_process(self, *, force: bool = False) -> None:
+        install = self._install_task
+        if install is not None:
+            self._install_cancel.set()
+            await asyncio.shield(install)
+        process, self.process = self.process, None
+        group, self._process_group = self._process_group, None
+        drain, self._stderr_task = self._stderr_task, None
+        self._ready = False
+        try:
+            if process is not None:
+                if group is not None:
+                    try:
+                        owner = psutil.Process(process.pid)
+                        members = [owner, *owner.children(recursive=True)]
+                    except psutil.NoSuchProcess:
+                        members = []
+
+                    def exited(member: psutil.Process) -> bool:
+                        try:
+                            return (
+                                not member.is_running()
+                                or member.status() == psutil.STATUS_ZOMBIE
+                            )
+                        except psutil.NoSuchProcess:
+                            return True
+
+                    def signal_group(sig: int) -> bool:
+                        try:
+                            os.killpg(group, sig)
+                        except ProcessLookupError:
+                            return False
+                        except PermissionError:
+                            # macOS can return EPERM instead of ESRCH once a
+                            # terminated group contains only dying/zombie tasks.
+                            # Suppress it only after checking the owned members.
+                            if members and all(exited(member) for member in members):
+                                return False
+                            if sig == 0:
+                                # During native exit teardown macOS may report
+                                # EPERM while psutil still sees an idle member.
+                                # Keep waiting within the graceful deadline.
+                                return True
+                            raise
+                        return True
+
+                    if (
+                        signal_group(signal.SIGKILL if force else signal.SIGTERM)
+                        and not force
+                    ):
+                        deadline = asyncio.get_running_loop().time() + 5
+                        while signal_group(0):
+                            remaining = deadline - asyncio.get_running_loop().time()
+                            if remaining <= 0:
+                                signal_group(signal.SIGKILL)
+                                break
+                            await asyncio.sleep(min(0.05, remaining))
+                elif process.returncode is None:
+                    try:
+                        process.kill() if force else process.terminate()
+                    except ProcessLookupError:
+                        pass
                 try:
-                    await asyncio.wait_for(self.process.wait(), timeout=2)
+                    await asyncio.wait_for(process.wait(), timeout=2 if force else 5)
                 except asyncio.TimeoutError:
-                    pass
-            except Exception:
-                pass
-            self.process = None
-            self._ready = False
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await asyncio.wait_for(process.wait(), timeout=2)
+        finally:
+            if drain is not None:
+                if not drain.done():
+                    drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
+
+    async def _stop_owned(self, *, force: bool = False) -> None:
+        self._generation += 1
+        cancelled = False
+        while True:
+            cleanup = self._stop_task
+            if cleanup is None:
+                cleanup = asyncio.create_task(self._stop_process(force=force))
+                self._stop_task = cleanup
+            try:
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                await cleanup
+            finally:
+                if cleanup.done() and self._stop_task is cleanup:
+                    self._stop_task = None
+            # A spawn may finish while a previous empty cleanup task is still
+            # retained. Rejoining that task must also drain the newly-published
+            # process rather than mistakenly return with an unowned child.
+            if (
+                self.process is None
+                and self._stderr_task is None
+                and self._install_task is None
+            ):
+                break
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def stop(self) -> None:
+        """Stop and reap the Lake launcher and its owned native Loogle child."""
+        await self._stop_owned()
