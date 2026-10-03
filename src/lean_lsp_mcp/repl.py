@@ -7,8 +7,11 @@ import json
 import os
 import platform
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
+
+import psutil
 
 from lean_lsp_mcp import config
 from lean_lsp_mcp.outline_utils import _strip_line_comment
@@ -105,15 +108,16 @@ def _split_imports(code: str) -> tuple[str, str]:
 
 
 def _memory_limit_preexec(mem_mb: int):
-    """Return a subprocess memory-limit callback on supported platforms."""
+    """Use Linux's address-space cap; Darwin needs an RSS watchdog instead."""
     system = platform.system()
-    if system == "Windows":
+    if system != "Linux":
         return None
-    limit = resource.RLIMIT_AS if system == "Linux" else resource.RLIMIT_RSS
     mem = mem_mb * 1024 * 1024
 
     def set_memory_limit() -> None:
-        resource.setrlimit(limit, (mem, mem))
+        _, hard = resource.getrlimit(resource.RLIMIT_AS)
+        cap = min(mem, hard) if hard != resource.RLIM_INFINITY else mem
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
 
     return set_memory_limit
 
@@ -130,9 +134,13 @@ class Repl:
         self._header: str | None = None
         self._header_env: int | None = None
         self._lock = asyncio.Lock()
+        self._memory_task: asyncio.Task[None] | None = None
+        self._memory_error: str | None = None
+        self._terminated_proc: asyncio.subprocess.Process | None = None
 
     async def _start(self) -> None:
         """Start REPL subprocess."""
+        self._memory_error = None
         kwargs: dict[str, Any] = {
             "cwd": self.project_dir,
             "stdin": asyncio.subprocess.PIPE,
@@ -145,6 +153,48 @@ class Repl:
         self._proc = await asyncio.create_subprocess_exec(
             "lake", "env", self.repl_path, **kwargs
         )
+        if platform.system() == "Darwin":
+            self._memory_task = asyncio.create_task(self._watch_memory(self._proc))
+
+    def _kill_process(self, proc: asyncio.subprocess.Process) -> None:
+        if self._terminated_proc is proc:
+            return
+        with suppress(ProcessLookupError):
+            if platform.system() != "Windows":
+                # _start owns a new session; descendants can outlive its leader.
+                os.killpg(proc.pid, 9)
+            else:
+                proc.kill()
+        self._terminated_proc = proc
+
+    async def _watch_memory(self, proc: asyncio.subprocess.Process) -> None:
+        """Bound Darwin resident memory, including Lake's child process.
+
+        Darwin aliases RLIMIT_RSS to RLIMIT_AS, which counts large reserved
+        mappings and can reject the cap before exec. Poll actual RSS instead.
+        This is a sampled guard, not an allocation-time kernel limit.
+        """
+        try:
+            process = psutil.Process(proc.pid)
+            while proc.returncode is None:
+                rss = process.memory_info().rss
+                for child in process.children(recursive=True):
+                    with suppress(psutil.NoSuchProcess):
+                        rss += child.memory_info().rss
+                if rss > self.mem_mb * 1024 * 1024:
+                    self._memory_error = (
+                        f"REPL exceeded resident memory limit of {self.mem_mb} MiB"
+                    )
+                    return
+                await asyncio.sleep(0.1)
+        except psutil.NoSuchProcess:
+            return
+        except psutil.Error as exc:
+            # Do not silently run without the configured protection.
+            self._memory_error = f"Cannot monitor REPL resident memory: {exc}"
+        finally:
+            # A launcher or REPL can exit first while descendants keep allocating.
+            self._kill_process(proc)
 
     async def _process_error(self, reason: str) -> ReplProcessError:
         """Describe a dead or unresponsive REPL without hiding its exit details."""
@@ -166,6 +216,8 @@ class Repl:
                 pass
 
         details = [reason]
+        if self._memory_error:
+            details.append(self._memory_error)
         if proc.returncode is not None:
             details.append(f"exit code {proc.returncode}")
         if stderr:
@@ -210,12 +262,14 @@ class Repl:
 
     async def _ensure_header(self, header: str) -> int | None:
         """Ensure REPL is running with given header, return header env."""
-        if self._header != header:
+        if (
+            self._header != header
+            or not self._proc
+            or self._proc.returncode is not None
+        ):
             await self.close()
             self._header = header
             self._header_env = None
-
-        if not self._proc or self._proc.returncode is not None:
             await self._start()
             if header:
                 resp = await self._send_cmd(header, env=None)
@@ -366,18 +420,17 @@ class Repl:
                 raise ReplProcessError(str(e)) from e
 
     async def close(self) -> None:
+        if self._memory_task is not None:
+            task, self._memory_task = self._memory_task, None
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         if not self._proc:
             return
         proc, self._proc = self._proc, None
         self._header = None
         self._header_env = None
-        try:
-            if platform.system() != "Windows":
-                os.killpg(os.getpgid(proc.pid), 9)
-            else:
-                proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
+        self._kill_process(proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=1.0)
         except asyncio.TimeoutError:
