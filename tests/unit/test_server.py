@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import threading
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -153,6 +154,30 @@ async def test_app_lifespan_does_not_close_shared_client(
         context.client = dummy_client
 
     assert dummy_client._transport.kill_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http", "sse"])
+async def test_app_lifespan_stops_loogle_only_for_stdio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, transport: str
+) -> None:
+    project = _make_project(tmp_path / "project")
+    monkeypatch.setenv("LEAN_PROJECT_PATH", str(project))
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", transport)
+    manager = MagicMock()
+    manager.stop = AsyncMock()
+    monkeypatch.setattr(server, "_shared_loogle_manager", manager)
+    monkeypatch.setattr(
+        server, "_ensure_shared_loogle", AsyncMock(return_value=(manager, True))
+    )
+
+    async with server.app_lifespan(object()):
+        manager.stop.assert_not_awaited()
+
+    if transport == "stdio":
+        manager.stop.assert_awaited_once()
+    else:
+        manager.stop.assert_not_awaited()
 
 
 def test_close_shared_client_closes_client() -> None:
@@ -484,7 +509,6 @@ async def test_shared_loogle_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
 
     fake_manager = MagicMock()
-    fake_manager.ensure_installed.return_value = True
     fake_manager.start = AsyncMock(return_value=True)
 
     monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
@@ -497,7 +521,6 @@ async def test_shared_loogle_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     assert avail1 is True
     assert avail2 is True
     # LoogleManager constructed and started only once
-    assert fake_manager.ensure_installed.call_count == 1
     assert fake_manager.start.call_count == 1
 
 
@@ -512,7 +535,6 @@ async def test_shared_loogle_retries_after_transient_failure(
     monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
 
     fake_manager = MagicMock()
-    fake_manager.ensure_installed.return_value = True
     fake_manager.start = AsyncMock(side_effect=[False, True])
 
     monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
@@ -541,8 +563,7 @@ async def test_shared_loogle_retry_adopts_later_project(
 
     fake_manager = MagicMock()
     fake_manager.project_path = None
-    fake_manager.ensure_installed.side_effect = [False, True]
-    fake_manager.start = AsyncMock(return_value=True)
+    fake_manager.start = AsyncMock(side_effect=[False, True])
 
     monkeypatch.setattr(server, "LoogleManager", lambda **_kwargs: fake_manager)
 
@@ -560,6 +581,78 @@ async def test_shared_loogle_retry_adopts_later_project(
 
     assert available is True
     fake_manager.set_project_path.assert_called_once_with(project)
+
+
+@pytest.mark.asyncio
+async def test_shared_loogle_cancel_drains_install_and_allows_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+    manager = server.LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
+    monkeypatch.setattr(server, "_shared_loogle_manager", manager)
+    monkeypatch.setattr(server, "_shared_loogle_init_done", False)
+    monkeypatch.setattr(server, "_shared_loogle_available", False)
+    monkeypatch.setattr(server, "_shared_loogle_lock", asyncio.Lock())
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+
+    entered, finished, release = threading.Event(), threading.Event(), threading.Event()
+    installs = 0
+
+    def install():
+        nonlocal installs
+        installs += 1
+        assert not manager._install_cancel.is_set()
+        if installs == 1:
+            entered.set()
+            try:
+                while not manager._install_cancel.wait(0.01):
+                    if release.is_set():
+                        break
+                return False
+            finally:
+                finished.set()
+        manager.binary_path.parent.mkdir(parents=True)
+        manager.binary_path.touch()
+        return True
+
+    monkeypatch.setattr(manager, "ensure_installed", install)
+    process = MagicMock(pid=None, returncode=None)
+    process.stdout = asyncio.StreamReader()
+    process.stdout.feed_data(b"Loogle is ready.\n")
+    process.stderr = asyncio.StreamReader()
+    process.stderr.feed_eof()
+    process.wait = AsyncMock(return_value=0)
+    spawn = AsyncMock(return_value=process)
+    monkeypatch.setattr("lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", spawn)
+
+    initial = asyncio.create_task(server._ensure_shared_loogle(project))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        initial.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(initial, timeout=2)
+        assert finished.is_set(), "Cancellation returned before installer cleanup"
+        assert manager._install_task is None
+        assert not server._shared_loogle_init_done
+        assert not server._shared_loogle_available
+        spawn.assert_not_awaited()
+
+        retried_manager, available = await server._ensure_shared_loogle(project)
+        assert retried_manager is manager
+        assert available and manager.is_running
+        assert server._shared_loogle_init_done
+        assert not manager._install_cancel.is_set()
+        assert installs == 2
+        spawn.assert_awaited_once()
+    finally:
+        release.set()
+        if not initial.done():
+            initial.cancel()
+        await asyncio.gather(initial, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 2)
+        await manager.stop()
 
 
 class _MultiAttemptClient:

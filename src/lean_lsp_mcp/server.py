@@ -51,6 +51,7 @@ from lean_lsp_mcp.repl import Repl, repl_enabled
 # REPL models not imported - low-level REPL tools not exposed to keep API simple.
 # The model uses lean_multi_attempt which handles REPL internally.
 from lean_lsp_mcp.search_utils import check_ripgrep_status, lean_local_search
+from lean_lsp_mcp.stdio import CancellableMCPServer
 from lean_lsp_mcp.tool_utils import (
     custom_backend as _custom_backend,
     rate_limited,
@@ -207,10 +208,8 @@ async def _ensure_shared_loogle(
             elif manager.project_path != lean_project_path:
                 manager.set_project_path(lean_project_path)
 
-            # ensure_installed() can git-clone + `lake build` for many
-            # minutes — keep it off the event loop.
-            installed = await asyncio.to_thread(manager.ensure_installed)
-            _shared_loogle_available = installed and await manager.start()
+            # start() owns installation and drains its worker on cancellation.
+            _shared_loogle_available = await manager.start()
             if _shared_loogle_available:
                 _shared_loogle_init_done = True
                 logger.info("Shared local loogle started successfully")
@@ -358,6 +357,13 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     finally:
         logger.info("Session ending — cleaning up per-session resources")
 
+        # Stdio has one session for the process; HTTP sessions share Loogle.
+        if _active_transport() == "stdio" and _shared_loogle_manager is not None:
+            try:
+                await _shared_loogle_manager.stop()
+            except Exception:
+                logger.exception("Loogle close failed during stdio teardown")
+
         # NOTE: Do NOT close context.client here.  The LSP client is a shared
         # singleton managed by client_utils.  Closing it would kill ``lake
         # serve`` for all other sessions.  The shared client is cleaned up via
@@ -389,7 +395,7 @@ if auth_token:
     )
     mcp_kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
 
-mcp = MCPServer(**mcp_kwargs)
+mcp = CancellableMCPServer(**mcp_kwargs)
 
 # Symbols imported here but used only by the tool subpackage (via `server.X`)
 # or by tests through monkeypatching. Listing them in __all__ marks them as

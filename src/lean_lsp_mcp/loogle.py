@@ -103,7 +103,6 @@ class LoogleManager:
         self._ready = False
         self._lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
-        self._process_group: int | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr_tail = b""
         self._install_cancel = threading.Event()
@@ -421,11 +420,6 @@ class LoogleManager:
                     env=self._project_env(),
                     start_new_session=os.name == "posix",
                 )
-                # lake env launches a native Loogle child. The session belongs
-                # solely to this manager, so shutdown includes that child even
-                # when the Lake launcher has already exited.
-                if os.name == "posix" and isinstance(self.process.pid, int):
-                    self._process_group = self.process.pid
                 process = self.process
                 self._stderr_task = asyncio.create_task(self._drain_stderr(process))
                 if generation != self._generation:
@@ -527,7 +521,15 @@ class LoogleManager:
             self._install_cancel.set()
             await asyncio.shield(install)
         process, self.process = self.process, None
-        group, self._process_group = self._process_group, None
+        # POSIX startup makes the launcher's PID the owned process-group ID.
+        # It still identifies the native child after the launcher has exited.
+        group = (
+            process.pid
+            if os.name == "posix"
+            and process is not None
+            and isinstance(process.pid, int)
+            else None
+        )
         drain, self._stderr_task = self._stderr_task, None
         self._ready = False
         try:
@@ -536,7 +538,9 @@ class LoogleManager:
                     try:
                         owner = psutil.Process(process.pid)
                         members = [owner, *owner.children(recursive=True)]
-                    except psutil.NoSuchProcess:
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError):
+                        # Inspection is optional; denied or incomplete snapshots
+                        # cannot establish that every owned member has exited.
                         members = []
 
                     def exited(member: psutil.Process) -> bool:
@@ -547,6 +551,8 @@ class LoogleManager:
                             )
                         except psutil.NoSuchProcess:
                             return True
+                        except (psutil.AccessDenied, PermissionError):
+                            return False
 
                     def signal_group(sig: int) -> bool:
                         try:

@@ -591,7 +591,10 @@ class TestLoogleOwnedStartup:
             await manager.stop()
 
     @pytest.mark.asyncio
-    async def test_cancel_start_drains_installer_thread(self, manager, monkeypatch):
+    @pytest.mark.parametrize("cancel_start", [True, False])
+    async def test_cancellation_drains_installer_thread(
+        self, manager, monkeypatch, cancel_start
+    ):
         import threading
 
         started = threading.Event()
@@ -608,10 +611,15 @@ class TestLoogleOwnedStartup:
         task = asyncio.create_task(manager.start())
         while not started.is_set():
             await asyncio.sleep(0.01)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        if cancel_start:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await manager.stop()
+            assert not await task
         assert finished.is_set()
+        assert manager._install_task is None
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
     def test_installer_timeout_kills_descendants(self, manager, tmp_path):
@@ -755,6 +763,67 @@ class TestLoogleOwnedStartup:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    @pytest.mark.parametrize("raw_permission_error", [False, True])
+    async def test_stop_reaps_process_when_inspection_is_denied(
+        self, manager, monkeypatch, raw_permission_error
+    ):
+        import signal
+        import sys
+        import psutil
+
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time;time.sleep(60)",
+            start_new_session=True,
+        )
+        manager.process, manager._ready = process, True
+        error = (
+            PermissionError("inspection denied")
+            if raw_permission_error
+            else psutil.AccessDenied(process.pid)
+        )
+        inspect_children = MagicMock(side_effect=error)
+        monkeypatch.setattr(psutil.Process, "children", inspect_children)
+        try:
+            await asyncio.wait_for(manager.stop(), timeout=7)
+            inspect_children.assert_called_once_with(recursive=True)
+            assert process.returncode is not None
+            assert manager.process is None
+            assert manager._stop_task is None
+        finally:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await asyncio.wait_for(process.wait(), timeout=2)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    @pytest.mark.parametrize("denied_inspection", ["children", "status"])
+    async def test_unknown_member_state_does_not_hide_signal_permission_error(
+        self, manager, monkeypatch, denied_inspection
+    ):
+        from lean_lsp_mcp import loogle
+
+        process = MagicMock(pid=12345, returncode=None)
+        member = MagicMock()
+        member.children.return_value = []
+        member.is_running.return_value = denied_inspection == "status"
+        getattr(member, denied_inspection).side_effect = loogle.psutil.AccessDenied(
+            process.pid
+        )
+        monkeypatch.setattr(loogle.psutil, "Process", lambda _: member)
+        signal_group = MagicMock(side_effect=PermissionError("signal denied"))
+        monkeypatch.setattr(loogle.os, "killpg", signal_group)
+        manager.process = process
+        with pytest.raises(PermissionError, match="signal denied"):
+            await manager.stop()
+        signal_group.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
     async def test_ephemeral_macos_group_error_does_not_skip_reaping(
         self, manager, monkeypatch
     ):
@@ -776,7 +845,6 @@ class TestLoogleOwnedStartup:
 
         monkeypatch.setattr(loogle.os, "killpg", signal_group)
         manager.process = proc
-        manager._process_group = proc.pid
         await manager.stop()
         proc.wait.assert_awaited_once()
         assert manager.process is None
@@ -805,31 +873,7 @@ class TestLoogleOwnedStartup:
                 raise PermissionError("native exit teardown")
 
         monkeypatch.setattr(loogle.os, "killpg", signal_group)
-        manager.process, manager._process_group = proc, proc.pid
+        manager.process = proc
         await manager.stop()
         assert len(polls) == 2
         proc.wait.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_external_stop_cancels_and_drains_install_thread(
-        self, manager, monkeypatch
-    ):
-        import threading
-
-        started, finished = threading.Event(), threading.Event()
-        manager.binary_path.unlink()
-
-        def install():
-            started.set()
-            assert manager._install_cancel.wait(timeout=5)
-            finished.set()
-            return False
-
-        monkeypatch.setattr(manager, "ensure_installed", install)
-        start = asyncio.create_task(manager.start())
-        while not started.is_set():
-            await asyncio.sleep(0.01)
-        await manager.stop()
-        assert finished.is_set()
-        assert not await start
-        assert manager._install_task is None
