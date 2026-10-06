@@ -7,8 +7,52 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import psutil
 
 from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir
+
+
+def _assert_process_exited(pid: int) -> None:
+    """Accept an exited child even if it is reaped during inspection."""
+    try:
+        status = psutil.Process(pid).status()
+    except psutil.NoSuchProcess:
+        return
+    assert status == psutil.STATUS_ZOMBIE, f"Child process {pid} is still {status}"
+
+
+class TestAssertProcessExited:
+    @pytest.mark.parametrize("missing_at", ["lookup", "status"])
+    def test_accepts_reaped_process(self, monkeypatch, missing_at):
+        pid = 12345
+        process = MagicMock()
+        lookup = MagicMock(return_value=process)
+        if missing_at == "lookup":
+            lookup.side_effect = psutil.NoSuchProcess(pid)
+        else:
+            process.status.side_effect = psutil.NoSuchProcess(pid)
+        # Reproduce the old existence probe succeeding just before reaping.
+        monkeypatch.setattr(psutil, "pid_exists", lambda _: True)
+        monkeypatch.setattr(psutil, "Process", lookup)
+
+        _assert_process_exited(pid)
+
+        lookup.assert_called_once_with(pid)
+
+    @pytest.mark.parametrize(
+        "status", [psutil.STATUS_ZOMBIE, psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING]
+    )
+    def test_checks_process_status(self, monkeypatch, status):
+        process = MagicMock()
+        process.status.return_value = status
+        monkeypatch.setattr(psutil, "pid_exists", lambda _: True)
+        monkeypatch.setattr(psutil, "Process", lambda _: process)
+
+        if status == psutil.STATUS_ZOMBIE:
+            _assert_process_exited(12345)
+        else:
+            with pytest.raises(AssertionError):
+                _assert_process_exited(12345)
 
 
 class TestGetCacheDir:
@@ -545,7 +589,6 @@ class TestLoogleOwnedStartup:
         self, manager, monkeypatch, tmp_path, cancel_start
     ):
         import sys
-        import psutil
 
         real_exec = asyncio.create_subprocess_exec
         pid_path = tmp_path / "child.pid"
@@ -580,10 +623,7 @@ class TestLoogleOwnedStartup:
                 await manager.stop()
             assert manager.process is None
             assert manager._stderr_task is None
-            assert (
-                not psutil.pid_exists(child_pid)
-                or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
-            )
+            _assert_process_exited(child_pid)
         finally:
             if not start.done():
                 start.cancel()
@@ -625,7 +665,6 @@ class TestLoogleOwnedStartup:
     def test_installer_timeout_kills_descendants(self, manager, tmp_path):
         import sys
         import subprocess
-        import psutil
 
         pid_path = tmp_path / "installer-child.pid"
         code = (
@@ -636,10 +675,7 @@ class TestLoogleOwnedStartup:
         with pytest.raises(subprocess.TimeoutExpired):
             manager._run([sys.executable, "-c", code], timeout=0.3, cwd=tmp_path)
         child_pid = int(pid_path.read_text())
-        assert (
-            not psutil.pid_exists(child_pid)
-            or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
-        )
+        _assert_process_exited(child_pid)
 
     @pytest.mark.asyncio
     async def test_query_cancellation_discards_late_response(
