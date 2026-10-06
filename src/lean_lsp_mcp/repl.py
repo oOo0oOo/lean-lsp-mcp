@@ -189,7 +189,7 @@ class Repl:
                 await asyncio.sleep(0.1)
         except psutil.NoSuchProcess:
             return
-        except psutil.Error as exc:
+        except (psutil.Error, OSError) as exc:
             # Do not silently run without the configured protection.
             self._memory_error = f"Cannot monitor REPL resident memory: {exc}"
         finally:

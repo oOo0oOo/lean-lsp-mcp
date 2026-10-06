@@ -4,13 +4,13 @@ import asyncio
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import psutil
 import pytest
 
 from lean_lsp_mcp import repl as module
-from lean_lsp_mcp.repl import Repl, _memory_limit_preexec
+from lean_lsp_mcp.repl import Repl, ReplProcessError, _memory_limit_preexec
 
 
 @pytest.mark.parametrize("system", ["Darwin", "Windows"])
@@ -62,6 +62,62 @@ async def test_memory_guard_stops_when_measurement_is_denied(monkeypatch, tmp_pa
     await repl._watch_memory(proc)
     kill.assert_called_once_with(proc)
     assert "Cannot monitor REPL" in repl._memory_error
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, OSError])
+@pytest.mark.parametrize("operation", ["run_code", "run_snippets"])
+async def test_native_enumeration_error_preserves_failure_and_cleanup(
+    monkeypatch, tmp_path, error_type, operation
+):
+    repl = Repl(str(tmp_path))
+    killed = asyncio.Event()
+
+    async def read_response():
+        await killed.wait()
+        return b""
+
+    proc = SimpleNamespace(
+        pid=123,
+        returncode=None,
+        stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()),
+        stdout=SimpleNamespace(readline=read_response),
+        stderr=None,
+        wait=AsyncMock(return_value=-9),
+        _transport=SimpleNamespace(close=Mock()),
+    )
+
+    def kill_group(_pid, _signal):
+        proc.returncode = -9
+        killed.set()
+
+    kill = Mock(side_effect=kill_group)
+    process = SimpleNamespace(
+        memory_info=lambda: SimpleNamespace(rss=0),
+        children=Mock(side_effect=error_type("process enumeration failed")),
+    )
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(module.os, "killpg", kill, raising=False)
+    monkeypatch.setattr(module.psutil, "Process", lambda _: process)
+    monkeypatch.setattr(
+        module.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+    )
+
+    with pytest.raises(ReplProcessError, match="Cannot monitor REPL resident memory"):
+        if operation == "run_code":
+            await repl.run_code("#check Nat")
+        else:
+            await repl.run_snippets("theorem t : True := by", ["trivial"])
+
+    assert "process enumeration failed" in repl._memory_error
+    kill.assert_called_once_with(proc.pid, 9)
+    assert repl._memory_task is None
+    assert repl._proc is None
+    assert repl._header is None
+    assert repl._header_env is None
+    proc.wait.assert_awaited()
+    proc._transport.close.assert_called_once_with()
+    await repl.close()
+    kill.assert_called_once_with(proc.pid, 9)
 
 
 async def test_memory_guard_tolerates_exited_process(monkeypatch, tmp_path):
@@ -156,8 +212,6 @@ async def test_memory_guard_cleans_children_after_parent_exits(tmp_path):
 
 
 async def test_same_header_restart_drains_previous_process(monkeypatch, tmp_path):
-    from unittest.mock import AsyncMock
-
     repl = Repl(str(tmp_path))
     repl._header = "import Mathlib"
     repl._header_env = 1
