@@ -64,6 +64,19 @@ async def wire_transport(transport: str, env: dict[str, str], url: str | None = 
 
 
 @asynccontextmanager
+async def initialized_client(streams, *, modern):
+    @asynccontextmanager
+    async def connected():
+        yield streams
+
+    session = Client(connected(), cache=None) if modern else ClientSession(*streams)
+    async with session as client:
+        if not modern:
+            await client.initialize()
+        yield client
+
+
+@asynccontextmanager
 async def running_http(
     env: dict[str, str], transport: str = "streamable-http", script: str | None = None
 ):
@@ -232,6 +245,101 @@ async def test_http_bearer_token(protocol_env, transport):
                     assert (await client.list_tools()).tools
 
 
+# Exercise real registered tool errors without a Lean process or installed rg.
+TOOL_ERROR_SERVER = r"""
+import os
+import sys
+from unittest.mock import patch
+from lean_lsp_mcp import server
+from lean_lsp_mcp.search_utils import check_ripgrep_status
+
+with patch("lean_lsp_mcp.search_utils.shutil.which", return_value=None if sys.argv[1] == "missing-ripgrep" else "/fixture/rg"):
+    server._RG_AVAILABLE, server._RG_MESSAGE = check_ripgrep_status()
+if sys.argv[1] in {"build-in-progress", "missing-lake", "unsupported-toolchain"}:
+    from lean_lsp_mcp import client_utils, file_utils
+    file_utils._stdlib_src_root = lambda _root: None
+    if sys.argv[1] == "build-in-progress":
+        client_utils.set_build_in_progress(os.environ["LEAN_PROJECT_PATH"], True)
+server.create_server().run(transport="stdio")
+"""
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("modern", [False, True])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unset-project",
+        "missing-ripgrep",
+        "invalid-root",
+        "build-in-progress",
+        "missing-profile-file",
+        "missing-lake",
+        "unsupported-toolchain",
+    ],
+)
+async def test_expected_application_errors_visible(
+    protocol_env, tmp_path, modern, failure
+):
+    env = dict(protocol_env)
+    tool_name = "lean_local_search"
+    arguments = {"query": "Nat.add_comm"}
+    if failure in {"build-in-progress", "missing-lake", "unsupported-toolchain"}:
+        proof_file = tmp_path / "Proof.lean"
+        proof_file.write_text("theorem test : True := by trivial\n")
+        tool_name = "lean_goal"
+        arguments = {"file_path": str(proof_file), "line": 1}
+        if failure == "missing-lake":
+            empty_bin = tmp_path / "empty-bin"
+            empty_bin.mkdir()
+            env["PATH"] = str(empty_bin)
+            expected_messages = ["Failed to start Lean language server", "lake"]
+        elif failure == "unsupported-toolchain":
+            (tmp_path / "lean-toolchain").write_text("leanprover/lean4:v4.23.0\n")
+            expected_messages = [
+                "Failed to start Lean language server",
+                "Update lean-toolchain",
+            ]
+        else:
+            expected_messages = [
+                "A project build is in progress. Retry after the build completes."
+            ]
+    elif failure == "missing-profile-file":
+        tool_name = "lean_profile_proof"
+        arguments = {"file_path": str(tmp_path / "missing-proof.lean"), "line": 1}
+        expected_messages = ["missing-proof.lean", "No such file or directory"]
+    elif failure == "invalid-root":
+        missing_root = str(tmp_path / "missing-project")
+        arguments["project_root"] = missing_root
+        expected_messages = [f"Invalid project root '{missing_root}'", "does not exist"]
+    elif failure == "missing-ripgrep":
+        expected_messages = [
+            "ripgrep (rg) was not found on your PATH",
+            "https://github.com/BurntSushi/ripgrep#installation",
+        ]
+    else:
+        expected_messages = ["Lean project path not set. Call a file-based tool first."]
+    if tool_name == "lean_local_search":
+        env.pop("LEAN_PROJECT_PATH")
+
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-c", TOOL_ERROR_SERVER, failure],
+        env=env,
+    )
+    async with stdio_client(params) as streams:
+        async with initialized_client(streams, modern=modern) as client:
+            result = await client.call_tool(tool_name, arguments)
+            assert result.is_error
+            text = "\n".join(
+                block.text for block in result.content if block.type == "text"
+            )
+            for message in expected_messages:
+                assert message in text
+            # Expected failures must leave the connection usable.
+            assert (await client.list_tools()).tools
+
+
 # Run the production factory and lifespan, replacing only the Lean operation
 # with an observable deterministic tool. This exercises actual wire dispatch.
 PROBE_SERVER = r"""
@@ -310,15 +418,7 @@ async def test_progress_cancellation_and_next_request(
         started.set()
 
     async with probe_transport(transport, protocol_env) as streams:
-
-        @asynccontextmanager
-        async def connected():
-            yield streams
-
-        session = Client(connected(), cache=None) if modern else ClientSession(*streams)
-        async with session as client:
-            if not modern:
-                await client.initialize()
+        async with initialized_client(streams, modern=modern) as client:
             result = await client.call_tool(
                 "protocol_probe", {}, progress_callback=on_progress
             )
@@ -464,15 +564,7 @@ async def test_expected_tool_error_visible_unexpected_error_redacted(
     protocol_env, transport, modern
 ):
     async with probe_transport(transport, protocol_env) as streams:
-
-        @asynccontextmanager
-        async def connected():
-            yield streams
-
-        session = Client(connected(), cache=None) if modern else ClientSession(*streams)
-        async with session as client:
-            if not modern:
-                await client.initialize()
+        async with initialized_client(streams, modern=modern) as client:
             expected = await client.call_tool("protocol_expected_error", {})
             assert expected.is_error
             expected_text = "\n".join(

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from leanclient.aio import AsyncLeanLSPClient, ScratchPool
+from leanclient.aio import AsyncLeanLSPClient, LeanClientError, ScratchPool
 from mcp.server.mcpserver.utilities.logging import get_logger
 
 from lean_lsp_mcp.file_utils import (
@@ -119,7 +119,7 @@ def get_path_policy(
     lifespan = ctx.request_context.lifespan_context
     root = project_path or getattr(lifespan, "lean_project_path", None)
     if root is None:
-        raise ValueError("lean project path is not set.")
+        raise LeanToolError("lean project path is not set.")
     return build_lean_path_policy(root)
 
 
@@ -131,9 +131,9 @@ async def _start_client(project_path: Path) -> AsyncLeanLSPClient:
         )
         await client.start()
         logger.info("Shared async LSP client connected at %s", project_path)
-    except Exception as exc:
+    except (OSError, LeanClientError) as exc:
         logger.exception("Failed to start shared Lean LSP client")
-        raise ValueError(
+        raise LeanToolError(
             f"Failed to start Lean language server at '{project_path}': {exc}"
         ) from exc
     return client
@@ -160,7 +160,7 @@ async def _get_or_create_shared_client(
     runtime = _project_runtimes.get(project_key)
 
     if runtime is not None and runtime.build_in_progress:
-        raise ValueError(
+        raise LeanToolError(
             "A project build is in progress. Retry after the build completes."
         )
 
@@ -193,10 +193,10 @@ def _get_scratch_pool(ctx: ToolContext, *, serial: bool) -> ScratchPool:
     lifespan = ctx.request_context.lifespan_context
     project = lifespan.lean_project_path
     if project is None:
-        raise ValueError("lean project path is not set.")
+        raise LeanToolError("lean project path is not set.")
     runtime = _project_runtimes.get(_project_key(project))
     if runtime is None or runtime.client is None:
-        raise ValueError("Lean client is not running for this project.")
+        raise LeanToolError("Lean client is not running for this project.")
     client = runtime.client
 
     pool = runtime.serial_pool if serial else runtime.scratch_pool
@@ -316,8 +316,11 @@ async def startup_client(ctx: ToolContext) -> AsyncLeanLSPClient:
     async with CLIENT_LOCK:
         configured_root = ctx.request_context.lifespan_context.lean_project_path
         if configured_root is None:
-            raise ValueError("lean project path is not set.")
-        lean_project_path = bind_lean_project_path(ctx, configured_root)
+            raise LeanToolError("lean project path is not set.")
+        try:
+            lean_project_path = bind_lean_project_path(ctx, configured_root)
+        except ValueError as exc:
+            raise LeanToolError(str(exc)) from exc
         client = await _get_or_create_shared_client(lean_project_path)
         ctx.request_context.lifespan_context.client = client
         return client
@@ -326,7 +329,7 @@ async def startup_client(ctx: ToolContext) -> AsyncLeanLSPClient:
 def get_client(ctx: ToolContext) -> AsyncLeanLSPClient:
     client = ctx.request_context.lifespan_context.client
     if client is None:
-        raise ValueError("Lean client is not running for this project.")
+        raise LeanToolError("Lean client is not running for this project.")
     return client
 
 
@@ -500,7 +503,10 @@ async def setup_client_for_file(ctx: ToolContext, file_path: str) -> str | None:
     except (FileNotFoundError, OSError):
         return None
 
-    project_path = infer_project_path(resolved_file, ctx=ctx)
+    try:
+        project_path = infer_project_path(resolved_file, ctx=ctx)
+    except ValueError as exc:
+        raise LeanToolError(str(exc)) from exc
     if project_path is None:
         return None
 

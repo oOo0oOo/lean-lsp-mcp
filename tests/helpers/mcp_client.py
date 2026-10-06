@@ -44,6 +44,11 @@ class MCPClient:
         """Return the tool names exposed by the server."""
 
         result = await self._session.list_tools()
+        self._output_schemas = {
+            tool.name: tool.output_schema
+            for tool in result.tools
+            if tool.output_schema is not None
+        }
         return [tool.name for tool in result.tools]
 
     async def call_tool(
@@ -56,12 +61,7 @@ class MCPClient:
         """Call a tool and optionally assert success."""
 
         if self._output_schemas is None:
-            catalog = await self._session.list_tools()
-            self._output_schemas = {
-                tool.name: tool.output_schema
-                for tool in catalog.tools
-                if tool.output_schema is not None
-            }
+            await self.list_tools()
         result = await self._session.call_tool(name, arguments or {})
         if result.is_error and not expect_error:
             raise MCPToolError(name, result)

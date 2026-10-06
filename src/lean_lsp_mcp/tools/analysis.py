@@ -375,23 +375,15 @@ async def profile_proof(
     """Run `lean --profile` on a theorem. Returns per-line timing and categories. SLOW - avoid on theorems that already hit heartbeat limits."""
     from lean_lsp_mcp.profile_utils import profile_theorem
 
-    file_path_obj = server.resolve_file_path(ctx, file_path)
-
-    # Get project path
-    lifespan = ctx.request_context.lifespan_context
-    project_path = lifespan.lean_project_path
-
-    if not project_path:
-        project_path = infer_project_path(str(file_path_obj), ctx=ctx)
-    if project_path is None:
-        raise server.LeanToolError("Lean project not found")
     try:
+        file_path_obj = server.resolve_file_path(ctx, file_path)
+        project_path = ctx.request_context.lifespan_context.lean_project_path
+        if not project_path:
+            project_path = infer_project_path(str(file_path_obj), ctx=ctx)
+        if project_path is None:
+            raise server.LeanToolError("Lean project not found")
         policy = get_path_policy(ctx, project_path)
         file_path_obj = policy.validate_path(file_path_obj)
-    except ValueError as exc:
-        raise server.LeanToolError(str(exc)) from exc
-
-    try:
         return await profile_theorem(
             file_path=file_path_obj,
             theorem_line=line,
@@ -399,5 +391,5 @@ async def profile_proof(
             timeout=timeout,
             top_n=top_n,
         )
-    except (ValueError, TimeoutError) as e:
-        raise server.LeanToolError(str(e)) from e
+    except (OSError, ValueError) as exc:
+        raise server.LeanToolError(str(exc)) from exc
