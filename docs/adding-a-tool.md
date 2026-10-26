@@ -1,12 +1,12 @@
 # How to add a new MCP tool
 
-A tool in this repository is a thin `@mcp.tool` wrapper in `src/lean_lsp_mcp/server.py`. Everything else (return shape, helpers, tests, docs) lives in sibling files. Adding a new tool typically touches **5 places**, in this order.
+A tool in this repository is a thin `@tool` wrapper in `src/lean_lsp_mcp/tools/`. Everything else (return shape, helpers, tests, docs) lives in sibling files. Adding a new tool typically touches **5 places**, in this order.
 
 ## Checklist
 
 1. **`src/lean_lsp_mcp/models.py`** — add the Pydantic return model.
 2. **`src/lean_lsp_mcp/<your_helper>.py`** — put non-trivial logic here (optional).
-3. **`src/lean_lsp_mcp/server.py`** — register the tool with `@mcp.tool(...)`.
+3. **`src/lean_lsp_mcp/tools/<area>.py`** — declare the tool with `@tool(...)` from `tool_registry`.
 4. **`tests/test_<area>.py`** — add an end-to-end test that invokes the tool through `MCPClient`.
 5. **`docs/tools.md`** — add a short user-facing description.
 
@@ -34,7 +34,7 @@ Conventions used elsewhere in this file:
 - Use `Optional[...]` + `None` default, not `| None` defaults inline.
 - Use `Enum` subclasses for closed sets of strings (see `DiagnosticSeverity`).
 
-Then export the new model via the import block at the top of `server.py` (the big `from lean_lsp_mcp.models import (...)`).
+Import the model in the tool module that returns it.
 
 ## 2. Put the heavy logic in a helper module
 
@@ -53,59 +53,40 @@ If the body is more than ~30 lines or pulls in subprocesses, parsers, or network
 
 A helper module is plain Python — no MCP imports. It accepts already-validated arguments and either returns a value or raises `LeanToolError` (imported from `lean_lsp_mcp.utils`).
 
-## 3. Register the tool — `server.py`
+## 3. Declare the tool — `tools/<area>.py`
 
 The decorator + signature is the contract. Template:
 
 ```python
-@mcp.tool(
-    "lean_my_tool",                           # public name (snake_case, prefix lean_)
-    annotations=ToolAnnotations(
-        title="My Tool",                      # short human label
-        readOnlyHint=True,                    # False if it mutates anything
-        destructiveHint=False,                # True only for things like lean_build
-        idempotentHint=True,                  # repeated calls -> same result
-        openWorldHint=False,                  # True if it hits the public internet
-    ),
+from typing import Annotated
+from pydantic import Field
+from mcp.types import ToolAnnotations
+from lean_lsp_mcp import server
+from lean_lsp_mcp.tool_registry import tool
+from lean_lsp_mcp.client_utils import get_client, require_client_for_file
+
+@tool(
+    "lean_my_tool",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
 )
-# Optional: only for tools that hit a rate-limited remote service.
-# @rate_limited("my_tool", max_requests=3, per_seconds=30)
-async def my_tool(                            # `async def` for I/O; plain `def` is fine for pure LSP/local calls
-    ctx: Context,                             # always first
-    file_path: Annotated[
-        str, Field(description="Absolute or project-root-relative path to Lean file")
-    ],
-    line: Annotated[int, Field(description="Line (1-indexed)", ge=1)],
-    flag: Annotated[
-        bool, Field(description="What this flag toggles")
-    ] = False,
+async def my_tool(
+    ctx: server.ToolContext,
+    file_path: Annotated[str, Field(description="Lean file path")],
 ) -> MyToolResult:
-    """One-line summary shown to the model. Mention key behavior or example.
-
-    Optional second paragraph with examples or warnings (e.g. "SLOW", "use sparingly").
-    """
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
-
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    client.open_file(rel_path)
-
-    # Convert 1-indexed -> 0-indexed at the boundary
-    try:
-        return do_the_work(client, rel_path, line - 1, flag=flag)
-    except ValueError as exc:
-        raise LeanToolError(str(exc)) from exc
+    """Describe the query and its result."""
+    relative_path = await require_client_for_file(ctx, file_path)
+    client = get_client(ctx)
+    return await do_the_work(client, relative_path)
 ```
 
 Some rules:
 
 - **Name starts with `lean_`** and the decorator name is the public identifier. The Python function name can differ from the decorator name (only the decorator name is exposed).
-- **`ctx: Context` is always the first parameter.** The `@rate_limited` decorator depends on this.
+- **`ctx: server.ToolContext` is always the first parameter.** The `@rate_limited` decorator depends on this.
 - **Every non-`ctx` parameter is `Annotated[T, Field(description=..., ...)]`** with sensible bounds (`ge=1` for 1-indexed positions, etc.). Optional params get a default; required params don't.
 - **Return a Pydantic model**, not a dict. Multi-shape outputs use a `Union` of two models (see `lean_diagnostic_messages` returning `DiagnosticsResult | InteractiveDiagnosticsResult`).
 - **Errors → `raise LeanToolError(...)`**, never bare `Exception` or returning an error string. Wrap underlying exceptions with `from exc`.
-- **Path handling** goes through `setup_client_for_file` / `resolve_file_path` / `_raise_invalid_path` from `client_utils`. Don't re-implement project-root inference.
+- **Path handling** goes through `await require_client_for_file(ctx, file_path)` from `client_utils`; obtain the client with `get_client(ctx)`. Do not re-implement project-root inference.
 - **Shared state** (LSP client, project path, REPL, build coordinator, loogle manager) is reached via `ctx.request_context.lifespan_context` — never via globals.
 - **Progress** for long-running tools: `await _safe_report_progress(ctx, progress=..., total=..., message=...)`.
 - **1-indexed in, 0-indexed inside** when calling `leanclient`.
@@ -113,7 +94,7 @@ Some rules:
 
 ### When the tool needs new lifespan state
 
-If your tool needs something that should live for the whole session (a subprocess, a cache, a new rate-limit bucket), edit `AppContext` and `app_lifespan` in `server.py`:
+If your tool needs something that should live for the whole application (a subprocess, a cache, a new rate-limit bucket), edit `AppContext` and `app_lifespan` in `server.py`:
 
 ```python
 @dataclass
@@ -130,11 +111,11 @@ if context and context.my_thing:
     await context.my_thing.close()
 ```
 
-For a new rate-limit category, also add the empty list to the `rate_limit` dict in `app_lifespan` and apply `@rate_limited("my_category", ...)` below `@mcp.tool`.
+For a new rate-limit category, also add the empty list to the `rate_limit` dict in `app_lifespan` and apply `@rate_limited("my_category", ...)` below `@tool`.
 
 ## 4. Test it — `tests/`
 
-Tests use the in-process MCP client from `tests/helpers/mcp_client.py`. Add to an existing `test_*.py` if the area fits, or create `tests/test_my_area.py`. Template:
+Tests use the subprocess stdio MCP client from `tests/helpers/mcp_client.py`. Add to an existing `test_*.py` if the area fits, or create `tests/test_my_area.py`. Template:
 
 ```python
 from __future__ import annotations
@@ -168,12 +149,12 @@ Add a `#### lean_my_tool` section under the right group ("File interactions (LSP
 
 ---
 
-## Optional: runtime configuration
+## Optional: startup configuration
 
-These are handled centrally by `apply_tool_configuration` in `server.py`. They work automatically — just having a registered tool is enough:
+These are handled centrally by `create_server()` and tool registration in `server.py`. Configuration is fixed when the server is created; restart it after changing these settings:
 
-- **Disable at runtime**: users set `LEAN_MCP_DISABLED_TOOLS=lean_my_tool,lean_other`.
-- **Override description at runtime**: users set `LEAN_MCP_TOOL_DESCRIPTIONS='{"lean_my_tool":"new docstring"}'`.
+- **Disable tools**: users set `LEAN_MCP_DISABLED_TOOLS=lean_my_tool,lean_other`.
+- **Override descriptions**: users set `LEAN_MCP_TOOL_DESCRIPTIONS='{"lean_my_tool":"new docstring"}'`.
 
 ## Worked example: `lean_file_outline`
 
@@ -204,7 +185,7 @@ Note the recursive `children: List["OutlineEntry"]` (forward reference as a stri
 **3. Tool registration** — [`src/lean_lsp_mcp/server.py` lines 736–760](https://github.com/oOo0oOo/lean-lsp-mcp/blob/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13/src/lean_lsp_mcp/server.py#L736-L760):
 
 ```python
-@mcp.tool(
+@tool(
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
@@ -250,3 +231,24 @@ What to notice:
 A tool is: **decorator metadata** (name + `ToolAnnotations`) + **typed signature** (`ctx` first, then `Annotated[..., Field(...)]` params) + **Pydantic return model from `models.py`** + **one-line docstring** + **body that uses `ctx.request_context.lifespan_context`, validates paths, raises `LeanToolError`, and delegates real work to a helper module**.
 
 Everything else — in particular rate limiting, progress reporting, runtime disabling, description overrides — is opt-in infrastructure that already exists.
+
+## MCP compatibility checks
+
+`create_server()` applies startup configuration and registers declared tools in
+name order through public SDK APIs. Add a new tool module to `_TOOL_MODULES`;
+never edit SDK private managers or mutate the catalog after startup. Choose
+annotations from actual effects: arbitrary Lean execution and builds are not
+read-only or idempotent, even when source buffers are preserved.
+
+Run `uv run pytest tests/test_protocol_compatibility.py -q` for deterministic
+stdio, Streamable HTTP, and legacy SSE coverage without a Lean installation.
+Run the existing Lean integration suite for semantic behavior as well. Preserve
+object-shaped structured results and text fallbacks for legacy clients. Use
+`LeanToolError` for tool failures and do not catch `CancelledError` as a normal
+result. Send progress on the calling request; modern MCP log notifications
+require that request's log-level opt-in.
+
+Application teardown must cancel and await owned tasks before closing their
+resources, including when startup fails. Do not close shared project resources
+when a single client disconnects. The conventional `server.mcp` import target is
+retained for SDK tooling; the CLI constructs a fresh configured server.

@@ -14,6 +14,7 @@ from typing import Any, cast
 import orjson
 from leanclient.aio import AsyncLeanLSPClient, LeanClientError
 from mcp.server.auth.settings import AuthSettings
+from mcp.server.caching import CacheHint
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.utilities.logging import configure_logging, get_logger
 
@@ -57,12 +58,10 @@ from lean_lsp_mcp.tool_utils import (
     safe_report_progress as _safe_report_progress,
     urlopen_json as _urlopen_json,
 )
-from lean_lsp_mcp.tool_registry import register_module_tools
+from lean_lsp_mcp.tool_registry import register_tools
 from lean_lsp_mcp.utils import LeanToolError, PreSharedTokenVerifier
 
 
-_DISABLED_TOOLS_ENV = "LEAN_MCP_DISABLED_TOOLS"
-_INSTRUCTIONS_ENV = "LEAN_MCP_INSTRUCTIONS"
 _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
 
 
@@ -101,32 +100,6 @@ def _load_tool_description_overrides() -> dict[str, str]:
                         overrides[key] = value
 
     return overrides
-
-
-def apply_tool_configuration(server: MCPServer) -> None:
-    """Apply optional runtime tool configuration from environment variables."""
-    disabled = _parse_disabled_tools(config.disabled_tools_raw())
-    for name in sorted(disabled):
-        tool = server._tool_manager.get_tool(name)
-        if tool is None:
-            logger.warning("Cannot disable unknown tool '%s'", name)
-            continue
-        server.remove_tool(name)
-        logger.info("Disabled tool '%s' via %s", name, _DISABLED_TOOLS_ENV)
-
-    instructions_override = config.instructions_override()
-    if instructions_override is not None:
-        server._lowlevel_server.instructions = instructions_override
-        logger.info("Overrode server instructions via %s", _INSTRUCTIONS_ENV)
-
-    description_overrides = _load_tool_description_overrides()
-    for name, description in description_overrides.items():
-        tool = server._tool_manager.get_tool(name)
-        if tool is None:
-            logger.warning("Cannot override description for unknown tool '%s'", name)
-            continue
-        tool.description = description
-        logger.info("Overrode description for '%s'", name)
 
 
 def _get_build_concurrency_mode() -> str:
@@ -170,13 +143,8 @@ _RG_AVAILABLE, _RG_MESSAGE = check_ripgrep_status()
 
 
 # ---------------------------------------------------------------------------
-# Shared singletons for resources that should NOT be duplicated per-session.
-#
-# With the ``streamable-http`` transport every MCP session gets its own
-# ``app_lifespan`` invocation.  Heavy resources like the local loogle
-# subprocess (~6 GB RSS for the Mathlib index) must be initialised exactly
-# once and shared across sessions; otherwise N concurrent clients would
-# spawn N loogle processes and exhaust memory.
+# Shared application resources. SDK 2.2 invokes lifespan once per server run;
+# clients share its context. The existing resource registries remain process-wide.
 # ---------------------------------------------------------------------------
 _shared_loogle_manager: LoogleManager | None = None
 _shared_loogle_available: bool = False
@@ -373,24 +341,6 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
 
 VERSION = importlib.metadata.version("lean-lsp-mcp")
 
-mcp_kwargs: dict[str, Any] = dict(
-    name="Lean LSP",
-    instructions=INSTRUCTIONS,
-    version=VERSION,
-    dependencies=["leanclient"],
-    lifespan=app_lifespan,
-)
-
-auth_token = config.auth_token()
-if auth_token:
-    mcp_kwargs["auth"] = AuthSettings(
-        issuer_url=cast(Any, "http://localhost/dummy-issuer"),
-        resource_server_url=cast(Any, "http://localhost/dummy-resource"),
-    )
-    mcp_kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
-
-mcp = MCPServer(**mcp_kwargs)
-
 # Symbols imported here but used only by the tool subpackage (via `server.X`)
 # or by tests through monkeypatching. Listing them in __all__ marks them as
 # intentionally exported so they are not pruned as "unused imports".
@@ -435,7 +385,7 @@ from lean_lsp_mcp.tools import navigation as _navigation_tools  # noqa: E402
 from lean_lsp_mcp.tools import search as _search_tools  # noqa: E402
 from lean_lsp_mcp.tools import widgets as _widget_tools  # noqa: E402
 
-for _tool_module in (
+_TOOL_MODULES = (
     _build_tools,
     _diagnostic_tools,
     _goal_tools,
@@ -443,8 +393,45 @@ for _tool_module in (
     _search_tools,
     _analysis_tools,
     _widget_tools,
-):
-    register_module_tools(mcp, _tool_module)
+)
+
+
+def create_server() -> MCPServer:
+    """Create a server with a catalog fixed by the current startup configuration."""
+    instructions = config.instructions_override()
+    kwargs: dict[str, Any] = {
+        "name": "Lean LSP",
+        "instructions": INSTRUCTIONS if instructions is None else instructions,
+        "version": VERSION,
+        "dependencies": ["leanclient"],
+        "lifespan": app_lifespan,
+        "cache_hints": {"tools/list": CacheHint(ttl_ms=60_000, scope="private")},
+    }
+    auth_token = config.auth_token()
+    if auth_token:
+        # This is an opaque, server-local shared secret, not an OAuth token.
+        kwargs["auth"] = AuthSettings(
+            issuer_url=cast(Any, "http://localhost/dummy-issuer"),
+            resource_server_url=cast(Any, "http://localhost/dummy-resource"),
+            validate_token_resource=False,
+        )
+        kwargs["token_verifier"] = PreSharedTokenVerifier(auth_token)
+    instance = MCPServer(**kwargs)
+    disabled = _parse_disabled_tools(config.disabled_tools_raw())
+    descriptions = _load_tool_description_overrides()
+    known = register_tools(
+        instance, _TOOL_MODULES, disabled=disabled, descriptions=descriptions
+    )
+    for name in sorted(disabled - known):
+        logger.warning("Cannot disable unknown tool '%s'", name)
+    for name in sorted(descriptions.keys() - (known - disabled)):
+        logger.warning("Cannot override description for unknown tool '%s'", name)
+    return instance
+
+
+# Preserve the conventional SDK/Inspector import target. The CLI creates its own
+# instance after parsing arguments, so import-time configuration cannot win.
+mcp = create_server()
 
 lsp_build = _build_tools.lsp_build
 file_outline = _diagnostic_tools.file_outline
@@ -472,6 +459,5 @@ get_widget_source = _widget_tools.get_widget_source
 
 
 if __name__ == "__main__":
-    apply_tool_configuration(mcp)
     os.environ.setdefault(config.ACTIVE_TRANSPORT_ENV, "stdio")
     mcp.run()
