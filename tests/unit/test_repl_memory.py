@@ -232,3 +232,17 @@ async def test_same_header_restart_drains_previous_process(monkeypatch, tmp_path
     monkeypatch.setattr(repl, "_send_cmd", AsyncMock(return_value={"env": 2}))
     assert await repl._ensure_header("import Mathlib") == 2
     assert order == ["close", "start"]
+
+
+def test_kill_process_tolerates_permission_error(tmp_path, monkeypatch):
+    """macOS killpg can raise EPERM for a group holding zombies."""
+    repl = Repl(str(tmp_path))
+    proc = SimpleNamespace(pid=12345)
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        module.os, "killpg", Mock(side_effect=PermissionError()), raising=False
+    )
+
+    repl._kill_process(proc)
+
+    assert repl._terminated_proc is proc

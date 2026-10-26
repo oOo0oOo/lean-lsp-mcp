@@ -443,6 +443,7 @@ async def test_startup_client_does_not_reclassify_unexpected_errors(
     [
         (FileNotFoundError("missing lake executable"), LeanToolError),
         (LeanClientError("unsupported toolchain"), LeanToolError),
+        (asyncio.TimeoutError("initialize timed out"), LeanToolError),
         (RuntimeError("private implementation detail"), RuntimeError),
     ],
 )

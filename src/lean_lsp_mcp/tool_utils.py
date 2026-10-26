@@ -34,7 +34,11 @@ async def urlopen_json(req: urllib.request.Request, timeout: float) -> Any:
         with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as response:
             return orjson.loads(response.read())
 
-    return await asyncio.to_thread(request)
+    try:
+        return await asyncio.to_thread(request)
+    except (OSError, ValueError) as exc:
+        # Network and JSON errors are not ToolErrors, so the SDK would hide them.
+        raise LeanToolError(f"Request to {req.host} failed: {exc}") from exc
 
 
 def custom_backend(env_var: str, default_url: str) -> bool:

@@ -23,15 +23,15 @@ Tools return a Pydantic model (not a dict, not a raw string). One model per tool
 class MyToolResult(BaseModel):
     name: str = Field(description="...")
     line: int = Field(description="1-indexed line")
-    matches: List[str] = Field(default_factory=list, description="...")
+    matches: list[str] = Field(default_factory=list, description="...")
 ```
 
 Conventions used elsewhere in this file:
 
 - All fields get a `description=` (it shows up in the MCP schema).
 - 1-indexed line/column at the boundary; convert to 0-indexed only inside the implementation.
-- For "list of X" outputs, wrap in a `XResults` model with an `items: List[X]` field — bare `List[...]` returns are avoided.
-- Use `Optional[...]` + `None` default, not `| None` defaults inline.
+- For "list of X" outputs, wrap in a `XResults` model with an `items: list[X]` field — bare `list[...]` returns are avoided.
+- Optional fields are `T | None` with a `None` default.
 - Use `Enum` subclasses for closed sets of strings (see `DiagnosticSeverity`).
 
 Import the model in the tool module that returns it.
@@ -158,9 +158,9 @@ These are handled centrally by `create_server()` and tool registration in `serve
 
 ## Worked example: `lean_file_outline`
 
-A small, end-to-end example showing how the pieces line up. Permalinks pin to commit [`4b5f44d`](https://github.com/oOo0oOo/lean-lsp-mcp/tree/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13) — line numbers may drift on later commits.
+A small, end-to-end example showing how the pieces line up.
 
-**1. Return model** — [`src/lean_lsp_mcp/models.py` lines 109–129](https://github.com/oOo0oOo/lean-lsp-mcp/blob/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13/src/lean_lsp_mcp/models.py#L109-L129) defines `OutlineEntry` and the wrapper `FileOutline`:
+**1. Return model** — [`src/lean_lsp_mcp/models.py`](../src/lean_lsp_mcp/models.py) defines `OutlineEntry` and the wrapper `FileOutline`:
 
 ```python
 class OutlineEntry(BaseModel):
@@ -168,61 +168,65 @@ class OutlineEntry(BaseModel):
     kind: str = Field(description="Declaration kind (Thm, Def, Class, Struct, Ns, Ex)")
     start_line: int = Field(description="Start line (1-indexed)")
     end_line: int = Field(description="End line (1-indexed)")
-    type_signature: Optional[str] = Field(None, description="Type signature if available")
-    children: List["OutlineEntry"] = Field(default_factory=list, description="Nested declarations")
+    type_signature: str | None = Field(None, description="Type signature if available")
+    children: list["OutlineEntry"] = Field(
+        default_factory=list, description="Nested declarations"
+    )
 
 
 class FileOutline(BaseModel):
-    imports: List[str] = Field(default_factory=list, description="Import statements")
-    declarations: List[OutlineEntry] = Field(default_factory=list, description="Top-level declarations")
-    total_declarations: Optional[int] = Field(None, description="Total count (set when truncated)")
+    imports: list[str] = Field(default_factory=list, description="Import statements")
+    declarations: list[OutlineEntry] = Field(
+        default_factory=list, description="Top-level declarations"
+    )
+    total_declarations: int | None = Field(
+        None, description="Total count (set when truncated)"
+    )
 ```
 
-Note the recursive `children: List["OutlineEntry"]` (forward reference as a string), the wrapper pattern (`FileOutline` holds a list field rather than being a bare list), and `Optional[...]` with a `None` default rather than `| None`.
+Note the recursive `children: list["OutlineEntry"]` (forward reference as a string), the wrapper pattern (`FileOutline` holds a list field rather than being a bare list), and `int | None` with a `None` default for optional fields.
 
-**2. Helper module** — heavy lifting lives in [`src/lean_lsp_mcp/outline_utils.py`](https://github.com/oOo0oOo/lean-lsp-mcp/blob/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13/src/lean_lsp_mcp/outline_utils.py), exposing a single `generate_outline_data(client, rel_path, max_declarations) -> FileOutline`. No MCP imports — just plain Python plus `leanclient`.
+**2. Helper module** — heavy lifting lives in [`src/lean_lsp_mcp/outline_utils.py`](../src/lean_lsp_mcp/outline_utils.py), exposing `async generate_outline_data(client, pool, path, max_declarations) -> FileOutline`. No MCP imports — just plain Python plus `leanclient`.
 
-**3. Tool registration** — [`src/lean_lsp_mcp/server.py` lines 736–760](https://github.com/oOo0oOo/lean-lsp-mcp/blob/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13/src/lean_lsp_mcp/server.py#L736-L760):
+**3. Tool registration** — [`src/lean_lsp_mcp/tools/diagnostics.py`](../src/lean_lsp_mcp/tools/diagnostics.py):
 
 ```python
 @tool(
     "lean_file_outline",
     annotations=ToolAnnotations(
         title="File Outline",
-        readOnlyHint=True,
-        idempotentHint=True,
-        openWorldHint=False,
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
     ),
 )
-def file_outline(
-    ctx: Context,
+async def file_outline(
+    ctx: server.ToolContext,
     file_path: Annotated[
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
     max_declarations: Annotated[
-        Optional[int], Field(description="Max declarations to return", ge=1)
+        int | None, Field(description="Max declarations to return", ge=1)
     ] = None,
 ) -> FileOutline:
     """Get imports and declarations with type signatures. Token-efficient."""
-    rel_path = setup_client_for_file(ctx, file_path)
-    if not rel_path:
-        _raise_invalid_path(file_path)
+    rel_path = await require_client_for_file(ctx, file_path)
 
-    client: LeanLSPClient = ctx.request_context.lifespan_context.client
-    return generate_outline_data(client, rel_path, max_declarations)
+    client = get_client(ctx)
+    pool = get_serial_scratch_pool(ctx)
+    return await generate_outline_data(client, pool, rel_path, max_declarations)
 ```
 
 What to notice:
 
-- The function is `def`, not `async def` — it only does in-process LSP calls, no awaiting needed.
 - The decorator name (`"lean_file_outline"`) is the public identifier; the Python function is named `file_outline`.
-- `ctx: Context` first, `file_path` required, `max_declarations` optional with `Optional[int]` + `None` default + `ge=1` bound.
-- Path validation through `setup_client_for_file` / `_raise_invalid_path` — no project-root logic in the tool body.
-- The body is three lines: validate path, fetch client from lifespan context, delegate to the helper.
+- `ctx: server.ToolContext` first, `file_path` required, `max_declarations` optional with `int | None` + `None` default + `ge=1` bound.
+- Path validation through `require_client_for_file`, which raises `LeanToolError` for a bad path — no project-root logic in the tool body.
+- The body is short: validate the path, fetch the client and scratch pool, delegate to the helper.
 
-**4. Test** — [`tests/test_outline.py`](https://github.com/oOo0oOo/lean-lsp-mcp/blob/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13/tests/test_outline.py) calls `client.call_tool("lean_file_outline", {...})` against a real Lean project under `tests/test_project/`.
+**4. Test** — [`tests/test_outline.py`](../tests/test_outline.py) calls `client.call_tool("lean_file_outline", {...})` against a real Lean project under `tests/test_project/`; [`tests/unit/test_outline_signatures.py`](../tests/unit/test_outline_signatures.py) covers the helper.
 
-**5. User-facing docs** — [`docs/tools.md` "File interactions (LSP)" section](https://github.com/oOo0oOo/lean-lsp-mcp/blob/4b5f44d7100ae997f9bec8d2a4707b31ce5d4b13/docs/tools.md#L3-L5).
+**5. User-facing docs** — the `lean_file_outline` entry in [`docs/tools.md`](tools.md).
 
 ---
 

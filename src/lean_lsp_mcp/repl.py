@@ -159,7 +159,8 @@ class Repl:
     def _kill_process(self, proc: asyncio.subprocess.Process) -> None:
         if self._terminated_proc is proc:
             return
-        with suppress(ProcessLookupError):
+        # OSError covers a gone process and macOS EPERM on a group with zombies.
+        with suppress(OSError):
             if platform.system() != "Windows":
                 # _start owns a new session; descendants can outlive its leader.
                 os.killpg(proc.pid, 9)

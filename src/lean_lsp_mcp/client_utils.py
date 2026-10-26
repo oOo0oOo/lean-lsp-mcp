@@ -131,7 +131,8 @@ async def _start_client(project_path: Path) -> AsyncLeanLSPClient:
         )
         await client.start()
         logger.info("Shared async LSP client connected at %s", project_path)
-    except (OSError, LeanClientError) as exc:
+    # asyncio.TimeoutError is only an OSError from Python 3.11 on.
+    except (OSError, asyncio.TimeoutError, LeanClientError) as exc:
         logger.exception("Failed to start shared Lean LSP client")
         raise LeanToolError(
             f"Failed to start Lean language server at '{project_path}': {exc}"
