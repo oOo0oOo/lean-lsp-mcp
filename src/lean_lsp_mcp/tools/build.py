@@ -19,8 +19,8 @@ from lean_lsp_mcp.tool_registry import tool
         title="Build Project",
         read_only_hint=False,
         destructive_hint=True,
-        idempotent_hint=True,
-        open_world_hint=False,
+        idempotent_hint=False,
+        open_world_hint=True,
     ),
 )
 async def lsp_build(

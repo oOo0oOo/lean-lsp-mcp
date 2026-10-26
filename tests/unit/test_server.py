@@ -367,36 +367,28 @@ def test_load_tool_description_overrides_inline(
     assert overrides["lean_goal"] == "Goal tool from env"
 
 
-def test_apply_tool_configuration_disables_and_overrides(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mcp = server.MCPServer(name="test", instructions="base instructions")
-
-    @mcp.tool("enabled_tool")
-    def enabled_tool() -> str:
-        """enabled description"""
-        return "ok"
-
-    @mcp.tool("removed_tool")
-    def removed_tool() -> str:
-        """removed description"""
-        return "ok"
-
-    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "removed_tool")
+@pytest.mark.asyncio
+async def test_create_server_disables_and_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "lean_run_code")
     monkeypatch.setenv("LEAN_MCP_INSTRUCTIONS", "custom server instructions")
     monkeypatch.setenv(
         "LEAN_MCP_TOOL_DESCRIPTIONS",
-        json.dumps({"enabled_tool": "overridden description"}),
+        json.dumps({"lean_goal": "overridden description"}),
     )
-
-    server.apply_tool_configuration(mcp)
-
-    assert mcp.instructions == "custom server instructions"
-    assert mcp._tool_manager.get_tool("removed_tool") is None
+    instance = server.create_server()
+    tools = await instance.list_tools()
+    assert instance.instructions == "custom server instructions"
+    assert "lean_run_code" not in {tool.name for tool in tools}
     assert (
-        mcp._tool_manager.get_tool("enabled_tool").description
+        next(tool for tool in tools if tool.name == "lean_goal").description
         == "overridden description"
     )
+    assert [tool.name for tool in tools] == sorted(tool.name for tool in tools)
+    monkeypatch.delenv("LEAN_MCP_DISABLED_TOOLS")
+    assert "lean_run_code" in {
+        tool.name for tool in await server.create_server().list_tools()
+    }
+    assert "lean_run_code" not in {tool.name for tool in await instance.list_tools()}
 
 
 @pytest.mark.asyncio
@@ -1381,3 +1373,38 @@ def test_prewarm_files_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.prewarm_files() == []
     monkeypatch.setenv("LEAN_MCP_PREWARM_FILES", "A.lean, sub/B.lean ,")
     assert config.prewarm_files() == ["A.lean", "sub/B.lean"]
+
+
+@pytest.mark.asyncio
+async def test_factory_warns_for_unknown_and_disabled_overrides(monkeypatch, caplog):
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "unknown_tool,lean_build")
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        '{"unknown_tool":"unknown", "lean_build":"disabled", "lean_goal":"known"}',
+    )
+    instance = server.create_server()
+    tools = {tool.name: tool for tool in await instance.list_tools()}
+    assert "lean_build" not in tools
+    assert tools["lean_goal"].description == "known"
+    assert "Cannot disable unknown tool 'unknown_tool'" in caplog.text
+    assert "Cannot override description for unknown tool 'lean_build'" in caplog.text
+    assert "Cannot override description for unknown tool 'unknown_tool'" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_execution_annotations_do_not_promise_read_only_or_idempotent():
+    tools = {tool.name: tool for tool in await server.create_server().list_tools()}
+    for name in (
+        "lean_build",
+        "lean_run_code",
+        "lean_multi_attempt",
+        "lean_verify",
+        "lean_minimal_hypotheses",
+        "lean_profile_proof",
+    ):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is False
+        assert annotations.idempotent_hint is False
+        assert annotations.destructive_hint is True
+        assert annotations.open_world_hint is True

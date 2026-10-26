@@ -26,9 +26,28 @@ def tool(name: str, **options: Any):
     return decorate
 
 
-def register_module_tools(server: Any, module: ModuleType) -> None:
-    """Register every tool declared in ``module`` on ``server``."""
-    for value in vars(module).values():
-        definition = getattr(value, _DEFINITION_ATTR, None)
-        if isinstance(definition, ToolDefinition):
-            server.tool(definition.name, **definition.options)(value)
+def register_tools(
+    server: Any,
+    modules: tuple[ModuleType, ...],
+    *,
+    disabled: set[str],
+    descriptions: dict[str, str],
+) -> set[str]:
+    """Register a stable catalog, applying configuration before SDK registration."""
+    definitions = {}
+    for module in modules:
+        for function in vars(module).values():
+            definition = getattr(function, _DEFINITION_ATTR, None)
+            if isinstance(definition, ToolDefinition):
+                if definition.name in definitions:
+                    raise ValueError(f"Duplicate tool name: {definition.name}")
+                definitions[definition.name] = (function, definition)
+    for name in sorted(definitions):
+        if name in disabled:
+            continue
+        function, definition = definitions[name]
+        options = dict(definition.options)
+        if name in descriptions:
+            options["description"] = descriptions[name]
+        server.tool(name, **options)(function)
+    return set(definitions)
