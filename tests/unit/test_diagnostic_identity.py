@@ -121,8 +121,7 @@ def test_build_attempt_text_multiline_inline() -> None:
         [source], source, 21, "have h : True := trivial\nexact h", 1
     )
     assert text == (
-        "example : True := by have h : True := trivial\n"
-        "                     exact h\n"
+        "example : True := by have h : True := trivial\n                     exact h\n"
     )
 
 
