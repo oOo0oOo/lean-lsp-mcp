@@ -115,6 +115,17 @@ def test_unchanged_distant_diagnostic_not_re_reported() -> None:
     assert extra == []  # in baseline, so excluded
 
 
+def test_build_attempt_text_multiline_inline() -> None:
+    source = "example : True := by sorry"
+    _, text, _, _, _ = _build_attempt_text(
+        [source], source, 21, "have h : True := trivial\nexact h", 1
+    )
+    assert text == (
+        "example : True := by have h : True := trivial\n"
+        "                     exact h\n"
+    )
+
+
 def test_build_attempt_text_no_shift_in_middle_of_file() -> None:
     """Multi-line snippet replacing N source lines in the middle of a file
     leaves the file size unchanged, so line_delta == 0.
