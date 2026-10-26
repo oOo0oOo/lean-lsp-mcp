@@ -1280,8 +1280,10 @@ async def test_run_code_repl_process_failure_disables_fast_lane(
     class _DeadRepl:
         project_dir = str(project)
         close_calls = 0
+        run_calls = 0
 
         async def run_code(self, _code):
+            self.run_calls += 1
             raise ReplProcessError("No response; exit code -9; memory limit: 8192 MiB")
 
         async def close(self):
@@ -1300,6 +1302,9 @@ async def test_run_code_repl_process_failure_disables_fast_lane(
     assert repl.close_calls == 1
     assert "disabling it for this session" in caplog.text
     assert "8192 MiB" in caplog.text
+    assert await server._run_code_repl(ctx, "#check Nat") is None
+    assert repl.run_calls == 1
+    assert repl.close_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1313,8 +1318,10 @@ async def test_multi_attempt_repl_process_failure_disables_fast_lane(
     class _DeadRepl:
         project_dir = str(project)
         close_calls = 0
+        run_calls = 0
 
         async def run_snippets(self, _code, _snippets):
+            self.run_calls += 1
             raise ReplProcessError("No response; exit code -9")
 
         async def close(self):
@@ -1335,6 +1342,14 @@ async def test_multi_attempt_repl_process_failure_disables_fast_lane(
 
     assert result is None
     assert lifespan.repl_enabled is False
+    assert repl.close_calls == 1
+    assert (
+        await server._multi_attempt_repl(
+            ctx, file_path=str(lean_file), line=2, snippets=["trivial"]
+        )
+        is None
+    )
+    assert repl.run_calls == 1
     assert repl.close_calls == 1
 
 

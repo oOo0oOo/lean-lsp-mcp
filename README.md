@@ -219,7 +219,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt` (see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` or `.lake/packages/REPL/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
-- `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 16384). Only enforced on Linux/macOS.
+- `LEAN_REPL_MEM_MB`: Memory budget per REPL in MiB (default: 16384). Linux uses a kernel address-space limit (respecting any lower inherited hard limit). macOS samples resident memory of the REPL process tree every 100 ms and kills the group on excess; brief overshoot between samples is possible. Windows does not enforce this budget.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport. If set, bearer auth is required for every request.
 - `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance. Rate limits are skipped when set to a custom backend.
