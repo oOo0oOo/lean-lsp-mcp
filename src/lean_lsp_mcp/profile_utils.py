@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from lean_lsp_mcp.models import LineProfile, ProofProfileResult
+from lean_lsp_mcp.outline_utils import _strip_line_comment
 
 _TRACE_RE = re.compile(r"^(\s*)\[([^\]]+)\]\s+\[([\d.]+)\]\s+(.+)$")
 # Every trace message is prefixed with the status of the traced action: Lean's
@@ -38,8 +39,8 @@ _SCOPE_RE = re.compile(
 # `open Foo in`, `set_option ... in`: applies to the next command only.
 _IN_RE = re.compile(r"\sin(?:\s|$)")
 # Lines written above a declaration that belong to it: attributes and modifiers
-# on lines of their own, and `... in` prefixes. (Its doc comment is recognised
-# separately.)
+# on lines of their own, and `... in` prefixes. It is matched against the line
+# without its trailing `--` comment. (The doc comment is recognised separately.)
 _LEAD_RE = re.compile(
     rf"(?:{_ATTRIBUTES}|(?:{_MODIFIERS})(?:\s+|$))+$"
     r"|(?:open|set_option|variable|include|omit|unseal)\b.*\sin$"
@@ -73,15 +74,21 @@ def _comment_depth(line: str, depth: int) -> int:
     """Block comment nesting depth after ``line``, given the depth before it.
 
     Lean's block comments nest, as when a module doc shows an example that has
-    doc comments in it, and a `/-` after `--` is part of a line comment.
+    doc comments in it. Outside a block comment `--` starts a line comment, so a
+    `/-` after it opens nothing; inside one it means nothing, and `--/` closes
+    the comment.
     """
-    for token in _COMMENT_TOKEN_RE.findall(line):
+    pos = 0
+    while match := _COMMENT_TOKEN_RE.search(line, pos):
+        token, pos = match.group(), match.end()
         if token == "/-":
             depth += 1
         elif token == "-/":
             depth = max(depth - 1, 0)
         elif not depth:
             break
+        else:
+            pos = match.start() + 1
     return depth
 
 
@@ -126,10 +133,12 @@ def _find_command_start(lines: list[str], decl: int) -> int:
             continue
         # A comment on lines of its own (no code after it): a doc comment starts
         # what leads up to a declaration, any other comment is skipped.
-        if s.startswith("/-") and (depth or not s.rsplit("-/", 1)[1].strip()):
+        if s.startswith("/-") and (
+            depth or not _strip_line_comment(s.rsplit("-/", 1)[1]).strip()
+        ):
             if s.startswith("/--") and start is None:
                 start = i
-        elif not _LEAD_RE.match(s):
+        elif not _LEAD_RE.match(_strip_line_comment(s)):
             start = None  # other code ends what leads up to a declaration
         elif start is None:
             start = i
@@ -164,11 +173,9 @@ def _scope_commands(lines: list[str], begin: int, end: int) -> list[str]:
     for line in lines[begin:end]:
         s = line.strip()
         outer, depth = depth, _comment_depth(line, depth)
-        if outer or s.startswith("/-"):
-            continue
-        if not s or s.startswith("--"):
-            cont = None
-        elif cont is not None and _indent(line) > cont and not _COMMAND_RE.match(s):
+        if outer or not s or s.startswith(("/-", "--")):
+            continue  # a multi-line `variable` may have comments or gaps inside
+        if cont is not None and _indent(line) > cont and not _COMMAND_RE.match(s):
             commands[-1].append(line)
         elif in_mutual:
             in_mutual, cont = not re.match(r"end\b", s), None
@@ -180,7 +187,12 @@ def _scope_commands(lines: list[str], begin: int, end: int) -> list[str]:
             cont = _indent(line) if multiline else None
         else:
             cont = None
-    return [ln for c in commands if not _IN_RE.search(" ".join(c)) for ln in c]
+    return [
+        ln
+        for c in commands
+        if not _IN_RE.search(" ".join(_strip_line_comment(x) for x in c))
+        for ln in c
+    ]
 
 
 def _extract_theorem_source(lines: list[str], target_line: int) -> tuple[str, str, int]:
@@ -403,12 +415,15 @@ async def profile_theorem(
         if re.search(r"(^|: )error[(:]", line)
     ]
     if errors:
-        # A snippet that does not parse was cut wrongly (or the file itself
-        # does not parse); missing same-file declarations are not the cause.
+        # A snippet that does not parse was cut wrongly, uses notation or
+        # syntax declared elsewhere in the file, or comes from a file that does
+        # not parse itself. Missing same-file lemmas and definitions are not
+        # the cause, so the hint below would mislead.
         if any(_PARSE_ERROR_RE.search(e) for e in errors):
             raise ValueError(
                 "Profiled snippet failed to parse (the theorem could not be "
-                "extracted from the file on its own): " + " | ".join(errors[:5])
+                "extracted from the file on its own, or it uses notation or "
+                "syntax declared elsewhere in the file): " + " | ".join(errors[:5])
             )
         raise ValueError(
             "Profiled snippet failed to compile (the theorem is extracted "

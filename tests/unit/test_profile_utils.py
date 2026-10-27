@@ -407,6 +407,80 @@ class TestExtractTheoremSource:
         ]
         assert _theorem_lines(lines, 3) == lines[2:6]
 
+    def test_dash_dash_slash_closes_a_block_comment(self):
+        """Inside a block comment `--` starts no line comment, so `--/` closes
+        the comment; the rest of the file was taken as commented out."""
+        assert profile_utils._comment_depth("note --/", 1) == 0
+        lines = [
+            *HEADER,
+            "theorem foo : True := by",
+            "  trivial",
+            "",
+            "/- note --/",
+            "",
+            "theorem bar : True := by",
+            "  trivial",
+        ]
+        assert _theorem_lines(lines, 3) == lines[2:7]
+
+    def test_a_trailing_comment_is_not_an_in_prefix(self):
+        """`namespace Foo -- results used in Bar` was dropped as an `... in`
+        command while its `end Foo` was replayed, which Lean rejects."""
+        lines = [
+            *HEADER,
+            "theorem a : True := by",
+            "  trivial",
+            "",
+            "namespace Foo -- results used in Bar",
+            "theorem b : True := by",
+            "  trivial",
+            "end Foo",
+            "",
+            "theorem foo : True := by",
+            "  trivial",
+        ]
+        source, _, _ = _extract_theorem_source(lines, 11)
+        assert source.splitlines() == [*HEADER, "", lines[5], lines[8], *lines[10:]]
+
+    def test_keeps_lines_above_the_theorem_that_end_in_a_comment(self):
+        lines = [
+            *HEADER,
+            "theorem a : True := by",
+            "  trivial",
+            "",
+            "set_option maxRecDepth 2000 in -- needed in the proof",
+            "open Nat in -- for succ_pos",
+            "@[simp] -- a simp lemma",
+            "theorem foo : True := by",
+            "  trivial",
+        ]
+        source, _, theorem_start = _extract_theorem_source(lines, 9)
+        assert source.splitlines()[:theorem_start][-4:] == lines[5:9]
+
+    def test_replays_a_multi_line_variable_with_a_comment_and_a_gap(self):
+        lines = [
+            *HEADER,
+            "theorem a : True := by",
+            "  trivial",
+            "",
+            "variable {α : Type}",
+            "  -- the instance",
+            "  [Inhabited α]",
+            "",
+            "  (x : α)",
+            "theorem foo : (default : α) = default := by",
+            "  rfl",
+        ]
+        source, _, _ = _extract_theorem_source(lines, 11)
+        assert source.splitlines() == [
+            *HEADER,
+            "",
+            lines[5],
+            lines[7],
+            lines[9],
+            *lines[10:],
+        ]
+
     def test_replays_scope_commands_before_the_theorem(self):
         """Namespace, open and variable commands after the first declaration
         decide what the theorem's names resolve to. Declarations, `... in`
