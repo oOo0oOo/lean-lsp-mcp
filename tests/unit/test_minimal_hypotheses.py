@@ -53,9 +53,9 @@ class TestFindTheoremBinders:
         texts = [b[0] for b in find_theorem_binders(src, "bar")]
         assert texts == ["(h : 1 = 1)"]
 
-    @pytest.mark.parametrize("suffix", ["₁", "ᵢ", "!", "?"])
+    @pytest.mark.parametrize("suffix", ["₁", "ᵢ", "!", "?", ".bar", ".«bar»", ".β"])
     def test_skips_longer_name_with_same_prefix(self, suffix):
-        # `foo₁` / `foo!` are different Lean identifiers, not `foo` + suffix.
+        # `foo₁` / `foo!` / `foo.bar` are different Lean names, not `foo` + suffix.
         src = (
             f"theorem foo{suffix} (h : P) : Q := sorry\n"
             "theorem foo (g : R) : S := sorry\n"
@@ -66,12 +66,26 @@ class TestFindTheoremBinders:
 
 @pytest.mark.parametrize(
     ("name", "declared"),
-    [("foo", "foo₁"), ("α", "α₁"), ("x", "xᵢ"), ("foo", "foo!"), ("bar", "bar?")],
+    [
+        ("foo", "foo₁"),
+        ("α", "α₁"),
+        ("x", "xᵢ"),
+        ("foo", "foo!"),
+        ("bar", "bar?"),
+        ("foo", "foo.bar"),
+        ("foo", "foo.«bar»"),
+    ],
 )
 def test_theorem_declared_needs_the_whole_identifier(name, declared):
     src = f"theorem {declared} (h : P) : Q := sorry\n"
     assert theorem_declared(src, declared)
     assert not theorem_declared(src, name)
+
+
+def test_theorem_declared_with_universe_parameters():
+    # `.{u}` lists universe parameters; it does not extend the name.
+    src = "theorem foo.{u} {α : Sort u} (h : P) : Q := sorry\n"
+    assert theorem_declared(src, "foo")
 
 
 class TestExplicitHypotheses:
