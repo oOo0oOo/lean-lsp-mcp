@@ -18,51 +18,192 @@ _TRACE_RE = re.compile(r"^(\s*)\[([^\]]+)\]\s+\[([\d.]+)\]\s+(.+)$")
 # a known lead such as "expected type:".
 _TRACE_STATUS_RE = re.compile("^(?:\\u2705|\\u274c|\\U0001f4a5)\\ufe0f?\\s*")
 _CUMULATIVE_RE = re.compile(r"^\s+(\S+(?:\s+\S+)*)\s+([\d.]+)(ms|s)$")
-_DECL_RE = re.compile(r"^\s*(?:private\s+)?(theorem|lemma|def)\s+(\S+)")
+# Lean's declaration modifiers, and `@[...]` attribute lists (allowing one level
+# of nested brackets, as in `@[aesop safe [constructors]]`).
+_MODIFIERS = "private|public|protected|meta|noncomputable|unsafe|partial|nonrec"
+_ATTRIBUTES = r"(?:@\[(?:[^\[\]]|\[[^\[\]]*\])*\]\s*)"
+# The name stops before universe parameters (`foo.{u}`), binders and the type.
+_DECL_RE = re.compile(
+    rf"^\s*{_ATTRIBUTES}*(?:(?:{_MODIFIERS})\s+)*(theorem|lemma|def)\s+"
+    r"([^\s.:({\[⦃]+(?:\.[^\s.:({\[⦃]+)*)"
+)
 _HEADER_RE = re.compile(r"^(import|open|set_option|universe|variable)\s")
+# Commands that only set up the scope of what follows them: the namespace, the
+# open names, the variables and options. `noncomputable section` and
+# `@[expose] public section` are sections as well.
+_SCOPE_RE = re.compile(
+    rf"{_ATTRIBUTES}?(?:(?:public|noncomputable|meta)\s+)*section\b"
+    r"|(?:namespace|end|open|variable|universe|set_option|include|omit)\b"
+)
+# `open Foo in`, `set_option ... in`: applies to the next command only.
+_IN_RE = re.compile(r"\sin(?:\s|$)")
+# Lines written above a declaration that belong to it: attributes and modifiers
+# on lines of their own, and `... in` prefixes. (Its doc comment is recognised
+# separately.)
+_LEAD_RE = re.compile(
+    rf"(?:{_ATTRIBUTES}|(?:{_MODIFIERS})(?:\s+|$))+$"
+    r"|(?:open|set_option|variable|include|omit|unseal)\b.*\sin$"
+)
+# The first line of a top-level command, including the doc comment, attributes,
+# modifiers and `... in` prefixes that may be written before a declaration.
+_COMMAND_RE = re.compile(
+    rf"@\[|/--|/-!|#[a-z]|(?:{_MODIFIERS}|scoped|local)(?:\s|$)|scoped\["
+    r"|(?:theorem|lemma|def|abbrev|instance|example|axiom|opaque|structure|class"
+    r"|inductive|coinductive|mutual|deriving|initialize|builtin_initialize|end"
+    r"|namespace|section|open|export|variable|universe|set_option|attribute"
+    r"|include|omit|seal|unseal|notation|infix|infixl|infixr|prefix|postfix"
+    r"|macro|macro_rules|syntax|elab|elab_rules|declare_syntax_cat|add_decl_doc"
+    r"|grind_pattern|unif_hint|run_cmd|run_elab|run_meta|alias|irreducible_def"
+    r"|initialize_simps_projections|library_note)\b"
+)
+# Characters that continue a Lean name: `\w` covers letters, digits, `_` and
+# subscripts, and Lean also allows `'`, `!` and `?` after the first character.
+_NAME_CHAR = r"[\w'!?]"
+# `file:line:col: error: unexpected token ...`, `... error: unterminated comment`
+_PARSE_ERROR_RE = re.compile(r"error: (?:unexpected|unterminated) ")
+_COMMENT_TOKEN_RE = re.compile(r"/-|-/|--")
 _SKIP_CATEGORIES = {"import", "initialization", "parsing", "interpretation", "linting"}
 
 
-def _find_header_end(lines: list[str]) -> int:
-    """Find where imports/header ends and declarations begin."""
-    header_end, in_block = 0, False
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _comment_depth(line: str, depth: int) -> int:
+    """Block comment nesting depth after ``line``, given the depth before it.
+
+    Lean's block comments nest, as when a module doc shows an example that has
+    doc comments in it, and a `/-` after `--` is part of a line comment.
+    """
+    for token in _COMMENT_TOKEN_RE.findall(line):
+        if token == "/-":
+            depth += 1
+        elif token == "-/":
+            depth = max(depth - 1, 0)
+        elif not depth:
+            break
+    return depth
+
+
+def _find_header_end(lines: list[str], indent: int) -> int:
+    """Find where imports/header ends and declarations begin.
+
+    The doc comment and other lines that belong to the first declaration are
+    left out of the header. A line indented deeper than the theorem (``indent``)
+    that starts with an attribute or modifier is a structure field, such as
+    `protected le_refl : ...`, and does not end the header.
+    """
+    header_end, depth = 0, 0
     for i, line in enumerate(lines):
         s = line.strip()
-        if "/-" in line:
-            in_block = True
-        if "-/" in line:
-            in_block = False
-        if in_block or not s or s.startswith("--") or _HEADER_RE.match(line):
+        depth = _comment_depth(line, depth)
+        if depth or not s or s.startswith("--") or _HEADER_RE.match(line):
             header_end = i + 1
-        elif s.startswith(("namespace", "section")):
+        elif _SCOPE_RE.match(s):
             header_end = i + 1
-        elif _DECL_RE.match(line) or s.startswith(("@[", "private ", "protected ")):
-            break
+        elif _DECL_RE.match(line) or (
+            _indent(line) <= indent
+            and s.startswith(("@[", "private ", "protected ", "mutual"))
+        ):
+            return _find_command_start(lines, i)
         else:
             header_end = i + 1
     return header_end
 
 
+def _find_command_start(lines: list[str], decl: int) -> int:
+    """Find the first line of the declaration at index ``decl``.
+
+    That is its doc comment, attributes, modifiers and `... in` prefixes, when
+    they are written on lines above it.
+    """
+    start: int | None = None
+    depth = 0
+    for i in range(decl):
+        s = lines[i].strip()
+        outer, depth = depth, _comment_depth(lines[i], depth)
+        if outer or not s or s.startswith("--"):
+            continue
+        # A comment on lines of its own (no code after it): a doc comment starts
+        # what leads up to a declaration, any other comment is skipped.
+        if s.startswith("/-") and (depth or not s.rsplit("-/", 1)[1].strip()):
+            if s.startswith("/--") and start is None:
+                start = i
+        elif not _LEAD_RE.match(s):
+            start = None  # other code ends what leads up to a declaration
+        elif start is None:
+            start = i
+    return decl if start is None else start
+
+
 def _find_theorem_end(lines: list[str], start: int) -> int:
-    """Find where theorem ends (next declaration or EOF)."""
+    """Find where theorem ends: the next top-level command, or EOF.
+
+    Lines indented deeper than the theorem are its proof, even when they look
+    like commands (the `open ... in` tactic), and commented-out code is skipped.
+    """
+    indent, depth = _indent(lines[start]), _comment_depth(lines[start], 0)
     for i in range(start + 1, len(lines)):
-        if _DECL_RE.match(lines[i]):
+        line = lines[i]
+        outer, depth = depth, _comment_depth(line, depth)
+        if not outer and _indent(line) <= indent and _COMMAND_RE.match(line.strip()):
             return i
     return len(lines)
 
 
+def _scope_commands(lines: list[str], begin: int, end: int) -> list[str]:
+    """Collect the scope commands in ``lines[begin:end]``.
+
+    They decide the theorem's namespace and what its names resolve to. Left out
+    are declarations with their proofs, comments, `mutual` blocks (whose `end`
+    closes no scope) and `... in` commands, which only apply to the next command.
+    """
+    commands: list[list[str]] = []
+    depth, in_mutual = 0, False
+    cont: int | None = None  # indentation of a command that may span lines
+    for line in lines[begin:end]:
+        s = line.strip()
+        outer, depth = depth, _comment_depth(line, depth)
+        if outer or s.startswith("/-"):
+            continue
+        if not s or s.startswith("--"):
+            cont = None
+        elif cont is not None and _indent(line) > cont and not _COMMAND_RE.match(s):
+            commands[-1].append(line)
+        elif in_mutual:
+            in_mutual, cont = not re.match(r"end\b", s), None
+        elif re.match(r"mutual\b", s):
+            in_mutual, cont = True, None
+        elif _SCOPE_RE.match(s):
+            commands.append([line])
+            multiline = s.startswith(("variable", "open", "include", "omit"))
+            cont = _indent(line) if multiline else None
+        else:
+            cont = None
+    return [ln for c in commands if not _IN_RE.search(" ".join(c)) for ln in c]
+
+
 def _extract_theorem_source(lines: list[str], target_line: int) -> tuple[str, str, int]:
-    """Extract imports/header + single theorem. Returns (source, name, theorem_start_in_source)."""
-    m = _DECL_RE.match(lines[target_line - 1])
+    """Extract imports/header + scope commands + single theorem.
+
+    Returns (source, name, theorem_start_in_source).
+    """
+    decl = target_line - 1
+    m = _DECL_RE.match(lines[decl])
     if not m:
         raise ValueError(f"No theorem/lemma/def at line {target_line}")
 
-    header_end = _find_header_end(lines)
-    theorem_end = _find_theorem_end(lines, target_line - 1)
+    start = _find_command_start(lines, decl)
+    header_end = min(_find_header_end(lines, _indent(lines[decl])), start)
+    theorem_end = _find_theorem_end(lines, decl)
 
-    header = "\n".join(lines[:header_end])
-    theorem = "\n".join(lines[target_line - 1 : theorem_end])
-    return f"{header}\n\n{theorem}\n", m.group(2), header_end + 2
+    # The namespace, section, open and variable commands between the header and
+    # the theorem are replayed, so its names resolve as they do in the file.
+    context = lines[:header_end] + [""] + _scope_commands(lines, header_end, start)
+    source = context + lines[start:theorem_end]
+    # `_root_.foo` declares `foo`, which is the name the trace shows.
+    name = m.group(2).removeprefix("_root_.")
+    return "\n".join(source) + "\n", name, len(context) + decl - start + 1
 
 
 def _parse_output(
@@ -123,13 +264,14 @@ def _extract_line_times(
     """Extract per-line timing from traces."""
     line_times: dict[int, float] = defaultdict(float)
     total, value_depth, in_value, tactic_depth = 0.0, 0, False, None
-    name_re = re.compile(rf"\b{re.escape(name)}\b")
+    # Traces show the full name (`Foo.bar'`); `\b` would not end it after `'`.
+    name_re = re.compile(rf"(?<!{_NAME_CHAR}){re.escape(name)}(?!{_NAME_CHAR})")
     used: set[int] = set()
 
     for depth, cls, ms, msg in traces:
         if cls == "Elab.definition.value" and name_re.search(msg):
             in_value, value_depth, total = True, depth, ms
-        elif cls == "Elab.async" and f"proof of {name}" in msg:
+        elif cls == "Elab.async" and "proof of" in msg and name_re.search(msg):
             total = max(total, ms)
         elif in_value:
             if depth <= value_depth:
@@ -207,9 +349,10 @@ async def _run_lean_profile(file_path: Path, project_path: Path, timeout: float)
         _kill_process_group(proc)
 
 
-def _find_proof_start(source_lines: list[str]) -> int:
-    """Find line after ':= by' in source."""
-    for i, line in enumerate(source_lines):
+def _find_proof_start(source_lines: list[str], start: int = 0) -> int:
+    """Find line after ':= by' in source, searching from index ``start``."""
+    for i in range(start, len(source_lines)):
+        line = source_lines[i]
         if ":= by" in line or line.rstrip().endswith(" by"):
             return i + 1
     raise ValueError("No 'by' proof found in theorem")
@@ -230,7 +373,9 @@ async def profile_theorem(
     source, name, src_start = _extract_theorem_source(lines, theorem_line)
     source_lines = source.splitlines()
     line_offset = theorem_line - src_start
-    proof_start = _find_proof_start(source_lines)
+    # Search from the theorem itself: a header line or the theorem's doc comment
+    # can also end in " by".
+    proof_start = _find_proof_start(source_lines, src_start - 1)
     proof_items = _build_proof_items(source_lines, proof_start)
 
     with tempfile.NamedTemporaryFile(
@@ -244,8 +389,9 @@ async def profile_theorem(
     finally:
         temp_path.unlink(missing_ok=True)
 
-    # The extracted snippet contains only the header + target theorem; a
-    # reference to anything else in the original file fails to elaborate.
+    # The extracted snippet contains only the header, the scope commands and
+    # the target theorem; a reference to anything else in the original file
+    # fails to elaborate.
     # Partial elaboration still emits timing traces, so a compile error must
     # invalidate the profile outright — never report timings for a broken
     # snippet as a valid result.
@@ -257,10 +403,18 @@ async def profile_theorem(
         if re.search(r"(^|: )error[(:]", line)
     ]
     if errors:
+        # A snippet that does not parse was cut wrongly (or the file itself
+        # does not parse); missing same-file declarations are not the cause.
+        if any(_PARSE_ERROR_RE.search(e) for e in errors):
+            raise ValueError(
+                "Profiled snippet failed to parse (the theorem could not be "
+                "extracted from the file on its own): " + " | ".join(errors[:5])
+            )
         raise ValueError(
             "Profiled snippet failed to compile (the theorem is extracted "
-            "standalone with only the file's imports; same-file "
-            "dependencies are not included): " + " | ".join(errors[:5])
+            "with only the file's header and the namespace, section, open and "
+            "variable commands before it; same-file dependencies are not "
+            "included): " + " | ".join(errors[:5])
         )
 
     traces, cumulative = _parse_output(output)

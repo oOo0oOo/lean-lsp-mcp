@@ -14,6 +14,7 @@ from lean_lsp_mcp.profile_utils import (
     _filter_categories,
     _parse_output,
     _run_lean_profile,
+    profile_theorem,
 )
 
 # Status markers exactly as `lean --profile` emits them, captured from a real
@@ -21,6 +22,16 @@ from lean_lsp_mcp.profile_utils import (
 OK = "\u2705\ufe0f"
 FAIL = "\u274c\ufe0f"
 ERROR = "\U0001f4a5\ufe0f"
+
+# Most extraction tests give the file a header, so that they do not depend on
+# the layout of a file without one (tested on its own).
+HEADER = ["import Lean", ""]
+
+
+def _theorem_lines(lines: list[str], target_line: int) -> list[str]:
+    """The extracted snippet, from the target theorem's own line on."""
+    source, _, theorem_start = _extract_theorem_source(lines, target_line)
+    return source.splitlines()[theorem_start - 1 :]
 
 
 class TestParseOutput:
@@ -93,6 +104,44 @@ class TestExtractLineTimes:
         line_times, total = _extract_line_times(traces, "missing", [])
         assert line_times == {}
         assert total == 0.0
+
+    @pytest.mark.parametrize(
+        "name, traced",
+        [
+            ("my_thm'", "Foo.my_thm'"),
+            ("my_thm!", "my_thm!"),
+            ("my_thm?", "my_thm?"),
+            ("x₁", "Foo.x₁"),
+        ],
+    )
+    def test_matches_names_ending_in_any_name_character(self, name, traced):
+        """`\\b` finds no word boundary after `'`, `!` or `?`, so such a
+        theorem's value trace was never found and no line was reported."""
+        traces = [
+            (0, "Elab.definition.value", 10.0, f"{OK} {traced}"),
+            (1, "Elab.step", 8.0, f"{OK} simp"),
+        ]
+        line_times, total = _extract_line_times(traces, name, [(2, "simp", False)])
+        assert (line_times, total) == ({2: 8.0}, 10.0)
+
+    @pytest.mark.parametrize(
+        "traced", ["my_thm'", "my_thm!", "my_thm?", "my_thm₁", "Foo.my_thm'"]
+    )
+    def test_does_not_match_a_longer_name(self, traced):
+        traces = [
+            (0, "Elab.definition.value", 10.0, f"{OK} {traced}"),
+            (1, "Elab.step", 8.0, f"{OK} simp"),
+        ]
+        assert _extract_line_times(traces, "my_thm", [(2, "simp", False)]) == (
+            {},
+            0.0,
+        )
+
+    def test_async_total_of_a_namespaced_theorem(self):
+        """The trace names the theorem in full: `proof of Foo.my_thm'`."""
+        traces = [(0, "Elab.async", 12.0, f"{OK} elaborating proof of Foo.my_thm'")]
+        _, total = _extract_line_times(traces, "my_thm'", [])
+        assert total == 12.0
 
 
 class TestTraceStatusMarkers:
@@ -185,6 +234,328 @@ class TestExtractTheoremSource:
     def test_raises_on_non_theorem(self):
         with pytest.raises(ValueError, match="No theorem"):
             _extract_theorem_source(["-- comment"], 1)
+
+    def test_theorem_start_without_header(self):
+        """With no header lines the theorem sat one line lower than reported,
+        which shifted every reported line by one."""
+        lines = ["theorem foo : True := by", "  trivial"]
+        source, _, theorem_start = _extract_theorem_source(lines, 1)
+        assert source.splitlines()[theorem_start - 1] == lines[0]
+
+    @pytest.mark.parametrize(
+        "decl, name",
+        [
+            ("@[simp] theorem foo : True := by", "foo"),
+            ("@[simp, aesop safe [constructors]] lemma foo : True := by", "foo"),
+            ("protected theorem foo : True := by", "foo"),
+            ("private nonrec def foo : True := by", "foo"),
+            ("noncomputable def foo : Nat := by", "foo"),
+            ("public theorem foo : True := by", "foo"),
+            ("theorem foo.{u} (α : Sort u) : True := by", "foo"),
+            ("theorem foo: True := by", "foo"),
+            ("theorem _root_.foo : True := by", "foo"),
+            ("theorem Nat.foo (n : Nat) : True := by", "Nat.foo"),
+        ],
+    )
+    def test_reads_attributes_modifiers_and_name(self, decl, name):
+        _, got, _ = _extract_theorem_source([decl, "  trivial"], 1)
+        assert got == name
+
+    @pytest.mark.parametrize(
+        "next_command",
+        [
+            ["/-- Doc. -/", "theorem bar : True := by"],
+            ["@[simp]", "theorem bar : True := by"],
+            ["protected", "theorem bar : True := by"],
+            ["set_option maxHeartbeats 400 in", "theorem bar : True := by"],
+            ["open Nat in", "theorem bar : True := by"],
+            ["unseal bar in", "theorem baz : True := by"],
+            ["instance : Inhabited Nat := ⟨helper⟩"],
+            ["grind_pattern foo => True"],
+            ["example : True := trivial"],
+            ["end B"],
+            ["namespace C"],
+            ["noncomputable section"],
+            ["variable (n : Nat)"],
+            ["#check foo"],
+            ["/-! ## Next part -/"],
+        ],
+    )
+    def test_ends_at_the_next_command(self, next_command):
+        """Cutting only at the next theorem/lemma/def left its doc comment or
+        attribute dangling, or kept an `end`, `instance`, ... that cannot
+        elaborate in the snippet."""
+        lines = [*HEADER, "theorem foo : True := by", "  trivial", "", *next_command]
+        assert _theorem_lines(lines, 3) == lines[2:5]
+
+    def test_keeps_tactics_that_look_like_commands(self):
+        lines = [
+            *HEADER,
+            "theorem foo : True := by",
+            "  open Classical in",
+            "  set_option maxRecDepth 100 in",
+            "  trivial",
+        ]
+        assert _theorem_lines(lines, 3) == lines[2:]
+
+    def test_ends_at_the_next_command_at_the_same_indentation(self):
+        lines = [
+            "namespace Foo",
+            "  theorem foo : True := by",
+            "    trivial",
+            "  @[simp] theorem bar : True := by",
+            "    trivial",
+            "end Foo",
+        ]
+        assert _theorem_lines(lines, 2) == lines[1:3]
+
+    def test_skips_commented_out_code(self):
+        """A theorem inside a block comment cut the snippet inside the comment."""
+        lines = [
+            *HEADER,
+            "theorem foo : True := by",
+            "  trivial",
+            "",
+            "/-",
+            "theorem old : True := by",
+            "  trivial",
+            "-/",
+        ]
+        assert _theorem_lines(lines, 3) == lines[2:]
+
+    def test_header_continues_after_a_section_with_attributes(self):
+        """The header stopped at `@[expose] public section`, which dropped the
+        `namespace` and `open` lines after it."""
+        lines = [
+            "module",
+            "",
+            "public import Lean",
+            "",
+            "@[expose] public section",
+            "",
+            "namespace Foo",
+            "",
+            "open Nat",
+            "",
+            "theorem foo : True := by",
+            "  trivial",
+        ]
+        source, _, theorem_start = _extract_theorem_source(lines, 11)
+        assert source.splitlines()[: theorem_start - 1] == lines[:10] + [""]
+
+    def test_header_keeps_a_structure_with_protected_fields(self):
+        """A `protected` field ended the header in the middle of the class."""
+        lines = [
+            *HEADER,
+            "class Foo (α : Type) where",
+            "  foo : α",
+            "  protected foo_eq : foo = foo",
+            "",
+            "theorem bar : True := by",
+            "  trivial",
+        ]
+        source, _, theorem_start = _extract_theorem_source(lines, 7)
+        assert source.splitlines()[: theorem_start - 1] == lines[:6] + [""]
+
+    def test_header_keeps_a_structure_with_documented_fields(self):
+        """A doc comment followed by code on its line is not the start of the
+        next declaration."""
+        lines = [
+            *HEADER,
+            "structure Foo where",
+            "  /-- The constructor. -/ mk ::",
+            "  /-- The value. -/ val : Nat",
+            "",
+            "/-- Doc. -/",
+            "theorem foo : True := by",
+            "  trivial",
+        ]
+        source, _, _ = _extract_theorem_source(lines, 8)
+        assert source.splitlines() == [*lines[:6], "", *lines[6:]]
+
+    def test_block_comments_nest(self):
+        """A module doc that shows an example with a doc comment, `namespace`
+        and `end` is one comment; it ended at the example's `-/`."""
+        lines = [
+            *HEADER,
+            "/-!",
+            "```",
+            "namespace MyHom",
+            "/-- Doc. -/",
+            "protected def copy := 1",
+            "end MyHom",
+            "```",
+            "-/",
+            "",
+            "namespace Foo",
+            "",
+            "theorem foo : True := by",
+            "  trivial",
+        ]
+        source, _, theorem_start = _extract_theorem_source(lines, 14)
+        assert source.splitlines()[: theorem_start - 1] == lines[:13] + [""]
+
+    def test_line_comments_open_no_block_comment(self):
+        lines = [
+            *HEADER,
+            "theorem foo : True := by",
+            "  -- r = +/- j ^ 2",
+            "  trivial",
+            "",
+            "theorem bar : True := by",
+            "  trivial",
+        ]
+        assert _theorem_lines(lines, 3) == lines[2:6]
+
+    def test_replays_scope_commands_before_the_theorem(self):
+        """Namespace, open and variable commands after the first declaration
+        decide what the theorem's names resolve to. Declarations, `... in`
+        prefixes of other commands and the first declaration's doc comment are
+        left out."""
+        lines = [
+            *HEADER,
+            "namespace A",
+            "/-- Doc of a. -/",
+            "theorem a : True := by",
+            "  open Classical in",
+            "  trivial",
+            "end A",
+            "",
+            "namespace B",
+            "open Nat in",
+            "theorem b : True := by",
+            "  trivial",
+            "variable {α : Type}",
+            "  [Inhabited α]",
+            "theorem foo : (default : α) = default := by",
+            "  rfl",
+            "end B",
+        ]
+        source, _, theorem_start = _extract_theorem_source(lines, 16)
+        assert source.splitlines() == [
+            *HEADER,
+            "namespace A",
+            "",
+            "end A",
+            "namespace B",
+            "variable {α : Type}",
+            "  [Inhabited α]",
+            "theorem foo : (default : α) = default := by",
+            "  rfl",
+        ]
+        assert theorem_start == 9
+
+    def test_skips_mutual_blocks(self):
+        """The `end` of a `mutual` block closes no namespace or section."""
+        lines = [
+            "mutual",
+            "def f : Nat → Nat",
+            "  | 0 => 0",
+            "  | n + 1 => g n",
+            "def g : Nat → Nat",
+            "  | 0 => 0",
+            "  | n + 1 => f n",
+            "end",
+            "",
+            "theorem foo : True := by",
+            "  trivial",
+        ]
+        source, _, _ = _extract_theorem_source(lines, 10)
+        assert source.splitlines() == ["", *lines[9:]]
+
+    def test_keeps_the_lines_written_above_the_theorem(self):
+        """`include h in`, `open ... in` and `set_option ... in` above the
+        theorem apply to it, as do its doc comment, attributes and modifiers."""
+        lines = [
+            *HEADER,
+            "theorem a : True := by",
+            "  trivial",
+            "",
+            "set_option maxHeartbeats 400000 in",
+            "include h in",
+            "/-- Doc. -/",
+            "@[simp]",
+            "private",
+            "theorem foo : True := by",
+            "  exact h",
+        ]
+        source, _, theorem_start = _extract_theorem_source(lines, 11)
+        assert source.splitlines()[:theorem_start][-6:] == lines[5:11]
+        assert source.splitlines()[theorem_start:] == lines[11:]
+
+
+class TestProfileTheorem:
+    """profile_theorem on canned `lean --profile` output."""
+
+    @pytest.fixture
+    def lean_output(self, monkeypatch) -> list[str]:
+        output: list[str] = []
+
+        async def fake_run(file_path, project_path, timeout):
+            return "".join(output)
+
+        monkeypatch.setattr(profile_utils, "_run_lean_profile", fake_run)
+        return output
+
+    async def test_reports_original_line_numbers_without_header(
+        self, tmp_path: Path, lean_output: list[str]
+    ):
+        lean_file = tmp_path / "T.lean"
+        lean_file.write_text("theorem foo : True := by\n  trivial\n", encoding="utf-8")
+        lean_output.append(
+            f"[Elab.definition.value] [0.010] {OK} foo\n"
+            f"  [Elab.step] [0.008] {OK} trivial\n"
+        )
+
+        profile = await profile_theorem(lean_file, 1, tmp_path)
+
+        assert [(ln.line, ln.text) for ln in profile.lines] == [(2, "trivial")]
+
+    async def test_proof_lines_come_from_the_theorem_not_its_doc(
+        self, tmp_path: Path, lean_output: list[str]
+    ):
+        """The proof was looked for from the top of the snippet, so a doc
+        comment line ending in " by" was taken as the start of the proof."""
+        lean_file = tmp_path / "T.lean"
+        lean_file.write_text(
+            "/-- Zero is a right identity, proved by\n"
+            "simp. -/\n"
+            "theorem foo (n : Nat) : n + 0 = n := by\n"
+            "  simp\n",
+            encoding="utf-8",
+        )
+        lean_output.append(
+            f"[Elab.definition.value] [0.010] {OK} foo\n"
+            f"  [Elab.step] [0.008] {OK} simp\n"
+        )
+
+        profile = await profile_theorem(lean_file, 3, tmp_path)
+
+        assert [(ln.line, ln.text) for ln in profile.lines] == [(4, "simp")]
+
+    async def test_parse_error_does_not_blame_same_file_dependencies(
+        self, tmp_path: Path, lean_output: list[str]
+    ):
+        lean_file = tmp_path / "T.lean"
+        lean_file.write_text("theorem foo : True := by\n  trivial\n", encoding="utf-8")
+        lean_output.append("T.lean:4:0: error: unexpected end of input\n")
+
+        with pytest.raises(ValueError, match="failed to parse") as excinfo:
+            await profile_theorem(lean_file, 1, tmp_path)
+
+        assert "same-file" not in str(excinfo.value)
+
+    async def test_elaboration_error_names_same_file_dependencies(
+        self, tmp_path: Path, lean_output: list[str]
+    ):
+        lean_file = tmp_path / "T.lean"
+        lean_file.write_text("theorem foo : True := by\n  exact h\n", encoding="utf-8")
+        lean_output.append(
+            "T.lean:3:8: error(lean.unknownIdentifier): Unknown identifier `h`\n"
+        )
+
+        with pytest.raises(ValueError, match="same-file dependencies"):
+            await profile_theorem(lean_file, 1, tmp_path)
 
 
 class TestFilterCategories:
