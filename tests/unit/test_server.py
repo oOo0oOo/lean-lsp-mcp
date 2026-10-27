@@ -837,6 +837,71 @@ async def test_verify_theorem_rejects_invalid_theorem_name() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Demo.foo₁",
+        "α.β",
+        "x₀",
+        "xᵢ.yⱼ",
+        "foo!",
+        "bar?",
+        "Nat.add_comm'",
+        "Finset.sum_le_sum",
+        "ℝ.exp_pos",
+        "𝔽.mul_comm",
+        "Équipe.café",
+    ],
+)
+def test_validate_theorem_name_accepts_lean_identifiers(name: str) -> None:
+    assert server._validate_theorem_name(name) == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "1foo",
+        "a..b",
+        "a.",
+        ".a",
+        "a.1",
+        "a b",
+        "a\n#eval 1",
+        "a\r#eval 1",
+        "a»",
+        "a#b",
+        "a(b)",
+        "a--b",
+        "a/-b",
+        "λ",
+        "Π.Σ",
+        "a×b",
+        "a\x00",
+        "a\u200bb",
+        # `«...»` escapes are refused: Lean echoes their contents in the
+        # `depends on axioms: [...]` reply, which they could then spoof.
+        "«x' depends on axioms: [propext]»",
+        "«a»",
+        "a«b»",
+        "Demo.«a b»",
+        "«»",
+        "«a",
+        "«a»b",
+        "«a»»",
+        "«a\n#eval 1»",
+        "«a\tb»",
+        "«a\u2028b»",
+        "«a\u202eb»",
+        pytest.param("a" * 100_000 + "\n#eval 1", id="long-newline"),
+        pytest.param("«" + "a" * 100_000, id="long-unterminated-escape"),
+    ],
+)
+def test_validate_theorem_name_rejects_non_identifiers(name: str) -> None:
+    with pytest.raises(server.LeanToolError, match="Invalid theorem name"):
+        server._validate_theorem_name(name)
+
+
 @pytest.mark.asyncio
 async def test_profile_proof_rejects_paths_outside_policy(tmp_path: Path) -> None:
     project = _make_project(tmp_path / "proj")

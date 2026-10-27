@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from lean_lsp_mcp.lean_names import LEAN_ID_REST
+
 _DECL_RE = re.compile(r"\b(theorem|lemma|example|def)\s+([A-Za-z_][A-Za-z0-9_'.]*)")
 
 
@@ -33,9 +35,10 @@ def theorem_declared(source: str, name: str) -> bool:
     Lets callers distinguish a genuinely-missing theorem from one that simply
     has no binders (``find_theorem_binders`` returns ``[]`` for both).
     """
+    # The name must end where Lean's identifier ends: `foo` is not `foo₁`/`foo!`.
     return (
         re.search(
-            rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}(?![A-Za-z0-9_'])",
+            rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}(?!{LEAN_ID_REST})",
             source,
         )
         is not None
@@ -55,7 +58,7 @@ def find_theorem_binders(source: str, name: str) -> list[tuple[str, int, int]]:
     be unique within a file or this will pick the wrong one.
     """
     pattern = re.compile(
-        rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}(?![A-Za-z0-9_'])"
+        rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}(?!{LEAN_ID_REST})"
     )
     m = pattern.search(source)
     if not m:
