@@ -398,6 +398,7 @@ _TOOL_MODULES = (
 
 def create_server() -> MCPServer:
     """Create a server with a catalog fixed by the current startup configuration."""
+    config.loogle_local_only()
     instructions = config.instructions_override()
     kwargs: dict[str, Any] = {
         "name": "Lean LSP",

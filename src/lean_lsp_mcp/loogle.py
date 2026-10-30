@@ -47,6 +47,8 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
     Set LOOGLE_URL to override the default endpoint.
     Set LOOGLE_HEADERS to a JSON object of extra headers (e.g. '{"X-API-Key": "..."}').
     """
+    if config.loogle_local_only():
+        return "Local Loogle is unavailable; remote fallback is disabled."
     base = config.loogle_url()
     try:
         headers = {"User-Agent": "lean-lsp-mcp/0.1"}
@@ -128,6 +130,9 @@ class LoogleManager:
     @property
     def index_path(self) -> Path:
         project = str(self.project_path or "unknown")
+        module = config.loogle_module()
+        if module != "Mathlib":
+            project += "\0" + module
         key = hashlib.sha256(project.encode()).hexdigest()[:12]
         return self.index_dir / f"mathlib-{key}.idx"
 
@@ -315,6 +320,11 @@ class LoogleManager:
             str(self.binary_path),
             "--json",
             "--interactive",
+            *(
+                ["--module", config.loogle_module()]
+                if config.loogle_module() != "Mathlib"
+                else []
+            ),
             "--index-file",
             str(self.index_path),
         ]

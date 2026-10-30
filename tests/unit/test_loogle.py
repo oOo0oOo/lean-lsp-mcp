@@ -168,10 +168,12 @@ class TestLoogleManager:
         assert "lean-toolchain" in msg
 
     @pytest.mark.asyncio
-    async def test_query_not_ready(self, mgr):
-        # Without binary installed, start() fails, so query should fail after retry
+    async def test_query_not_ready(self, mgr, monkeypatch):
+        start = AsyncMock(return_value=False)
+        monkeypatch.setattr(mgr, "start", start)
         with pytest.raises(RuntimeError, match="Failed to start"):
             await mgr.query("test")
+        start.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_query_success(self, mgr):
@@ -307,6 +309,87 @@ class TestLoogleManager:
 
         assert first.index_path != second.index_path
         assert first.index_path.parent == second.index_path.parent == cache / "index"
+
+    def test_module_selection_separates_indexes_and_restores_default(
+        self, mgr, monkeypatch
+    ):
+        import random
+        import string
+
+        monkeypatch.delenv("LEAN_LOOGLE_MODULE", raising=False)
+        default = mgr.index_path
+        random_source = random.Random(17)
+        seen = {default}
+        for _ in range(20):
+            module = "Project." + "".join(
+                random_source.choices(string.ascii_letters, k=12)
+            )
+            monkeypatch.setenv("LEAN_LOOGLE_MODULE", module)
+            index = mgr.index_path
+            assert index not in seen
+            assert index.parent == default.parent
+            seen.add(index)
+        monkeypatch.setenv("LEAN_LOOGLE_MODULE", "Mathlib")
+        assert mgr.index_path == default
+
+    def test_local_only_refuses_without_network_io(self, monkeypatch):
+        from lean_lsp_mcp.loogle import loogle_remote
+
+        monkeypatch.setenv("LEAN_LOOGLE_LOCAL_ONLY", "true")
+        with patch("lean_lsp_mcp.loogle.urllib.request.urlopen") as request:
+            result = loogle_remote("Nat.add", 1)
+        request.assert_not_called()
+        assert isinstance(result, str) and "fallback is disabled" in result
+
+    def test_invalid_local_only_setting_cannot_enable_network(self, monkeypatch):
+        from lean_lsp_mcp.loogle import loogle_remote
+
+        monkeypatch.setenv("LEAN_LOOGLE_LOCAL_ONLY", "truue")
+        with patch("lean_lsp_mcp.loogle.urllib.request.urlopen") as request:
+            with pytest.raises(ValueError, match="LEAN_LOOGLE_LOCAL_ONLY"):
+                loogle_remote("Nat.add", 1)
+        request.assert_not_called()
+
+    def test_remote_fallback_is_available_when_local_only_is_off(self, monkeypatch):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        from lean_lsp_mcp.loogle import loogle_remote
+
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                body = json.dumps(
+                    {
+                        "hits": [
+                            {"name": "Fixture.hit", "type": "Nat", "module": "Fixture"}
+                        ]
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(
+            target=lambda: server.serve_forever(poll_interval=0.01), daemon=True
+        )
+        thread.start()
+        try:
+            monkeypatch.setenv("LOOGLE_URL", f"http://127.0.0.1:{server.server_port}")
+            monkeypatch.setenv("LEAN_LOOGLE_LOCAL_ONLY", "false")
+            result = loogle_remote("Nat.add", 1)
+            assert isinstance(result, list) and result[0].name == "Fixture.hit"
+            assert requests == ["/json?q=Nat.add"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_set_project_path(self, tmp_path):
         project = tmp_path / "project"
