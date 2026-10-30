@@ -236,7 +236,7 @@ async def test_app_lifespan_preserves_startup_error(
     async def boom(_project_path):
         raise RuntimeError("startup boom")
 
-    monkeypatch.setattr(server, "_ensure_shared_loogle", boom)
+    monkeypatch.setattr(server, "prepare_project_accelerators", boom)
 
     with pytest.raises(RuntimeError, match="startup boom"):
         async with server.app_lifespan(object()):
@@ -463,6 +463,42 @@ async def test_local_search_rejects_remote_project_switch(
 
     with pytest.raises(server.LocalSearchError, match="Project switching is disabled"):
         await server.local_search(ctx=ctx, query="foo", project_root=str(other_project))
+
+
+@pytest.mark.asyncio
+async def test_accelerators_follow_inferred_project_without_restarting_healthy_instances(
+    tmp_path, monkeypatch
+):
+    from lean_lsp_mcp import repl as repl_module
+
+    monkeypatch.setenv("LEAN_REPL", "true")
+    monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
+    context = server.AppContext(
+        lean_project_path=None, client=None, rate_limit={}, lean_search_available=True
+    )
+    manager = MagicMock()
+    search = AsyncMock(return_value=(manager, True))
+    monkeypatch.setattr(server, "_ensure_shared_loogle", search)
+    monkeypatch.setattr(repl_module, "find_repl_binary", lambda project: "fixture-repl")
+    instance = types.SimpleNamespace(project_dir=str(tmp_path), close=AsyncMock())
+    constructor = MagicMock(return_value=instance)
+    monkeypatch.setattr(server, "Repl", constructor)
+    await server.prepare_project_accelerators(context)
+    constructor.assert_not_called()
+    search.assert_not_called()
+    context.lean_project_path = tmp_path
+    await server.prepare_project_accelerators(context)
+    await server.prepare_project_accelerators(context)
+    constructor.assert_called_once_with(
+        project_dir=str(tmp_path), repl_path="fixture-repl"
+    )
+    search.assert_awaited_once_with(tmp_path)
+    assert context.repl is instance and context.repl_enabled
+    assert context.loogle_manager is manager and context.loogle_local_available
+    context.repl_enabled = False
+    await server.prepare_project_accelerators(context)
+    assert not context.repl_enabled
+    assert constructor.call_count == 1
 
 
 @pytest.mark.asyncio
