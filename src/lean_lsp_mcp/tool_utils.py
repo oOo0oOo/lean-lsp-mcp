@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import ssl
 import time
 import urllib.request
@@ -78,7 +79,7 @@ def rate_limited(
             rate_limits[category].append(now)
             return None
 
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def wrapper(*args, **kwargs):
