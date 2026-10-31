@@ -351,7 +351,7 @@ Enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt`. Uses
 [[require]]
 name = "repl"
 git = "https://github.com/leanprover-community/repl"
-rev = "v4.34.0"  # Use a REPL tag compatible with your Lean toolchain
+rev = "v4.35.0"  # Use a REPL tag compatible with your Lean toolchain
 ```
 
 **2. Build it:**

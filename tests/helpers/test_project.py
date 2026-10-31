@@ -7,7 +7,7 @@ from typing import Final, Sequence
 __all__ = ["ensure_test_project"]
 
 PROJECT_DIRNAME: Final[str] = "test_project"
-LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.34.1\n"
+LEAN_TOOLCHAIN: Final[str] = "leanprover/lean4:v4.35.0\n"
 
 LAKEFILE_TOML: Final[str] = """name = \"McpTestProject\"
 version = \"0.1.0\"
@@ -16,12 +16,12 @@ defaultTargets = [\"McpTestProject\"]
 [[require]]
 name = \"mathlib\"
 scope = \"leanprover-community\"
-rev = \"v4.34.1\"
+rev = \"v4.35.0\"
 
 [[require]]
 name = \"REPL\"
 git = \"https://github.com/leanprover-community/repl\"
-rev = \"v4.34.0\"
+rev = \"v4.35.0\"
 
 [[lean_lib]]
 name = \"McpTestProject\"
@@ -39,6 +39,9 @@ LAKE_UPDATE: Final[Sequence[str]] = ("lake", "update", "--keep-toolchain")
 LAKE_BUILD_STEPS: Final[tuple[Sequence[str], ...]] = (
     ("lake", "exe", "cache", "get"),
     ("lake", "build"),
+    # The REPL is not a default target; without this a toolchain change left
+    # the old REPL binary in place and every snippet failed to see Init.
+    ("lake", "build", "@REPL/repl"),
 )
 
 
