@@ -25,13 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
-# Bootstrap offline from a digest-verified wheel, then update the venv seed too.
+# Refresh the digest-verified venv seed, then bootstrap pip offline from it.
 COPY docker/refresh_ensurepip.py /tmp/refresh_ensurepip.py
 RUN curl -fsSL -o "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" "${PIP_WHEEL_URL}" \
     && echo "${PIP_WHEEL_SHA256}  /tmp/pip-${PIP_VERSION}-py3-none-any.whl" | sha256sum -c - \
-    && python -m pip install --no-index --no-deps --no-cache-dir --upgrade "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" \
     && python /tmp/refresh_ensurepip.py "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" "${PIP_VERSION}" \
-    && python -c "import ensurepip; assert ensurepip.version() == '${PIP_VERSION}'" \
+    && python -m ensurepip --upgrade --default-pip \
+    && python -c "import ensurepip, pip; assert ensurepip.version() == pip.__version__ == '${PIP_VERSION}'" \
     && rm -f "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" /tmp/refresh_ensurepip.py
 
 RUN mkdir -p "${ELAN_HOME}" \
