@@ -36,7 +36,7 @@ class _FakeOutlineClient:
     def content(self, path: str) -> str:
         return "import Mathlib\nnamespace CacheNs\nend CacheNs\n"
 
-    async def document_symbols(self, path: str) -> list[dict]:
+    async def document_symbols(self, path: str, fresh: bool = True) -> list[dict]:
         self.document_symbols_calls += 1
         return [
             {
@@ -66,7 +66,7 @@ class _BlockingOutlineClient:
     def content(self, path: str) -> str:
         return f"namespace {self.namespace}\nend {self.namespace}\n"
 
-    async def document_symbols(self, path: str) -> list[dict]:
+    async def document_symbols(self, path: str, fresh: bool = True) -> list[dict]:
         namespace = self.namespace
         self.document_symbols_calls += 1
         self.request_started.set()
@@ -84,6 +84,39 @@ class _BlockingOutlineClient:
         ]
 
 
+class _LemmaOutlineClient:
+    project_path = "/tmp/lean-lsp-mcp-lemma-outline-test"
+
+    def __init__(self) -> None:
+        self.source = (
+            "@[simp] lemma topLevel : True := trivial\n"
+            "namespace Inside\n"
+            "lemma nested : True := trivial\n"
+            "end Inside\n"
+        )
+        self.requested_fresh_symbols = True
+
+    async def reload_from_disk(self, path: str, wait: bool = False):
+        self.path = path
+
+    def content(self, path: str) -> str:
+        return self.source
+
+    async def document_symbols(self, path: str, fresh: bool = True) -> list[dict]:
+        self.requested_fresh_symbols = fresh
+        return [
+            {
+                "name": "Inside",
+                "kind": "namespace",
+                "range": {
+                    "start": {"line": 1, "character": 0},
+                    "end": {"line": 3, "character": 10},
+                },
+                "children": [],
+            }
+        ]
+
+
 @pytest.mark.asyncio
 async def test_outline_cache_reuses_unchanged_file_symbols() -> None:
     """Repeated unchanged outlines should avoid another documentSymbol call."""
@@ -91,16 +124,14 @@ async def test_outline_cache_reuses_unchanged_file_symbols() -> None:
         _OUTLINE_CACHE.clear()
 
     client = _FakeOutlineClient()
-    pool = None  # no method symbols in the fake -> info trees never requested
-
-    first = await generate_outline_data(client, pool, "Cache.lean")
-    second = await generate_outline_data(client, pool, "Cache.lean")
+    first = await generate_outline_data(client, "Cache.lean")
+    second = await generate_outline_data(client, "Cache.lean")
 
     assert client.document_symbols_calls == 1
     assert second == first
 
     first.declarations[0].name = "mutated"
-    third = await generate_outline_data(client, pool, "Cache.lean")
+    third = await generate_outline_data(client, "Cache.lean")
     assert third.declarations[0].name == "CacheNs"
 
 
@@ -111,23 +142,76 @@ async def test_outline_cache_does_not_publish_stale_inflight_result() -> None:
         _OUTLINE_CACHE.clear()
 
     client = _BlockingOutlineClient()
-    first_task = asyncio.create_task(generate_outline_data(client, None, "Cache.lean"))
+    first_task = asyncio.create_task(generate_outline_data(client, "Cache.lean"))
     await client.request_started.wait()
     client.namespace = "AfterEdit"
     client.release_request.set()
 
     first = await first_task
-    second = await generate_outline_data(client, None, "Cache.lean")
+    second = await generate_outline_data(client, "Cache.lean")
 
     assert first.declarations[0].name == "BeforeEdit"
     assert second.declarations[0].name == "AfterEdit"
     assert client.document_symbols_calls == 2
 
 
+@pytest.mark.asyncio
+async def test_outline_includes_top_level_and_namespaced_lemmas_without_barrier() -> (
+    None
+):
+    with _OUTLINE_CACHE_LOCK:
+        _OUTLINE_CACHE.clear()
+
+    client = _LemmaOutlineClient()
+    outline = await generate_outline_data(client, "Lemmas.lean")
+
+    lemmas = [entry for entry in outline.declarations if entry.kind == "Thm"]
+    assert [entry.name for entry in lemmas] == ["nested", "topLevel"]
+    assert all(entry.type_signature == ": True" for entry in lemmas)
+    assert client.requested_fresh_symbols is False
+
+
 @pytest.fixture
 def mathlib_nat_basic(test_project_path: Path) -> Path:
     """Path to Mathlib Data.Nat.Basic file."""
     return test_project_path / ".lake/packages/mathlib/Mathlib/Data/Nat/Basic.lean"
+
+
+@pytest.fixture
+def lemma_outline_file(test_project_path: Path) -> Path:
+    path = test_project_path / "LemmaOutlineTest.lean"
+    path.write_text(
+        "lemma topLevelLemma : True := trivial\n\n"
+        "namespace OutlineLemmaNs\n"
+        "lemma nestedLemma : True := trivial\n"
+        "end OutlineLemmaNs\n",
+        encoding="utf-8",
+    )
+    yield path
+    path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_outline_includes_top_level_and_namespaced_lemmas(
+    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
+    lemma_outline_file: Path,
+) -> None:
+    async with mcp_client_factory() as client:
+        result = await client.call_tool(
+            "lean_file_outline", {"file_path": str(lemma_outline_file)}
+        )
+
+    outline = _parse_outline(result)
+    lemmas = [
+        declaration
+        for declaration in outline["declarations"]
+        if declaration["kind"] == "Thm"
+    ]
+    assert {declaration["name"] for declaration in lemmas} >= {
+        "topLevelLemma",
+        "nestedLemma",
+    }
+    assert all(declaration.get("type_signature") for declaration in lemmas)
 
 
 @pytest.mark.asyncio
@@ -189,6 +273,10 @@ async def test_mathlib_outline_structure(
             or "LinearOrder" in (d.get("type_signature") or "")
             for d in outline["declarations"]
         )
+        assert any(
+            d["name"] == "succ_injective" and d["kind"] == "Thm"
+            for d in outline["declarations"]
+        )
 
 
 @pytest.mark.asyncio
@@ -229,16 +317,16 @@ async def test_mathlib_outline_has_types(
 
 
 @pytest.mark.asyncio
-async def test_mathlib_outline_file_cleanup(
+async def test_mathlib_outline_does_not_modify_source_file(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     mathlib_nat_basic: Path,
 ) -> None:
-    """Verify file is properly cleaned up after info_trees extraction."""
+    """Outline generation reads a Mathlib source file without editing it."""
     async with mcp_client_factory() as client:
         # Get original file content
         original_content = mathlib_nat_basic.read_text()
 
-        # Generate outline (which inserts and removes #info_trees lines)
+        # Generate the outline and confirm the original source is untouched.
         await client.call_tool(
             "lean_file_outline", {"file_path": str(mathlib_nat_basic)}
         )
@@ -247,11 +335,4 @@ async def test_mathlib_outline_file_cleanup(
         final_content = mathlib_nat_basic.read_text()
 
         # File should be unchanged
-        assert final_content == original_content, (
-            "File should be restored to original state after outline generation"
-        )
-
-        # Specifically check that no #info_trees lines remain
-        assert "#info_trees" not in final_content, (
-            "No #info_trees directives should remain in file"
-        )
+        assert final_content == original_content, "Outline generation changed the file"

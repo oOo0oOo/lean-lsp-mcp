@@ -62,6 +62,10 @@ def test_a_plain_statement_is_unchanged() -> None:
     assert signature == "(n : Nat) : n = n"
 
 
+def test_an_inline_attribute_does_not_hide_a_lemma() -> None:
+    assert _signature("@[simp] lemma attributed : True := trivial") == ": True"
+
+
 def test_a_multiline_plain_statement_is_unchanged() -> None:
     source = "\n".join(
         [
