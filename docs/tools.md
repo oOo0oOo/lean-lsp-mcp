@@ -329,7 +329,9 @@ Search for Lean definitions and theorems using [loogle.lean-lang.org](https://lo
 
 - Supports queries by constant, lemma name, subexpression, type, or conclusion.
 - Example: `Real.sin`, `"differ"`, `_ * (_ ^ _)`, `(?a -> ?b) -> List ?a -> List ?b`, `|- tsum _ = _ * tsum _`
-- **Local mode available**: Use `--loogle-local` to run loogle locally (avoids rate limits, see [Local Loogle](#local-loogle) section)
+- **Local mode available**: Use `--loogle-local` to run loogle locally (avoids rate limits, see [Local Loogle](../README.md#local-loogle)).
+  `LEAN_LOOGLE_MODULE` limits the local index to a built module such as `Init` (default `Mathlib`), and
+  `LEAN_LOOGLE_LOCAL_ONLY=true` refuses the remote fallback when local search is unavailable.
 - **Self-hosted**: Set `LOOGLE_URL` to point at a self-hosted instance. Set `LOOGLE_HEADERS` to a JSON object for extra headers (e.g. `'{"X-API-Key": "..."}'`).
 
 <details>

@@ -403,6 +403,7 @@ _TOOL_MODULES = (
 
 def create_server() -> MCPServer:
     """Create a server with a catalog fixed by the current startup configuration."""
+    # Fail at startup, not on the first search, if LEAN_LOOGLE_LOCAL_ONLY is malformed.
     config.loogle_local_only()
     instructions = config.instructions_override()
     kwargs: dict[str, Any] = {

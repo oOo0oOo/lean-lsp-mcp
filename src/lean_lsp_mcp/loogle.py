@@ -53,7 +53,7 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
         return "Local Loogle is unavailable; remote fallback is disabled."
     base = config.loogle_url()
     try:
-        headers = {"User-Agent": "lean-lsp-mcp/0.1"}
+        headers = {"User-Agent": config.user_agent()}
         if extra := config.loogle_headers_raw():
             headers.update(json.loads(extra))
         req = urllib.request.Request(
@@ -245,7 +245,7 @@ class LoogleManager:
         if module != "Mathlib":
             project += "\0" + module
         key = hashlib.sha256(project.encode()).hexdigest()[:12]
-        return self.index_dir / f"mathlib-{key}.idx"
+        return self.index_dir / f"{module.lower()}-{key}.idx"
 
     @property
     def is_installed(self) -> bool:

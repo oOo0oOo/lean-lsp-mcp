@@ -8,6 +8,7 @@ cached at import time.
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import os
 
@@ -250,3 +251,12 @@ def max_output_chars() -> int:
         )
         return 6000
     return max(value, 0)
+
+
+def user_agent() -> str:
+    """User-Agent for outgoing search requests, with the installed version."""
+    try:
+        version = importlib.metadata.version("lean-lsp-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        version = "dev"
+    return f"lean-lsp-mcp/{version}"
