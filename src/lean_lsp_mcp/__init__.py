@@ -1,6 +1,9 @@
 import argparse
+import asyncio
 import os
+import signal
 import sys
+import threading
 from contextlib import suppress
 
 import anyio
@@ -152,18 +155,43 @@ def main():
     os.environ[config.ACTIVE_TRANSPORT_ENV] = args.transport
 
     mcp = create_server()
+    previous_sigterm = None
+    sigterm_received = False
+    if (
+        args.transport == "stdio"
+        and os.name == "posix"
+        and threading.current_thread() is threading.main_thread()
+    ):
+
+        def cancel_on_sigterm(_signum, frame):
+            nonlocal sigterm_received
+            sigterm_received = True
+            # AnyIO's SIGINT handler cancels startup before draining workers.
+            # Background launches may inherit an ignored SIGINT instead.
+            if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
+                signal.default_int_handler(signal.SIGINT, frame)
+            else:
+                signal.raise_signal(signal.SIGINT)
+
+        previous_sigterm = signal.signal(signal.SIGTERM, cancel_on_sigterm)
     try:
         if args.transport == "stdio":
             mcp.run(transport="stdio")
         else:
             mcp.run(transport=args.transport, host=args.host, port=args.port)
     except KeyboardInterrupt:
-        return 130
+        if not sigterm_received:
+            return 130
+    except asyncio.CancelledError:
+        if not sigterm_received:
+            raise
     except Exception as exc:
         if args.transport == "stdio" and _is_transport_closed_error(exc):
             _silence_stdout()
-            return 0
-        raise
+        else:
+            raise
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         close_shared_client()
-    return 0
+    return 143 if sigterm_received else 0

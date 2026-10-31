@@ -7,8 +7,52 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import psutil
 
 from lean_lsp_mcp.loogle import LoogleManager, get_cache_dir
+
+
+def _assert_process_exited(pid: int) -> None:
+    """Accept an exited child even if it is reaped during inspection."""
+    try:
+        status = psutil.Process(pid).status()
+    except psutil.NoSuchProcess:
+        return
+    assert status == psutil.STATUS_ZOMBIE, f"Child process {pid} is still {status}"
+
+
+class TestAssertProcessExited:
+    @pytest.mark.parametrize("missing_at", ["lookup", "status"])
+    def test_accepts_reaped_process(self, monkeypatch, missing_at):
+        pid = 12345
+        process = MagicMock()
+        lookup = MagicMock(return_value=process)
+        if missing_at == "lookup":
+            lookup.side_effect = psutil.NoSuchProcess(pid)
+        else:
+            process.status.side_effect = psutil.NoSuchProcess(pid)
+        # Reproduce the old existence probe succeeding just before reaping.
+        monkeypatch.setattr(psutil, "pid_exists", lambda _: True)
+        monkeypatch.setattr(psutil, "Process", lookup)
+
+        _assert_process_exited(pid)
+
+        lookup.assert_called_once_with(pid)
+
+    @pytest.mark.parametrize(
+        "status", [psutil.STATUS_ZOMBIE, psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING]
+    )
+    def test_checks_process_status(self, monkeypatch, status):
+        process = MagicMock()
+        process.status.return_value = status
+        monkeypatch.setattr(psutil, "pid_exists", lambda _: True)
+        monkeypatch.setattr(psutil, "Process", lambda _: process)
+
+        if status == psutil.STATUS_ZOMBIE:
+            _assert_process_exited(12345)
+        else:
+            with pytest.raises(AssertionError):
+                _assert_process_exited(12345)
 
 
 class TestGetCacheDir:
@@ -79,39 +123,39 @@ class TestLoogleManager:
         mgr.process.returncode = 1
         assert not mgr.is_running
 
-    def test_clone_repo_exists(self, mgr):
+    async def test_clone_repo_exists(self, mgr):
         (mgr.repo_dir / ".git").mkdir(parents=True)
         with patch.object(mgr, "_checkout_repo_ref", return_value=True):
-            assert mgr._clone_repo()
+            assert await mgr._clone_repo()
 
-    def test_clone_repo_rejects_non_git_directory(self, mgr):
+    async def test_clone_repo_rejects_non_git_directory(self, mgr):
         mgr.repo_dir.mkdir(parents=True)
-        assert not mgr._clone_repo()
+        assert not await mgr._clone_repo()
 
-    def test_checkout_repo_ref_reuses_pinned_revision(self, mgr, monkeypatch):
+    async def test_checkout_repo_ref_reuses_pinned_revision(self, mgr, monkeypatch):
         calls = []
 
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
+        async def fake_run(cmd, timeout=300, cwd=None, env=None):
             calls.append(cmd)
             return MagicMock(returncode=0, stdout=f"{mgr.REPO_REF}\n", stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._checkout_repo_ref()
+        assert await mgr._checkout_repo_ref()
         assert calls == [
             ["git", "rev-parse", "HEAD"],
             ["git", "checkout", "--detach", mgr.REPO_REF],
         ]
 
-    def test_checkout_repo_ref_fetches_pinned_revision(self, mgr, monkeypatch):
+    async def test_checkout_repo_ref_fetches_pinned_revision(self, mgr, monkeypatch):
         calls = []
 
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
+        async def fake_run(cmd, timeout=300, cwd=None, env=None):
             calls.append(cmd)
             stdout = "old\n" if "rev-parse" in cmd else ""
             return MagicMock(returncode=0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._checkout_repo_ref()
+        assert await mgr._checkout_repo_ref()
         assert calls[1] == [
             "git",
             "fetch",
@@ -122,18 +166,18 @@ class TestLoogleManager:
         ]
         assert calls[2] == ["git", "checkout", "--detach", mgr.REPO_REF]
 
-    def test_clone_repo_success(self, mgr):
+    async def test_clone_repo_success(self, mgr):
         with (
-            patch("subprocess.run", return_value=MagicMock(returncode=0)),
+            patch.object(mgr, "_run", return_value=MagicMock(returncode=0)),
             patch.object(mgr, "_checkout_repo_ref", return_value=True),
         ):
-            assert mgr._clone_repo()
+            assert await mgr._clone_repo()
 
-    def test_clone_repo_fail(self, mgr):
-        with patch(
-            "subprocess.run", return_value=MagicMock(returncode=1, stderr="err")
+    async def test_clone_repo_fail(self, mgr):
+        with patch.object(
+            mgr, "_run", return_value=MagicMock(returncode=1, stderr="err")
         ):
-            assert not mgr._clone_repo()
+            assert not await mgr._clone_repo()
 
     def test_project_toolchain_controls_build_dir(self, tmp_path):
         project1 = tmp_path / "project1"
@@ -169,9 +213,13 @@ class TestLoogleManager:
 
     @pytest.mark.asyncio
     async def test_query_not_ready(self, mgr):
-        # Without binary installed, start() fails, so query should fail after retry
-        with pytest.raises(RuntimeError, match="Failed to start"):
-            await mgr.query("test")
+        # Exercise the failed-start branch without downloading/building Loogle.
+        with patch.object(
+            mgr, "start", new_callable=AsyncMock, return_value=False
+        ) as start:
+            with pytest.raises(RuntimeError, match="Failed to start"):
+                await mgr.query("test")
+        start.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_query_success(self, mgr):
@@ -323,20 +371,20 @@ class TestLoogleManager:
         assert env["LAKE_ARTIFACT_CACHE"] == "false"
         assert env["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
 
-    def test_build_uses_project_toolchain_and_versioned_build_dir(
+    async def test_build_uses_project_toolchain_and_versioned_build_dir(
         self, mgr, monkeypatch
     ):
         mgr.repo_dir.mkdir(parents=True)
         captured = {}
 
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
+        async def fake_run(cmd, timeout=300, cwd=None, env=None):
             captured["cmd"], captured["env"] = cmd, env
             mgr.binary_path.parent.mkdir(parents=True)
             mgr.binary_path.touch()
             return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._build_loogle()
+        assert await mgr._build_loogle()
         assert captured["cmd"] == ["lake", "build", "loogle"]
         assert captured["env"]["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
         assert "LEAN_PATH" not in captured["env"]
@@ -381,7 +429,7 @@ class TestLoogleManager:
     ):
         calls = []
 
-        def fake_install():
+        async def fake_install():
             calls.append("install")
             mgr.binary_path.parent.mkdir(parents=True)
             mgr.binary_path.touch()
@@ -396,7 +444,7 @@ class TestLoogleManager:
             proc.stderr.read = AsyncMock(return_value=b"")
             return proc
 
-        monkeypatch.setattr(mgr, "ensure_installed", fake_install)
+        monkeypatch.setattr(mgr, "_ensure_installed", fake_install)
         monkeypatch.setattr(
             "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", fake_exec
         )
@@ -421,18 +469,19 @@ class TestLoogleInstall:
 
         project = Path(__file__).resolve().parents[1] / "test_project"
         mgr = LoogleManager(project_path=project)  # real cache dir
-        assert mgr.ensure_installed(), "Failed to install loogle"
+        assert await mgr._ensure_installed(), "Failed to install loogle"
         assert mgr.is_installed
 
 
 class TestLoogleQuery:
     """Test start/query/stop against installed loogle binary.
 
-    Skips if loogle is not installed or the local cache is not runnable.
+    Skips only when loogle is not installed; a broken installation fails.
     Run TestLoogleInstall first to install or refresh the cache.
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(360)
     async def test_start_query_stop(self):
         project = Path(__file__).resolve().parents[1] / "test_project"
         mgr = LoogleManager(project_path=project)  # real cache dir
@@ -443,12 +492,7 @@ class TestLoogleQuery:
 
         try:
             started = await mgr.start()
-            if not started:
-                await mgr.stop()
-                pytest.skip(
-                    "loogle installed but not runnable "
-                    "(run: pytest -m slow tests/unit/test_loogle.py)"
-                )
+            assert started, "Installed Loogle failed to become ready"
             assert mgr.is_running
 
             results = await mgr.query("Nat.add", num_results=3)
@@ -457,3 +501,459 @@ class TestLoogleQuery:
         finally:
             await mgr.stop()
             assert not mgr.is_running
+
+
+class TestLoogleOwnedStartup:
+    @pytest.fixture
+    def manager(self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "lean-toolchain").write_text("leanprover/lean4:v4.30.0\n")
+        manager = LoogleManager(cache_dir=tmp_path / "cache", project_path=project)
+        manager.binary_path.parent.mkdir(parents=True)
+        manager.binary_path.touch()
+        return manager
+
+    def test_existing_install_needs_no_git_or_writable_checkout(
+        self, manager, monkeypatch
+    ):
+        def unexpected():
+            raise AssertionError(
+                "Existing pinned installation was unnecessarily rebuilt"
+            )
+
+        monkeypatch.setattr(manager, "_check_prerequisites", unexpected)
+        monkeypatch.setattr(manager, "_clone_repo", unexpected)
+        monkeypatch.setattr(manager, "_build_loogle", unexpected)
+        assert manager.ensure_installed()
+
+    @pytest.mark.asyncio
+    async def test_start_accepts_prelude_and_drains_stderr(self, manager, monkeypatch):
+        import sys
+
+        real_exec = asyncio.create_subprocess_exec
+
+        async def launch(*args, **kwargs):
+            return await real_exec(
+                sys.executable,
+                "-c",
+                (
+                    "import sys,time;sys.stderr.write('x'*262144);sys.stderr.flush();"
+                    "print('loading index',flush=True);print('Loogle is ready.',flush=True);time.sleep(60)"
+                ),
+                **kwargs,
+            )
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        try:
+            assert await asyncio.wait_for(manager.start(), timeout=5)
+            assert len(manager._stderr_tail) == 8192
+        finally:
+            await manager.stop()
+        assert manager.process is None
+        assert manager._stderr_task is None
+
+    @pytest.mark.asyncio
+    async def test_failure_before_ready_reaps_process_and_diagnostics(
+        self, manager, monkeypatch, caplog
+    ):
+        import sys
+
+        real_exec = asyncio.create_subprocess_exec
+        launched = []
+
+        async def launch(*args, **kwargs):
+            process = await real_exec(
+                sys.executable,
+                "-c",
+                "import sys;sys.stderr.write('bad index fixture\\n');sys.exit(2)",
+                **kwargs,
+            )
+            launched.append(process)
+            return process
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        assert not await manager.start()
+        assert manager.process is None
+        assert launched[0].returncode == 2
+        assert "bad index fixture" in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    @pytest.mark.parametrize("cancel_start", [False, True])
+    async def test_stop_or_cancel_owns_lake_descendant(
+        self, manager, monkeypatch, tmp_path, cancel_start
+    ):
+        import sys
+
+        real_exec = asyncio.create_subprocess_exec
+        pid_path = tmp_path / "child.pid"
+        child_code = "import time;time.sleep(60)"
+        root_code = (
+            "import subprocess,sys,time;from pathlib import Path;"
+            f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]);"
+            f"Path({str(pid_path)!r}).write_text(str(p.pid));"
+            + ("print('Loogle is ready.',flush=True);" if not cancel_start else "")
+            + "time.sleep(60)"
+        )
+
+        async def launch(*args, **kwargs):
+            return await real_exec(sys.executable, "-c", root_code, **kwargs)
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        start = asyncio.create_task(manager.start())
+        try:
+            deadline = asyncio.get_running_loop().time() + 5
+            while not pid_path.exists():
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0.01)
+            child_pid = int(pid_path.read_text())
+            if cancel_start:
+                start.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await start
+            else:
+                assert await start
+                await manager.stop()
+            assert manager.process is None
+            assert manager._stderr_task is None
+            _assert_process_exited(child_pid)
+        finally:
+            if not start.done():
+                start.cancel()
+                await asyncio.gather(start, return_exceptions=True)
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel_start", [True, False])
+    async def test_cancellation_drains_installer(
+        self, manager, monkeypatch, cancel_start
+    ):
+        started, finished = asyncio.Event(), asyncio.Event()
+        manager.binary_path.unlink()
+
+        async def install():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(manager, "_ensure_installed", install)
+        task = asyncio.create_task(manager.start())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if cancel_start:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await manager.stop()
+            assert not await task
+        assert finished.is_set()
+        assert manager._install_task is None
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    async def test_installer_timeout_kills_descendants(self, manager, tmp_path):
+        import sys
+        import subprocess
+
+        pid_path = tmp_path / "installer-child.pid"
+        code = (
+            "import subprocess,sys,time;from pathlib import Path;"
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+            f"Path({str(pid_path)!r}).write_text(str(p.pid));time.sleep(60)"
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            await manager._run([sys.executable, "-c", code], timeout=0.3, cwd=tmp_path)
+        child_pid = int(pid_path.read_text())
+        _assert_process_exited(child_pid)
+
+    @pytest.mark.asyncio
+    async def test_query_cancellation_discards_late_response(
+        self, manager, monkeypatch, tmp_path
+    ):
+        import sys
+
+        real_exec = asyncio.create_subprocess_exec
+        seen = tmp_path / "query-seen"
+        code = (
+            "import sys,time,json;from pathlib import Path\n"
+            "print('Loogle is ready.',flush=True)\n"
+            "for line in sys.stdin:\n"
+            f" Path({str(seen)!r}).write_text(line.strip())\n"
+            " time.sleep(0.2)\n"
+            " print(json.dumps({'hits':[{'name':line.strip()}]}),flush=True)\n"
+        )
+
+        async def launch(*args, **kwargs):
+            return await real_exec(sys.executable, "-c", code, **kwargs)
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        assert await manager.start()
+        old = manager.process
+        query = asyncio.create_task(manager.query("first"))
+        try:
+            deadline = asyncio.get_running_loop().time() + 5
+            while not seen.exists():
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0.01)
+            query.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await query
+            assert manager.process is None
+            assert old.returncode is not None
+            result = await manager.query("second")
+            assert result[0]["name"] == "second"
+        finally:
+            if not query.done():
+                query.cancel()
+                await asyncio.gather(query, return_exceptions=True)
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    async def test_overlapping_stop_and_repeated_cancellation_share_cleanup(
+        self, manager
+    ):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        proc = MagicMock()
+        proc.returncode = None
+
+        async def wait():
+            entered.set()
+            await release.wait()
+            proc.returncode = 0
+            return 0
+
+        proc.wait = AsyncMock(side_effect=wait)
+        manager.process, manager._ready = proc, True
+        first = asyncio.create_task(manager.stop())
+        await entered.wait()
+        second = asyncio.create_task(manager.stop())
+        await asyncio.sleep(0)
+        first.cancel()
+        await asyncio.sleep(0)
+        first.cancel()
+        await asyncio.sleep(0)
+        assert not first.done() and not second.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await second
+        proc.terminate.assert_called_once()
+        proc.wait.assert_awaited_once()
+        assert manager._stop_task is None
+
+    @pytest.mark.asyncio
+    async def test_stop_during_pending_spawn_cannot_resurrect_server(
+        self, manager, monkeypatch
+    ):
+        import sys
+
+        real_exec = asyncio.create_subprocess_exec
+        spawn_entered = asyncio.Event()
+        release = asyncio.Event()
+        processes = []
+
+        async def launch(*args, **kwargs):
+            spawn_entered.set()
+            await release.wait()
+            process = await real_exec(
+                sys.executable,
+                "-c",
+                "import time;print('Loogle is ready.',flush=True);time.sleep(60)",
+                **kwargs,
+            )
+            processes.append(process)
+            return process
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        start = asyncio.create_task(manager.start())
+        try:
+            await spawn_entered.wait()
+            await manager.stop()
+            release.set()
+            assert not await start
+            assert not manager.is_running
+            assert manager.process is None
+            assert processes[0].returncode is not None
+        finally:
+            release.set()
+            if not start.done():
+                start.cancel()
+                await asyncio.gather(start, return_exceptions=True)
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("installing", [False, True])
+    async def test_cancel_during_spawn_reaps_process_before_returning(
+        self, manager, monkeypatch, installing
+    ):
+        import sys
+
+        if installing:
+            manager.binary_path.unlink()
+            (manager.repo_dir / ".git").mkdir()
+            monkeypatch.setattr(manager, "_check_prerequisites", lambda: (True, ""))
+        real_exec = asyncio.create_subprocess_exec
+        created, release = asyncio.Event(), asyncio.Event()
+        processes = []
+
+        async def launch(*args, **kwargs):
+            process = await real_exec(
+                sys.executable, "-c", "import time;time.sleep(60)", **kwargs
+            )
+            processes.append(process)
+            created.set()
+            await release.wait()
+            return process
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        start = asyncio.create_task(manager.start())
+        try:
+            await asyncio.wait_for(created.wait(), timeout=2)
+            start.cancel()
+            await asyncio.sleep(0)
+            start.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(start, timeout=3)
+            assert processes[0].returncode is not None
+            _assert_process_exited(processes[0].pid)
+            assert manager.process is None
+            assert manager._install_task is None
+        finally:
+            release.set()
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    @pytest.mark.parametrize("raw_permission_error", [False, True])
+    async def test_stop_reaps_process_when_inspection_is_denied(
+        self, manager, monkeypatch, raw_permission_error
+    ):
+        import signal
+        import sys
+        import psutil
+
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time;time.sleep(60)",
+            start_new_session=True,
+        )
+        manager.process, manager._ready = process, True
+        error = (
+            PermissionError("inspection denied")
+            if raw_permission_error
+            else psutil.AccessDenied(process.pid)
+        )
+        inspect_children = MagicMock(side_effect=error)
+        monkeypatch.setattr(psutil.Process, "children", inspect_children)
+        try:
+            await asyncio.wait_for(manager.stop(), timeout=7)
+            inspect_children.assert_called_once_with(recursive=True)
+            assert process.returncode is not None
+            assert manager.process is None
+            assert manager._stop_task is None
+        finally:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            await asyncio.wait_for(process.wait(), timeout=2)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    @pytest.mark.parametrize("denied_inspection", ["children", "status"])
+    async def test_unknown_member_state_does_not_hide_signal_permission_error(
+        self, manager, monkeypatch, denied_inspection
+    ):
+        from lean_lsp_mcp import loogle
+
+        process = MagicMock(pid=12345, returncode=None)
+        member = MagicMock()
+        member.children.return_value = []
+        member.is_running.return_value = denied_inspection == "status"
+        getattr(member, denied_inspection).side_effect = loogle.psutil.AccessDenied(
+            process.pid
+        )
+        monkeypatch.setattr(loogle.psutil, "Process", lambda _: member)
+        signal_group = MagicMock(side_effect=PermissionError("signal denied"))
+        monkeypatch.setattr(loogle.os, "killpg", signal_group)
+        manager.process = process
+        with pytest.raises(PermissionError, match="signal denied"):
+            await manager.stop()
+        signal_group.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    async def test_ephemeral_macos_group_error_does_not_skip_reaping(
+        self, manager, monkeypatch
+    ):
+        from lean_lsp_mcp import loogle
+
+        proc = MagicMock(pid=12345)
+        proc.returncode = None
+        proc.wait = AsyncMock(return_value=0)
+        member = MagicMock()
+        member.children.return_value = []
+        member.is_running.return_value = False
+        monkeypatch.setattr(loogle.psutil, "Process", lambda _: member)
+        calls = []
+
+        def signal_group(group, sig):
+            calls.append(sig)
+            if sig == 0:
+                raise PermissionError("dying group")
+
+        monkeypatch.setattr(loogle.os, "killpg", signal_group)
+        manager.process = proc
+        await manager.stop()
+        proc.wait.assert_awaited_once()
+        assert manager.process is None
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
+    async def test_macos_dying_group_poll_waits_for_owned_member_exit(
+        self, manager, monkeypatch
+    ):
+        from lean_lsp_mcp import loogle
+
+        proc = MagicMock(pid=12345)
+        proc.returncode = None
+        proc.wait = AsyncMock(return_value=0)
+        member = MagicMock()
+        member.children.return_value = []
+        member.is_running.side_effect = [True, False]
+        member.status.return_value = "idle"
+        monkeypatch.setattr(loogle.psutil, "Process", lambda _: member)
+        polls = []
+
+        def signal_group(group, sig):
+            if sig == 0:
+                polls.append(sig)
+                raise PermissionError("native exit teardown")
+
+        monkeypatch.setattr(loogle.os, "killpg", signal_group)
+        manager.process = proc
+        await manager.stop()
+        assert len(polls) == 2
+        proc.wait.assert_awaited_once()
