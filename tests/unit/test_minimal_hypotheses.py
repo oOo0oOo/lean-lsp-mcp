@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lean_lsp_mcp.minimal_hypotheses import (
     _find_balanced_close,
     drop_binder,
     explicit_hypotheses,
     find_theorem_binders,
     line_of_offset,
+    theorem_declared,
 )
 
 
@@ -49,6 +52,40 @@ class TestFindTheoremBinders:
         src = "lemma bar (h : 1 = 1) : True := trivial\n"
         texts = [b[0] for b in find_theorem_binders(src, "bar")]
         assert texts == ["(h : 1 = 1)"]
+
+    @pytest.mark.parametrize("suffix", ["₁", "ᵢ", "!", "?", ".bar", ".«bar»", ".β"])
+    def test_skips_longer_name_with_same_prefix(self, suffix):
+        # `foo₁` / `foo!` / `foo.bar` are different Lean names, not `foo` + suffix.
+        src = (
+            f"theorem foo{suffix} (h : P) : Q := sorry\n"
+            "theorem foo (g : R) : S := sorry\n"
+        )
+        assert [b[0] for b in find_theorem_binders(src, "foo")] == ["(g : R)"]
+        assert [b[0] for b in find_theorem_binders(src, f"foo{suffix}")] == ["(h : P)"]
+
+
+@pytest.mark.parametrize(
+    ("name", "declared"),
+    [
+        ("foo", "foo₁"),
+        ("α", "α₁"),
+        ("x", "xᵢ"),
+        ("foo", "foo!"),
+        ("bar", "bar?"),
+        ("foo", "foo.bar"),
+        ("foo", "foo.«bar»"),
+    ],
+)
+def test_theorem_declared_needs_the_whole_identifier(name, declared):
+    src = f"theorem {declared} (h : P) : Q := sorry\n"
+    assert theorem_declared(src, declared)
+    assert not theorem_declared(src, name)
+
+
+def test_theorem_declared_with_universe_parameters():
+    # `.{u}` lists universe parameters; it does not extend the name.
+    src = "theorem foo.{u} {α : Sort u} (h : P) : Q := sorry\n"
+    assert theorem_declared(src, "foo")
 
 
 class TestExplicitHypotheses:

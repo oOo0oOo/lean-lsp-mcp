@@ -4,7 +4,6 @@ import importlib.metadata
 import json
 import logging.config
 import os
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -46,6 +45,7 @@ from lean_lsp_mcp.diagnostic_utils import (
 from lean_lsp_mcp.file_utils import get_file_contents, require_lean_project_path
 from lean_lsp_mcp.instructions import INSTRUCTIONS
 from lean_lsp_mcp import config
+from lean_lsp_mcp.lean_names import LEAN_NAME_RE
 from lean_lsp_mcp.loogle import LoogleManager
 from lean_lsp_mcp.repl import Repl, repl_enabled
 
@@ -67,10 +67,11 @@ _TOOL_DESCRIPTIONS_ENV = "LEAN_MCP_TOOL_DESCRIPTIONS"
 
 
 def _validate_theorem_name(theorem_name: str) -> str:
-    if not re.fullmatch(
-        r"[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)*",
-        theorem_name,
-    ):
+    # The name is spliced into `#print axioms _root_.<name>`, and Lean echoes it in
+    # the `depends on axioms: [...]` reply that `parse_axioms` reads. Accept only
+    # plain dot-separated identifiers: no command text, and no `«...»` escapes,
+    # whose contents could spoof that reply.
+    if not LEAN_NAME_RE.fullmatch(theorem_name):
         raise LeanToolError(
             "Invalid theorem name. Use a Lean fully qualified name such as `Namespace.theorem`."
         )
