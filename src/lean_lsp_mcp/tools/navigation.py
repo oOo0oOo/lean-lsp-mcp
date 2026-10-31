@@ -104,6 +104,38 @@ def _namespace_at(lines: list[str], declaration_line: int) -> str:
     return ".".join(name for scope, name in scopes if scope == "namespace")
 
 
+def _qualified_source_declaration_position(
+    content: str, symbol: str
+) -> dict[str, int] | None:
+    """Find a local declaration by its qualified name and active namespace."""
+    requested_name = symbol.removeprefix("_root_.")
+    if "." not in requested_name:
+        return None
+
+    lines = content.splitlines()
+    for line_number, line in enumerate(lines):
+        stripped = line.strip()
+        match = _SOURCE_DECLARATION_RE.match(stripped)
+        if match is None:
+            continue
+
+        source_name = match.group(1)
+        is_root_name = source_name.startswith("_root_.")
+        declaration_name = source_name.removeprefix("_root_.")
+        namespace = _namespace_at(lines, line_number)
+        if (
+            namespace
+            and not is_root_name
+            and not declaration_name.startswith(f"{namespace}.")
+        ):
+            declaration_name = f"{namespace}.{declaration_name}"
+        if declaration_name == requested_name:
+            indentation = len(line) - len(line.lstrip())
+            return {"line": line_number, "column": indentation + match.start(1)}
+
+    return None
+
+
 def _to_additive_source_declaration(
     lines: list[str], symbol: str, start_line: int | None
 ) -> str | None:
@@ -391,6 +423,17 @@ async def declaration_file(
         if position
         else []
     )
+    if not locations:
+        local_position = _qualified_source_declaration_position(
+            orig_file_content, symbol
+        )
+        if local_position is not None and local_position != position:
+            locations = await client.goto(
+                "declaration",
+                rel_path,
+                local_position["line"],
+                local_position["column"],
+            )
     if not locations:
         locations = await _probe_declaration_location(client, orig_file_content, symbol)
     if not locations:
