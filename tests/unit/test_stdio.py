@@ -440,3 +440,20 @@ def test_closed_stderr_keeps_protocol_descriptors_out_of_standard_range():
     """)
     assert result.stdout == "wire output\nrestored\n"
     assert result.stderr == ""
+
+
+def test_pinned_sdk_still_has_the_private_stdio_helpers_we_reuse():
+    """stdio.py reuses private helpers of the pinned MCP SDK. An SDK update that
+    renames or removes them must fail here, not in a client's session."""
+    from mcp.server import stdio as sdk_stdio
+
+    for name in (
+        "_claim_fd",
+        "_claims",
+        "_open_stdin_diversion",
+        "_open_stdout_diversion",
+        "_UnownedTextWrapper",
+    ):
+        assert hasattr(sdk_stdio, name), (
+            f"mcp.server.stdio.{name} is gone; recheck stdio.py"
+        )

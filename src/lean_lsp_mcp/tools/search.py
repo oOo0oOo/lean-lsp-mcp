@@ -185,7 +185,7 @@ async def leansearch(
     Examples: "sum of two even numbers is even", "Cauchy-Schwarz inequality",
     "{f : A → B} (hf : Injective f) : ∃ g, LeftInverse g f"
     """
-    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+    headers = {"User-Agent": config.user_agent(), "Content-Type": "application/json"}
     payload = orjson.dumps({"num_results": str(num_results), "query": [query]})
 
     req = urllib.request.Request(
@@ -318,7 +318,7 @@ async def leanfinder(
     The `version` argument selects which mathlib snapshot to query
     (v4.19.0, v4.24.0, or v4.28.0). Default: v4.28.0.
     """
-    headers = {"User-Agent": "lean-lsp-mcp/0.1", "Content-Type": "application/json"}
+    headers = {"User-Agent": config.user_agent(), "Content-Type": "application/json"}
     request_url = config.leanfinder_url()
     payload = orjson.dumps(
         {"inputs": query, "top_k": int(num_results), "version": version}
@@ -402,7 +402,7 @@ async def hammer_premise(
     req = urllib.request.Request(
         url + "/retrieve",
         headers={
-            "User-Agent": "lean-lsp-mcp/0.1",
+            "User-Agent": config.user_agent(),
             "Content-Type": "application/json",
         },
         method="POST",

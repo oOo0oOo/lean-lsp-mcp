@@ -555,7 +555,8 @@ class TestLoogleInstall:
 class TestLoogleQuery:
     """Test start/query/stop against installed loogle binary.
 
-    Skips only when loogle is not installed; a broken installation fails.
+    Skips when loogle is not installed or the test project's Mathlib has not
+    been fetched (Loogle indexes Mathlib); a broken installation fails.
     Run TestLoogleInstall first to install or refresh the cache.
     """
 
@@ -567,6 +568,10 @@ class TestLoogleQuery:
         if not mgr.is_installed:
             pytest.skip(
                 "loogle not installed (run: pytest -m slow tests/unit/test_loogle.py)"
+            )
+        if not (project / ".lake" / "packages" / "mathlib").is_dir():
+            pytest.skip(
+                "test project's Mathlib not fetched (run: lake build in tests/test_project)"
             )
 
         try:
