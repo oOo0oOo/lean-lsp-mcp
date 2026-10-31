@@ -1,6 +1,11 @@
-FROM python:3.12-slim
+ARG UV_VERSION=0.13.6
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+FROM python:3.12.16-slim
 
-ARG UV_VERSION=0.8.22
+ARG PIP_VERSION=26.2.2
+# Update the URL and SHA256 together when changing PIP_VERSION.
+ARG PIP_WHEEL_URL=https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl
+ARG PIP_WHEEL_SHA256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
 ARG ELAN_VERSION=v4.1.2
 # Architecture for elan binary. Update ELAN_SHA256 when changing.
 ARG ELAN_ARCH=x86_64-unknown-linux-gnu
@@ -18,7 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir "uv==${UV_VERSION}"
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Refresh the digest-verified venv seed, then bootstrap pip offline from it.
+COPY docker/refresh_ensurepip.py /tmp/refresh_ensurepip.py
+RUN curl -fsSL -o "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" "${PIP_WHEEL_URL}" \
+    && echo "${PIP_WHEEL_SHA256}  /tmp/pip-${PIP_VERSION}-py3-none-any.whl" | sha256sum -c - \
+    && python /tmp/refresh_ensurepip.py "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" "${PIP_VERSION}" \
+    && python -m ensurepip --upgrade --default-pip \
+    && python -c "import ensurepip, pip; assert ensurepip.version() == pip.__version__ == '${PIP_VERSION}'" \
+    && rm -f "/tmp/pip-${PIP_VERSION}-py3-none-any.whl" /tmp/refresh_ensurepip.py
 
 RUN mkdir -p "${ELAN_HOME}" \
     && curl -fsSL -o /tmp/elan.tar.gz "https://github.com/leanprover/elan/releases/download/${ELAN_VERSION}/elan-${ELAN_ARCH}.tar.gz" \
