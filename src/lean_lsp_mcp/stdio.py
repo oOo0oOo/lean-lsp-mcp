@@ -1,20 +1,21 @@
-"""Cancellable POSIX streams for MCP's public stdio transport.
+"""Cancellable POSIX I/O for the pinned MCP 2.2 stdio transport.
 
-MCP 2.2's default AsyncFile streams wait on blocking worker threads during
-cancellation. Explicit streams keep that I/O on the event loop, so shutdown can
-reach the application lifespan even while the client holds a pipe open.
+The SDK's threaded I/O cannot be cancelled while a client keeps input open or
+stops draining output. Reuse its private descriptor claims/diversion instead of
+creating another ownership mechanism. Recheck these helpers and the low-level
+run call when updating the pinned SDK; HTTP and non-POSIX transports remain
+SDK-owned.
 """
 
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 import os
 import sys
-import threading
-from typing import TextIO
+from typing import Literal, TextIO
 
 import anyio
 from anyio.lowlevel import checkpoint
-from mcp.server.stdio import stdio_server
+from mcp.server import stdio as sdk_stdio
 from mcp.server.mcpserver import MCPServer
 
 
@@ -64,44 +65,45 @@ class _NonblockingStdout(anyio.AsyncFile[str]):
         await checkpoint()
 
 
-_stdio_lock = threading.Lock()
-
-
 @contextmanager
-def _cancellable_stdio(
-    stdin: TextIO,
-    stdout: TextIO,
-) -> Iterator[tuple[anyio.AsyncFile[str], anyio.AsyncFile[str]]]:
-    # Explicit streams leave descriptor ownership to us. Duplicate the wire,
-    # divert tools/children away from it, and unwind everything in reverse order.
-    if not _stdio_lock.acquire(blocking=False):
-        raise RuntimeError("stdio transport is already in use")
+def _cancellable_stream(
+    stream: TextIO, fd: Literal[0, 1]
+) -> Iterator[anyio.AsyncFile[str]]:
+    wire, restore = (
+        sdk_stdio._claim_fd(0, stream, "rb", sdk_stdio._open_stdin_diversion)
+        if fd == 0
+        else sdk_stdio._claim_fd(1, stream, "wb", sdk_stdio._open_stdout_diversion)
+    )
+    owns_wire = restore is not None and wire is not getattr(stream, "buffer", None)
+    blocking = None
+    text_stream = None
     try:
-        with ExitStack() as stack:
-            streams = []
-            for fd, stream in enumerate((stdin, stdout)):
-                wire = stack.enter_context(
-                    open(
-                        os.dup(stream.buffer.fileno()),
-                        "r" if fd == 0 else "w",
-                        encoding="utf-8",
-                        errors="replace" if fd == 0 else "strict",
-                    )
-                )
-                if stream.buffer.fileno() == fd:
-                    stack.callback(os.dup2, wire.fileno(), fd)
-                    if fd == 0:
-                        with open(os.devnull, "rb") as null:
-                            os.dup2(null.fileno(), fd)
-                    else:
-                        os.dup2(2, fd)
-                blocking = os.get_blocking(wire.fileno())
-                stack.callback(os.set_blocking, wire.fileno(), blocking)
-                os.set_blocking(wire.fileno(), False)
-                streams.append(wire)
-            yield _NonblockingStdin(streams[0]), _NonblockingStdout(streams[1])
+        blocking = os.get_blocking(wire.fileno())
+        os.set_blocking(wire.fileno(), False)
+        text_stream = sdk_stdio._UnownedTextWrapper(
+            wire, encoding="utf-8", errors="replace" if fd == 0 else "strict"
+        )
+        yield (
+            _NonblockingStdin(text_stream)
+            if fd == 0
+            else _NonblockingStdout(text_stream)
+        )
     finally:
-        _stdio_lock.release()
+        try:
+            # Duplicates share their blocking flags with the original wire.
+            if blocking is not None:
+                os.set_blocking(wire.fileno(), blocking)
+        finally:
+            if text_stream is not None:
+                text_stream.close()
+            if restore is not None:
+                restore()
+            # Failed SDK restoration retains the registered claim and private
+            # fd. Never recycle that descriptor or close a borrowed fallback.
+            if owns_wire and fd not in sdk_stdio._claims:
+                private_fd = wire.fileno()
+                wire.close()  # The SDK opens this buffer with closefd=False.
+                os.close(private_fd)
 
 
 class CancellableMCPServer(MCPServer):
@@ -115,10 +117,12 @@ class CancellableMCPServer(MCPServer):
         except (AttributeError, OSError, ValueError):
             await super().run_stdio_async()
             return
-        with _cancellable_stdio(sys.stdin, sys.stdout) as (stdin, stdout):
-            # The high-level runner exposes no explicit-stream argument. Keep
-            # its low-level bridge here; framing and lifespan stay SDK-owned.
-            async with stdio_server(stdin=stdin, stdout=stdout) as (
+        with (
+            _cancellable_stream(sys.stdin, 0) as stdin,
+            _cancellable_stream(sys.stdout, 1) as stdout,
+        ):
+            # Preserve the SDK's descriptor isolation, framing and lifespan.
+            async with sdk_stdio.stdio_server(stdin=stdin, stdout=stdout) as (
                 reader,
                 writer,
             ):
