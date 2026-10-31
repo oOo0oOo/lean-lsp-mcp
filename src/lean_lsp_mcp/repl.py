@@ -244,7 +244,16 @@ class Repl:
 
             if not lines:
                 raise await self._process_error("No response from REPL")
-            return json.loads(b"".join(lines))
+            response = json.loads(b"".join(lines))
+            if not isinstance(response, dict):
+                raise ReplProcessError("REPL response is not an object")
+            if set(response) == {"message"} and isinstance(response["message"], str):
+                response = {"error": response["message"]}
+            if "error" in response and (
+                not isinstance(response["error"], str) or not response["error"]
+            ):
+                raise ReplProcessError("Invalid REPL error response")
+            return response
         except ReplProcessError:
             raise
         except Exception as exc:
@@ -259,7 +268,19 @@ class Repl:
 
     async def _send_tactic(self, tactic: str, proof_state: int) -> dict[str, Any]:
         """Send a tactic to run in a proof state."""
-        return await self._send({"tactic": tactic, "proofState": proof_state})
+        response = await self._send({"tactic": tactic, "proofState": proof_state})
+        if "error" not in response and not (
+            type(response.get("proofState")) is int
+            and response["proofState"] >= 0
+            and isinstance(response.get("goals"), list)
+            and all(isinstance(goal, str) for goal in response["goals"])
+            and (
+                "proofStatus" not in response
+                or isinstance(response["proofStatus"], str)
+            )
+        ):
+            raise ReplProcessError("Incomplete REPL tactic response")
+        return response
 
     async def _ensure_header(self, header: str) -> int | None:
         """Ensure REPL is running with given header, return header env."""

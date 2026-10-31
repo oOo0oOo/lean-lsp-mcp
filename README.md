@@ -224,6 +224,11 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance. Rate limits are skipped when set to a custom backend.
 - `LEAN_LOOGLE_LOCAL`: Set to `true`, `1`, or `yes` to enable local loogle (see [Local Loogle](#local-loogle) section).
+- `LEAN_LOOGLE_MODULE`: Root module for local Loogle (default: `Mathlib`). Use a built module such
+  as `Init` or `Mathlib.Data.Nat.Basic` to search it and its imports with a smaller index. Indices
+  are separated by project and module.
+- `LEAN_LOOGLE_LOCAL_ONLY`: Set to `true`, `1`, or `yes` to refuse remote Loogle fallback when local
+  search is unavailable. Defaults to false; this does not disable other remote search tools.
 - `LEAN_LOOGLE_CACHE_DIR`: Override the cache directory for local loogle (default: `~/.cache/lean-lsp-mcp/loogle`).
 - `LOOGLE_URL`: URL for a self-hosted Loogle instance (default: `https://loogle.lean-lang.org`). Rate limits are skipped when set to a custom backend.
 - `LOOGLE_HEADERS`: JSON object of extra HTTP headers for Loogle requests (e.g. `'{"X-API-Key": "..."}'`).

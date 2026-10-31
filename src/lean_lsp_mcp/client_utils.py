@@ -324,6 +324,9 @@ async def startup_client(ctx: ToolContext) -> AsyncLeanLSPClient:
             raise LeanToolError(str(exc)) from exc
         client = await _get_or_create_shared_client(lean_project_path)
         ctx.request_context.lifespan_context.client = client
+        from lean_lsp_mcp.server import prepare_project_accelerators
+
+        await prepare_project_accelerators(ctx.request_context.lifespan_context)
         return client
 
 

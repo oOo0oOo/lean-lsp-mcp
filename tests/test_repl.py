@@ -139,6 +139,48 @@ async def test_dead_repl_reports_exit_and_memory_limit(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_native_error_messages_are_preserved(tmp_path: Path):
+    """REPL/JSON.lean's Error encodes a message; failed tactics must retain that error."""
+    import json
+    import random
+    import string
+    from unittest.mock import AsyncMock, MagicMock
+
+    repl = Repl(project_dir=str(tmp_path))
+    proc = MagicMock()
+    proc.stdin.drain = AsyncMock()
+    repl._proc = proc
+    random_source = random.Random(23)
+    for _ in range(20):
+        message = "Lean error: " + "".join(
+            random_source.choices(string.printable, k=40)
+        )
+        proc.stdout.readline = AsyncMock(
+            side_effect=[json.dumps({"message": message}).encode() + b"\n", b"\n"]
+        )
+        assert await repl._send_tactic("exact True.intro", 0) == {"error": message}
+
+
+@pytest.mark.asyncio
+async def test_incomplete_tactic_response_is_not_an_empty_success(tmp_path: Path):
+    from unittest.mock import AsyncMock
+
+    repl = Repl(project_dir=str(tmp_path))
+    valid = {"proofState": 1, "goals": [], "proofStatus": "Completed"}
+    repl._send = AsyncMock(return_value=valid)
+    assert await repl._send_tactic("trivial", 0) == valid
+    legacy = {key: value for key, value in valid.items() if key != "proofStatus"}
+    repl._send = AsyncMock(return_value=legacy)
+    assert await repl._send_tactic("trivial", 0) == legacy
+    for missing in ("proofState", "goals"):
+        repl._send = AsyncMock(
+            return_value={key: value for key, value in valid.items() if key != missing}
+        )
+        with pytest.raises(ReplProcessError, match="Incomplete REPL tactic response"):
+            await repl._send_tactic("trivial", 0)
+
+
+@pytest.mark.asyncio
 async def test_run_code_uses_cached_header_environment(tmp_path: Path):
     from unittest.mock import AsyncMock
 
