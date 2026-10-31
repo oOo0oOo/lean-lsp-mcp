@@ -45,6 +45,28 @@ def theorem_declared(source: str, name: str) -> bool:
     )
 
 
+def disable_auto_implicit_for_theorem(source: str, name: str) -> str:
+    """Scope both auto-implicit options off around one declaration.
+
+    A dropped explicit binder can otherwise be silently recreated as an
+    auto-implicit parameter, making the declaration appear to elaborate.
+    """
+    pattern = re.compile(
+        rf"\b(theorem|lemma|example|def)\s+{re.escape(name)}{LEAN_NAME_END}"
+    )
+    match = pattern.search(source)
+    if match is None:
+        return source
+
+    # Put the scoped commands at the declaration's line start so same-line
+    # attributes and modifiers remain part of the wrapped declaration.
+    declaration_start = source.rfind("\n", 0, match.start()) + 1
+    options = (
+        "set_option autoImplicit false in\nset_option relaxedAutoImplicit false in\n"
+    )
+    return source[:declaration_start] + options + source[declaration_start:]
+
+
 def find_theorem_binders(source: str, name: str) -> list[tuple[str, int, int]]:
     """Find the binder list of a theorem/lemma/def.
 

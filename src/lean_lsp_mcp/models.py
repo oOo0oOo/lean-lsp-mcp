@@ -1,8 +1,39 @@
 """Pydantic models for MCP tool structured outputs."""
 
 from enum import Enum
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
+
+
+class ToolOutputModel(BaseModel):
+    """Output model that leaves unavailable optional fields off the wire."""
+
+    _omit_empty_fields: ClassVar[frozenset[str]] = frozenset()
+    _omit_none_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_optional_fields(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> Any:
+        data = handler(self)
+        if not isinstance(data, dict):
+            return data
+
+        for name in type(self)._omit_none_fields:
+            if getattr(self, name) is None:
+                field = type(self).model_fields[name]
+                key = field.serialization_alias or field.alias or name
+                data.pop(key, None)
+
+        for name in type(self)._omit_empty_fields:
+            value = getattr(self, name)
+            if value is not None and value != "" and value != []:
+                continue
+            field = type(self).model_fields[name]
+            key = field.serialization_alias or field.alias or name
+            data.pop(key, None)
+        return data
 
 
 class DiagnosticSeverity(str, Enum):
@@ -27,26 +58,26 @@ class IndexStatus(str, Enum):
     error = "error"
 
 
-class LocalSearchResult(BaseModel):
+class LocalSearchResult(ToolOutputModel):
     name: str = Field(description="Declaration name")
     kind: str = Field(description="Declaration kind (theorem, def, class, etc.)")
     file: str = Field(description="Relative file path")
 
 
-class LeanSearchResult(BaseModel):
+class LeanSearchResult(ToolOutputModel):
     name: str = Field(description="Full qualified name")
     module_name: str = Field(description="Module where declared")
     kind: str | None = Field(None, description="Declaration kind")
     type: str | None = Field(None, description="Type signature")
 
 
-class LoogleResult(BaseModel):
+class LoogleResult(ToolOutputModel):
     name: str = Field(description="Declaration name")
     type: str = Field(description="Type signature")
     module: str = Field(description="Module where declared")
 
 
-class LeanFinderResult(BaseModel):
+class LeanFinderResult(ToolOutputModel):
     formal_name: str = Field(description="Fully qualified Lean declaration name")
     informal_name: str = Field(
         description="Short natural-language name for the statement"
@@ -61,7 +92,7 @@ class LeanFinderResult(BaseModel):
     )
 
 
-class PremiseResult(BaseModel):
+class PremiseResult(ToolOutputModel):
     name: str = Field(description="Premise name for simp/omega/aesop")
 
 
@@ -72,7 +103,9 @@ class DiagnosticCategory(str, Enum):
     suggestion = "suggestion"
 
 
-class DiagnosticMessage(BaseModel):
+class DiagnosticMessage(ToolOutputModel):
+    _omit_empty_fields = frozenset({"lean_tags", "hint"})
+
     severity: str = Field(description="error, warning, info, or hint")
     message: str = Field(description="Diagnostic message text")
     line: int = Field(description="Line (1-indexed)")
@@ -100,12 +133,12 @@ class DiagnosticMessage(BaseModel):
     )
 
 
-class GoalContextEntry(BaseModel):
+class GoalContextEntry(ToolOutputModel):
     name: str = Field(description="Local hypothesis or variable name")
     type: str = Field(description="Lean type")
 
 
-class StructuredGoal(BaseModel):
+class StructuredGoal(ToolOutputModel):
     context: list[GoalContextEntry] = Field(
         default_factory=list, description="Local context entries"
     )
@@ -117,7 +150,9 @@ class StructuredGoal(BaseModel):
 GoalOutput = str | StructuredGoal
 
 
-class GoalState(BaseModel):
+class GoalState(ToolOutputModel):
+    _omit_none_fields = frozenset({"goals", "goals_before", "goals_after", "status"})
+
     line_context: str = Field(description="Source line where goals were queried")
     goals: list[GoalOutput] | None = Field(
         None, description="Goal list at specified column position"
@@ -138,7 +173,9 @@ class GoalState(BaseModel):
     )
 
 
-class CompletionItem(BaseModel):
+class CompletionItem(ToolOutputModel):
+    _omit_empty_fields = frozenset({"kind", "detail"})
+
     label: str = Field(description="Completion text to insert")
     kind: str | None = Field(
         None, description="Completion kind (function, variable, etc.)"
@@ -146,7 +183,7 @@ class CompletionItem(BaseModel):
     detail: str | None = Field(None, description="Additional detail")
 
 
-class HoverInfo(BaseModel):
+class HoverInfo(ToolOutputModel):
     symbol: str = Field(description="The symbol being hovered")
     info: str = Field(description="Type signature and documentation")
     diagnostics: list[DiagnosticMessage] = Field(
@@ -154,14 +191,16 @@ class HoverInfo(BaseModel):
     )
 
 
-class TermGoalState(BaseModel):
+class TermGoalState(ToolOutputModel):
     line_context: str = Field(description="Source line where term goal was queried")
     expected_type: str | None = Field(
         None, description="Expected type at this position"
     )
 
 
-class OutlineEntry(BaseModel):
+class OutlineEntry(ToolOutputModel):
+    _omit_empty_fields = frozenset({"type_signature", "children"})
+
     name: str = Field(description="Declaration name")
     kind: str = Field(description="Declaration kind (Thm, Def, Class, Struct, Ns, Ex)")
     start_line: int = Field(description="Start line (1-indexed)")
@@ -172,7 +211,9 @@ class OutlineEntry(BaseModel):
     )
 
 
-class FileOutline(BaseModel):
+class FileOutline(ToolOutputModel):
+    _omit_none_fields = frozenset({"total_declarations"})
+
     imports: list[str] = Field(default_factory=list, description="Import statements")
     declarations: list[OutlineEntry] = Field(
         default_factory=list, description="Top-level declarations"
@@ -182,7 +223,9 @@ class FileOutline(BaseModel):
     )
 
 
-class AttemptResult(BaseModel):
+class AttemptResult(ToolOutputModel):
+    _omit_none_fields = frozenset({"proof_status"})
+
     snippet: str = Field(description="Code snippet that was tried")
     goals: list[str] = Field(
         default_factory=list, description="Goal list after applying snippet"
@@ -200,13 +243,13 @@ class AttemptResult(BaseModel):
     )
 
 
-class BuildResult(BaseModel):
+class BuildResult(ToolOutputModel):
     success: bool = Field(description="Whether build succeeded")
     output: str = Field(description="Build output")
     errors: list[str] = Field(default_factory=list, description="Build errors if any")
 
 
-class RunResult(BaseModel):
+class RunResult(ToolOutputModel):
     success: bool = Field(description="Whether code compiled successfully")
     timed_out: bool = Field(
         False,
@@ -217,7 +260,9 @@ class RunResult(BaseModel):
     )
 
 
-class DeclarationInfo(BaseModel):
+class DeclarationInfo(ToolOutputModel):
+    _omit_none_fields = frozenset({"start_line", "end_line", "total_lines"})
+
     file_path: str = Field(description="Path to declaration file")
     content: str = Field(
         description="Declaration source (sliced unless full_file=True)"
@@ -238,8 +283,11 @@ class DeclarationInfo(BaseModel):
 # Wrapping in a model ensures proper JSON serialization.
 
 
-class DiagnosticsResult(BaseModel):
+class DiagnosticsResult(ToolOutputModel):
     """Wrapper for diagnostic messages list with build status."""
+
+    _omit_none_fields = frozenset({"still_elaborating_lines"})
+    _omit_empty_fields = frozenset({"failed_dependencies"})
 
     partial: bool = Field(
         False,
@@ -270,15 +318,17 @@ class DiagnosticsResult(BaseModel):
     )
 
 
-class CompletionsResult(BaseModel):
+class CompletionsResult(ToolOutputModel):
     """Wrapper for completions list."""
+
+    prefix: str = Field(description="Source prefix completed at the requested position")
 
     items: list[CompletionItem] = Field(
         default_factory=list, description="List of completion items"
     )
 
 
-class MultiAttemptResult(BaseModel):
+class MultiAttemptResult(ToolOutputModel):
     """Wrapper for multi-attempt results list."""
 
     items: list[AttemptResult] = Field(
@@ -286,7 +336,7 @@ class MultiAttemptResult(BaseModel):
     )
 
 
-class LocalSearchResults(BaseModel):
+class LocalSearchResults(ToolOutputModel):
     """Wrapper for local search results list."""
 
     items: list[LocalSearchResult] = Field(
@@ -303,7 +353,7 @@ class LocalSearchResults(BaseModel):
     )
 
 
-class LeanSearchResults(BaseModel):
+class LeanSearchResults(ToolOutputModel):
     """Wrapper for LeanSearch results list."""
 
     items: list[LeanSearchResult] = Field(
@@ -311,7 +361,7 @@ class LeanSearchResults(BaseModel):
     )
 
 
-class LoogleResults(BaseModel):
+class LoogleResults(ToolOutputModel):
     """Wrapper for Loogle results list."""
 
     items: list[LoogleResult] = Field(
@@ -319,7 +369,7 @@ class LoogleResults(BaseModel):
     )
 
 
-class LeanFinderResults(BaseModel):
+class LeanFinderResults(ToolOutputModel):
     """Wrapper for Lean Finder results list."""
 
     items: list[LeanFinderResult] = Field(
@@ -327,7 +377,7 @@ class LeanFinderResults(BaseModel):
     )
 
 
-class PremiseResults(BaseModel):
+class PremiseResults(ToolOutputModel):
     """Wrapper for premise results list."""
 
     items: list[PremiseResult] = Field(
@@ -335,7 +385,7 @@ class PremiseResults(BaseModel):
     )
 
 
-class WidgetsResult(BaseModel):
+class WidgetsResult(ToolOutputModel):
     """Wrapper for widget instances at a position."""
 
     widgets: list[dict] = Field(
@@ -343,7 +393,7 @@ class WidgetsResult(BaseModel):
     )
 
 
-class InteractiveDiagnosticsResult(BaseModel):
+class InteractiveDiagnosticsResult(ToolOutputModel):
     """Wrapper for interactive diagnostics with embedded widgets."""
 
     diagnostics: list[dict] = Field(
@@ -352,13 +402,13 @@ class InteractiveDiagnosticsResult(BaseModel):
     )
 
 
-class WidgetSourceResult(BaseModel):
+class WidgetSourceResult(ToolOutputModel):
     """Widget JavaScript source for a given hash."""
 
     source: dict = Field(description="Widget source data including JavaScript module")
 
 
-class ReferenceLocation(BaseModel):
+class ReferenceLocation(ToolOutputModel):
     """A single reference location."""
 
     file_path: str = Field(description="Absolute file path")
@@ -368,8 +418,10 @@ class ReferenceLocation(BaseModel):
     end_column: int = Field(description="End column (1-indexed)")
 
 
-class ReferencesResult(BaseModel):
+class ReferencesResult(ToolOutputModel):
     """Wrapper for find references results."""
+
+    _omit_none_fields = frozenset({"total"})
 
     items: list[ReferenceLocation] = Field(
         default_factory=list, description="List of reference locations"
@@ -379,7 +431,7 @@ class ReferencesResult(BaseModel):
     )
 
 
-class LineProfile(BaseModel):
+class LineProfile(ToolOutputModel):
     """Timing for a single source line."""
 
     line: int = Field(description="Source line number (1-indexed)")
@@ -387,7 +439,7 @@ class LineProfile(BaseModel):
     text: str = Field(description="Source line content (truncated)")
 
 
-class ProofProfileResult(BaseModel):
+class ProofProfileResult(ToolOutputModel):
     """Profiling result for a theorem."""
 
     ms: float = Field(description="Total elaboration time in ms")
@@ -399,7 +451,7 @@ class ProofProfileResult(BaseModel):
     )
 
 
-class CodeActionEdit(BaseModel):
+class CodeActionEdit(ToolOutputModel):
     new_text: str = Field(description="Replacement text")
     start_line: int = Field(description="Start line (1-indexed)")
     start_column: int = Field(description="Start column (1-indexed)")
@@ -407,7 +459,7 @@ class CodeActionEdit(BaseModel):
     end_column: int = Field(description="End column (1-indexed)")
 
 
-class CodeAction(BaseModel):
+class CodeAction(ToolOutputModel):
     title: str = Field(
         description="Code action title (e.g. 'Try this: simp only [...])"
     )
@@ -417,7 +469,7 @@ class CodeAction(BaseModel):
     )
 
 
-class CodeActionsResult(BaseModel):
+class CodeActionsResult(ToolOutputModel):
     """Wrapper for code actions at a position."""
 
     actions: list[CodeAction] = Field(
@@ -425,7 +477,7 @@ class CodeActionsResult(BaseModel):
     )
 
 
-class SourceWarning(BaseModel):
+class SourceWarning(ToolOutputModel):
     line: int = Field(description="Line number (1-indexed)")
     pattern: str = Field(description="Matched pattern text")
 
@@ -440,7 +492,7 @@ class AxiomTrust(str, Enum):
     custom = "custom"
 
 
-class VerifyResult(BaseModel):
+class VerifyResult(ToolOutputModel):
     axioms: list[str] = Field(
         default_factory=list,
         description="Axioms used. Standard 3: propext, Classical.choice, Quot.sound",
@@ -470,7 +522,9 @@ class HypothesisStatus(str, Enum):
     error = "error"
 
 
-class HypothesisVerdict(BaseModel):
+class HypothesisVerdict(ToolOutputModel):
+    _omit_empty_fields = frozenset({"detail"})
+
     binder: str = Field(description="Lean source of the binder, e.g. '(h : P)'")
     status: HypothesisStatus = Field(
         description=(
@@ -493,7 +547,7 @@ class HypothesisVerdict(BaseModel):
     )
 
 
-class MinimalHypothesesResult(BaseModel):
+class MinimalHypothesesResult(ToolOutputModel):
     theorem_name: str = Field(description="Theorem analyzed")
     file: str = Field(description="Relative file path")
     verdicts: list[HypothesisVerdict] = Field(

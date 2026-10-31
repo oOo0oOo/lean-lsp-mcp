@@ -25,6 +25,7 @@ from lean_lsp_mcp.models import (
     ReferenceLocation,
     ReferencesResult,
 )
+from lean_lsp_mcp.lean_names import LEAN_ID_REST
 from lean_lsp_mcp.tool_registry import tool
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -34,14 +35,33 @@ from lean_lsp_mcp.utils import (
 )
 
 
-def _completion_prefix(content: str, line: int, column: int) -> str:
+def _is_completion_name_char(char: str) -> bool:
+    return char == "." or re.fullmatch(LEAN_ID_REST, char) is not None
+
+
+def _completion_position(content: str, line: int, column: int) -> tuple[int, str]:
     lines = content.splitlines()
     if line < 1 or line > len(lines):
-        return ""
-    text_before_cursor = lines[line - 1][: column - 1] if column > 0 else ""
-    if text_before_cursor.endswith("."):
-        return ""
-    return re.split(r"[\s()\[\]{},:;.]+", text_before_cursor)[-1].lower()
+        return max(column - 1, 0), ""
+
+    line_text = lines[line - 1]
+    offset = min(max(column - 1, 0), len(line_text))
+    # LSP positions are between characters. Callers often give the 1-indexed
+    # column of the identifier's last character instead of the following one.
+    if (
+        offset < len(line_text)
+        and _is_completion_name_char(line_text[offset])
+        and (
+            offset + 1 == len(line_text)
+            or not _is_completion_name_char(line_text[offset + 1])
+        )
+    ):
+        offset += 1
+
+    start = offset
+    while start > 0 and _is_completion_name_char(line_text[start - 1]):
+        start -= 1
+    return offset, line_text[start:offset]
 
 
 def _sort_completions(
@@ -51,7 +71,8 @@ def _sort_completions(
         completions.sort(key=lambda completion: completion.get("sortText", "\uffff"))
         return
 
-    prefix = _completion_prefix(content, line, column)
+    _, raw_prefix = _completion_position(content, line, column)
+    prefix = raw_prefix.rsplit(".", 1)[-1].lower()
     if not prefix:
         completions.sort(key=lambda completion: completion["label"].lower())
         return
@@ -176,18 +197,19 @@ async def completions(
     client = get_client(ctx)
     await open_synced(ctx, rel_path)
     content = client.content(rel_path)
-    raw_completions = await client.completions(rel_path, line - 1, column - 1)
+    completion_column, prefix = _completion_position(content, line, column)
+    raw_completions = await client.completions(rel_path, line - 1, completion_column)
     raw_completions = [c for c in raw_completions if "label" in c]
 
     if not raw_completions:
-        return CompletionsResult(items=[])
+        return CompletionsResult(items=[], prefix=prefix)
 
     _sort_completions(raw_completions, content, line, column)
     raw_completions = raw_completions[:max_completions]
     raw_completions = await _resolve_completion_details(
         client, raw_completions, resolve_details
     )
-    return CompletionsResult(items=_completion_items(raw_completions))
+    return CompletionsResult(items=_completion_items(raw_completions), prefix=prefix)
 
 
 @tool(

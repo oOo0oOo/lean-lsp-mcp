@@ -6,7 +6,7 @@ from typing import AsyncContextManager
 
 import pytest
 
-from tests.helpers.mcp_client import MCPClient, result_text
+from tests.helpers.mcp_client import MCPClient, result_json, result_text
 
 
 @pytest.fixture()
@@ -89,3 +89,45 @@ async def test_editor_tools(
             },
         )
         assert "succ" in result_text(completions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_completions_accept_cursor_on_last_identifier_character(
+    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
+    test_project_path: Path,
+) -> None:
+    test_file = test_project_path / "CompletionPositionTest.lean"
+    test_file.write_text(
+        "import Mathlib\n\ndef completionTest : Nat := Nat.a\n", encoding="utf-8"
+    )
+    line_text = test_file.read_text(encoding="utf-8").splitlines()[2]
+    identifier_start = line_text.index("Nat.a")
+    last_character_column = identifier_start + len("Nat.a")
+
+    async with mcp_client_factory() as client:
+        at_character = await client.call_tool(
+            "lean_completions",
+            {
+                "file_path": str(test_file),
+                "line": 3,
+                "column": last_character_column,
+                "max_completions": 500,
+            },
+        )
+        after_character = await client.call_tool(
+            "lean_completions",
+            {
+                "file_path": str(test_file),
+                "line": 3,
+                "column": last_character_column + 1,
+                "max_completions": 500,
+            },
+        )
+
+    at_character_data = result_json(at_character)
+    after_character_data = result_json(after_character)
+    assert at_character_data["prefix"] == "Nat.a"
+    assert after_character_data["prefix"] == "Nat.a"
+    assert at_character_data["items"]
+    assert at_character_data["items"] == after_character_data["items"]
