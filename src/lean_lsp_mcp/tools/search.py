@@ -42,9 +42,10 @@ from lean_lsp_mcp.models import (
     PremiseResults,
 )
 from lean_lsp_mcp.tool_registry import tool
+from lean_lsp_mcp.utils import LeanToolError
 
 
-class LocalSearchError(Exception):
+class LocalSearchError(LeanToolError):
     pass
 
 

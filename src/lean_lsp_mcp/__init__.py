@@ -9,7 +9,7 @@ from contextlib import suppress
 import anyio
 from lean_lsp_mcp import config
 from lean_lsp_mcp.client_utils import close_shared_client, infer_project_path
-from lean_lsp_mcp.server import VERSION, apply_tool_configuration, mcp
+from lean_lsp_mcp.server import VERSION, create_server
 
 _TRANSPORT_CLOSE_HINTS = (
     "transport closed",
@@ -154,7 +154,7 @@ def main():
         os.environ[config.REPL_TIMEOUT_ENV] = str(args.repl_timeout)
     os.environ[config.ACTIVE_TRANSPORT_ENV] = args.transport
 
-    apply_tool_configuration(mcp)
+    mcp = create_server()
     previous_sigterm = None
     sigterm_received = False
     if (

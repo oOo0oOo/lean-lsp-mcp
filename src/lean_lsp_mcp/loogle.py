@@ -11,8 +11,6 @@ import shutil
 import signal
 import ssl
 import subprocess
-import threading
-import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -81,6 +79,109 @@ def loogle_remote(query: str, num_results: int) -> list[LoogleResult] | str:
         return f"loogle error:\n{e}"
 
 
+async def _await_cleanup(task: asyncio.Task[None]) -> None:
+    """Finish owned cleanup before propagating even repeated cancellation."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _terminate_process(
+    process: asyncio.subprocess.Process,
+    *,
+    force: bool = False,
+) -> None:
+    """Reap a launcher and its POSIX group, including surviving descendants."""
+    group = process.pid if os.name == "posix" and isinstance(process.pid, int) else None
+    if group is not None:
+        try:
+            owner = psutil.Process(process.pid)
+            members = [owner, *owner.children(recursive=True)]
+        except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError):
+            # Inspection is optional; denied or incomplete snapshots
+            # cannot establish that every owned member has exited.
+            members = []
+
+        def exited(member: psutil.Process) -> bool:
+            try:
+                return (
+                    not member.is_running() or member.status() == psutil.STATUS_ZOMBIE
+                )
+            except psutil.NoSuchProcess:
+                return True
+            except (psutil.AccessDenied, PermissionError):
+                return False
+
+        def signal_group(sig: int) -> bool:
+            try:
+                os.killpg(group, sig)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # macOS can return EPERM instead of ESRCH once a
+                # terminated group contains only dying/zombie tasks.
+                # Suppress it only after checking the owned members.
+                if members and all(exited(member) for member in members):
+                    return False
+                if sig == 0:
+                    # During native exit teardown macOS may report
+                    # EPERM while psutil still sees an idle member.
+                    # Keep waiting within the graceful deadline.
+                    return True
+                raise
+            return True
+
+        if signal_group(signal.SIGKILL if force else signal.SIGTERM) and not force:
+            deadline = asyncio.get_running_loop().time() + 5
+            while signal_group(0):
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    signal_group(signal.SIGKILL)
+                    break
+                await asyncio.sleep(min(0.05, remaining))
+    elif process.returncode is None:
+        try:
+            process.kill() if force else process.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2 if force else 5)
+    except asyncio.TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await asyncio.wait_for(process.wait(), timeout=2)
+
+
+async def _spawn_process(*cmd: str, **kwargs: Any) -> asyncio.subprocess.Process:
+    # Publish the spawn task before awaiting it: cancellation must not lose a
+    # process whose creation has reached the OS but has not returned to Python.
+    spawn = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            *cmd,
+            start_new_session=os.name == "posix",
+            **kwargs,
+        )
+    )
+    try:
+        return await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+
+        async def cleanup() -> None:
+            process = await spawn
+            await _terminate_process(process, force=True)
+
+        await _await_cleanup(asyncio.create_task(cleanup()))
+        raise
+
+
 class LoogleManager:
     """Manages local loogle installation and async subprocess.
 
@@ -105,7 +206,6 @@ class LoogleManager:
         self._start_lock = asyncio.Lock()
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr_tail = b""
-        self._install_cancel = threading.Event()
         self._stop_task: asyncio.Task[None] | None = None
         self._generation = 0
         self._install_task: asyncio.Task[bool] | None = None
@@ -162,7 +262,7 @@ class LoogleManager:
             )
         return True, ""
 
-    def _run(
+    async def _run(
         self,
         cmd: list[str],
         timeout: int = 300,
@@ -171,53 +271,36 @@ class LoogleManager:
     ) -> subprocess.CompletedProcess:
         run_env = env if env is not None else os.environ.copy()
         run_env["LAKE_ARTIFACT_CACHE"] = "false"
-        # Git and Lake can launch children. A timed-out or cancelled install
-        # must reap the entire command, not leave compilers in the background.
-        with subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
+        process = await _spawn_process(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=cwd or self.repo_dir,
             env=run_env,
-            start_new_session=os.name == "posix",
-        ) as process:
-            deadline = time.monotonic() + timeout
-            try:
-                while True:
-                    if self._install_cancel.is_set():
-                        raise RuntimeError("Loogle installation cancelled")
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(cmd, timeout)
-                    try:
-                        stdout, stderr = process.communicate(
-                            timeout=min(0.2, remaining)
-                        )
-                        return subprocess.CompletedProcess(
-                            cmd, process.returncode, stdout, stderr
-                        )
-                    except subprocess.TimeoutExpired:
-                        continue
-            except BaseException:
-                try:
-                    if os.name == "posix":
-                        os.killpg(process.pid, signal.SIGKILL)
-                    else:
-                        process.kill()
-                except ProcessLookupError:
-                    pass
-                process.communicate()
-                raise
-
-    def _checkout_repo_ref(self) -> bool:
+        )
         try:
-            current = self._run(
-                ["git", "rev-parse", "HEAD"], cwd=self.repo_dir
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+            assert process.returncode is not None
+            return subprocess.CompletedProcess(
+                cmd,
+                process.returncode,
+                stdout.decode("utf-8"),
+                stderr.decode("utf-8"),
+            )
+        except asyncio.TimeoutError:
+            raise subprocess.TimeoutExpired(cmd, timeout) from None
+        finally:
+            await _await_cleanup(
+                asyncio.create_task(_terminate_process(process, force=True))
+            )
+
+    async def _checkout_repo_ref(self) -> bool:
+        try:
+            current = (
+                await self._run(["git", "rev-parse", "HEAD"], cwd=self.repo_dir)
             ).stdout.strip()
             if current != self.REPO_REF:
-                fetched = self._run(
+                fetched = await self._run(
                     ["git", "fetch", "--depth", "1", "origin", self.REPO_REF],
                     cwd=self.repo_dir,
                 )
@@ -226,7 +309,7 @@ class LoogleManager:
                         "Loogle revision fetch failed: %s", fetched.stderr[:2000]
                     )
                     return False
-            checked_out = self._run(
+            checked_out = await self._run(
                 ["git", "checkout", "--detach", self.REPO_REF],
                 cwd=self.repo_dir,
             )
@@ -240,13 +323,13 @@ class LoogleManager:
             logger.error("Loogle revision setup failed: %s", exc)
             return False
 
-    def _clone_repo(self) -> bool:
+    async def _clone_repo(self) -> bool:
         if self.repo_dir.exists():
-            return (self.repo_dir / ".git").exists() and self._checkout_repo_ref()
+            return (self.repo_dir / ".git").exists() and await self._checkout_repo_ref()
         logger.info(f"Cloning loogle to {self.repo_dir}...")
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            r = self._run(
+            r = await self._run(
                 [
                     "git",
                     "clone",
@@ -265,7 +348,7 @@ class LoogleManager:
                 if r.stderr:
                     logger.error("Clone stderr:\n%s", r.stderr[:2000])
                 return False
-            return self._checkout_repo_ref()
+            return await self._checkout_repo_ref()
         except OSError as e:
             logger.error("Clone setup error: %s", e)
             return False
@@ -273,7 +356,7 @@ class LoogleManager:
             logger.error(f"Clone error: {e}")
             return False
 
-    def _build_loogle(self) -> bool:
+    async def _build_loogle(self) -> bool:
         if self.is_installed:
             return True
         if not self.repo_dir.exists():
@@ -283,7 +366,7 @@ class LoogleManager:
             return False
         logger.info("Building loogle for toolchain %s...", toolchain)
         try:
-            result = self._run(
+            result = await self._run(
                 ["lake", "build", "loogle"],
                 timeout=900,
                 env=self._project_env(),
@@ -326,6 +409,10 @@ class LoogleManager:
         return changed
 
     def ensure_installed(self) -> bool:
+        """Install from a synchronous caller; server code uses async start()."""
+        return asyncio.run(self._ensure_installed())
+
+    async def _ensure_installed(self) -> bool:
         if self.project_path is None or self._get_project_toolchain() is None:
             logger.warning("A Lean project with a lean-toolchain file is required")
             return False
@@ -338,9 +425,9 @@ class LoogleManager:
         if not ok:
             logger.warning(f"Prerequisites: {err}")
             return False
-        if not self._clone_repo():
+        if not await self._clone_repo():
             return False
-        if not self._build_loogle():
+        if not await self._build_loogle():
             return False
         return self.is_installed
 
@@ -371,20 +458,15 @@ class LoogleManager:
                 await self.stop()
             generation = self._generation
             if not self.is_installed:
-                self._install_cancel.clear()
-                install = asyncio.create_task(asyncio.to_thread(self.ensure_installed))
+                install = asyncio.create_task(self._ensure_installed())
                 self._install_task = install
                 try:
                     installed = await asyncio.shield(install)
                 except asyncio.CancelledError:
-                    self._install_cancel.set()
-                    # Cancellation must wait for the thread to reap its Git /
-                    # Lake process; another cancellation cannot abandon it.
-                    while not install.done():
-                        try:
-                            await asyncio.shield(install)
-                        except asyncio.CancelledError:
-                            continue
+                    stopped = generation != self._generation
+                    await self.stop()
+                    if stopped:
+                        return False
                     raise
                 finally:
                     if self._install_task is install:
@@ -411,14 +493,13 @@ class LoogleManager:
             logger.info("Starting loogle for project %s...", self.project_path)
             self._stderr_tail = b""
             try:
-                self.process = await asyncio.create_subprocess_exec(
+                self.process = await _spawn_process(
                     *cmd,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.project_path,
                     env=self._project_env(),
-                    start_new_session=os.name == "posix",
                 )
                 process = self.process
                 self._stderr_task = asyncio.create_task(self._drain_stderr(process))
@@ -518,85 +599,16 @@ class LoogleManager:
     async def _stop_process(self, *, force: bool = False) -> None:
         install = self._install_task
         if install is not None:
-            self._install_cancel.set()
-            await asyncio.shield(install)
+            install.cancel()
+            await asyncio.gather(install, return_exceptions=True)
+            if self._install_task is install:
+                self._install_task = None
         process, self.process = self.process, None
-        # POSIX startup makes the launcher's PID the owned process-group ID.
-        # It still identifies the native child after the launcher has exited.
-        group = (
-            process.pid
-            if os.name == "posix"
-            and process is not None
-            and isinstance(process.pid, int)
-            else None
-        )
         drain, self._stderr_task = self._stderr_task, None
         self._ready = False
         try:
             if process is not None:
-                if group is not None:
-                    try:
-                        owner = psutil.Process(process.pid)
-                        members = [owner, *owner.children(recursive=True)]
-                    except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError):
-                        # Inspection is optional; denied or incomplete snapshots
-                        # cannot establish that every owned member has exited.
-                        members = []
-
-                    def exited(member: psutil.Process) -> bool:
-                        try:
-                            return (
-                                not member.is_running()
-                                or member.status() == psutil.STATUS_ZOMBIE
-                            )
-                        except psutil.NoSuchProcess:
-                            return True
-                        except (psutil.AccessDenied, PermissionError):
-                            return False
-
-                    def signal_group(sig: int) -> bool:
-                        try:
-                            os.killpg(group, sig)
-                        except ProcessLookupError:
-                            return False
-                        except PermissionError:
-                            # macOS can return EPERM instead of ESRCH once a
-                            # terminated group contains only dying/zombie tasks.
-                            # Suppress it only after checking the owned members.
-                            if members and all(exited(member) for member in members):
-                                return False
-                            if sig == 0:
-                                # During native exit teardown macOS may report
-                                # EPERM while psutil still sees an idle member.
-                                # Keep waiting within the graceful deadline.
-                                return True
-                            raise
-                        return True
-
-                    if (
-                        signal_group(signal.SIGKILL if force else signal.SIGTERM)
-                        and not force
-                    ):
-                        deadline = asyncio.get_running_loop().time() + 5
-                        while signal_group(0):
-                            remaining = deadline - asyncio.get_running_loop().time()
-                            if remaining <= 0:
-                                signal_group(signal.SIGKILL)
-                                break
-                            await asyncio.sleep(min(0.05, remaining))
-                elif process.returncode is None:
-                    try:
-                        process.kill() if force else process.terminate()
-                    except ProcessLookupError:
-                        pass
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=2 if force else 5)
-                except asyncio.TimeoutError:
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
-                    await asyncio.wait_for(process.wait(), timeout=2)
+                await _terminate_process(process, force=force)
         finally:
             if drain is not None:
                 if not drain.done():
@@ -612,12 +624,10 @@ class LoogleManager:
                 cleanup = asyncio.create_task(self._stop_process(force=force))
                 self._stop_task = cleanup
             try:
-                while not cleanup.done():
-                    try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError:
-                        cancelled = True
-                await cleanup
+                try:
+                    await _await_cleanup(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
             finally:
                 if cleanup.done() and self._stop_task is cleanup:
                     self._stop_task = None

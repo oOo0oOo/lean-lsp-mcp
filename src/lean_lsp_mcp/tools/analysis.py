@@ -41,9 +41,10 @@ from lean_lsp_mcp.tool_registry import tool
     "lean_multi_attempt",
     annotations=ToolAnnotations(
         title="Multi-Attempt",
-        read_only_hint=True,
-        idempotent_hint=True,
-        open_world_hint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
     ),
 )
 async def multi_attempt(
@@ -75,9 +76,10 @@ async def multi_attempt(
     "lean_run_code",
     annotations=ToolAnnotations(
         title="Run Code",
-        read_only_hint=True,
-        idempotent_hint=True,
-        open_world_hint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
     ),
 )
 async def run_code(
@@ -113,9 +115,10 @@ async def run_code(
     "lean_verify",
     annotations=ToolAnnotations(
         title="Verify Theorem",
-        read_only_hint=True,
-        idempotent_hint=True,
-        open_world_hint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
     ),
 )
 async def verify_theorem(
@@ -208,9 +211,10 @@ async def verify_theorem(
     "lean_minimal_hypotheses",
     annotations=ToolAnnotations(
         title="Minimal Hypotheses",
-        read_only_hint=True,
-        idempotent_hint=True,
-        open_world_hint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
     ),
 )
 async def minimal_hypotheses(
@@ -349,9 +353,10 @@ async def minimal_hypotheses(
     "lean_profile_proof",
     annotations=ToolAnnotations(
         title="Profile Proof",
-        read_only_hint=True,
-        idempotent_hint=True,
-        open_world_hint=False,
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
     ),
 )
 async def profile_proof(
@@ -370,23 +375,15 @@ async def profile_proof(
     """Run `lean --profile` on a theorem. Returns per-line timing and categories. SLOW - avoid on theorems that already hit heartbeat limits."""
     from lean_lsp_mcp.profile_utils import profile_theorem
 
-    file_path_obj = server.resolve_file_path(ctx, file_path)
-
-    # Get project path
-    lifespan = ctx.request_context.lifespan_context
-    project_path = lifespan.lean_project_path
-
-    if not project_path:
-        project_path = infer_project_path(str(file_path_obj), ctx=ctx)
-    if project_path is None:
-        raise server.LeanToolError("Lean project not found")
     try:
+        file_path_obj = server.resolve_file_path(ctx, file_path)
+        project_path = ctx.request_context.lifespan_context.lean_project_path
+        if not project_path:
+            project_path = infer_project_path(str(file_path_obj), ctx=ctx)
+        if project_path is None:
+            raise server.LeanToolError("Lean project not found")
         policy = get_path_policy(ctx, project_path)
         file_path_obj = policy.validate_path(file_path_obj)
-    except ValueError as exc:
-        raise server.LeanToolError(str(exc)) from exc
-
-    try:
         return await profile_theorem(
             file_path=file_path_obj,
             theorem_line=line,
@@ -394,5 +391,5 @@ async def profile_proof(
             timeout=timeout,
             top_n=top_n,
         )
-    except (ValueError, TimeoutError) as e:
-        raise server.LeanToolError(str(e)) from e
+    except (OSError, ValueError) as exc:
+        raise server.LeanToolError(str(exc)) from exc

@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import lean_lsp_mcp
 import pytest
@@ -43,7 +44,9 @@ def test_main_sets_security_env_flags(monkeypatch):
             "You are a Lean expert.",
         ],
     )
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", fake_run)
+    monkeypatch.setattr(
+        lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=fake_run)
+    )
     # infer_project_path walks up looking for lean-toolchain; stub it out.
     monkeypatch.setattr(
         lean_lsp_mcp, "infer_project_path", lambda p, **kw: Path("/tmp/project")
@@ -94,7 +97,7 @@ def test_main_sigterm_cancels_stdio_and_restores_handler(
             assert handler == previous_handler
 
     monkeypatch.setattr(signal, "raise_signal", interrupt)
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", run)
+    monkeypatch.setattr(lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=run))
 
     assert lean_lsp_mcp.main() == (143 if transport == "stdio" else 0)
     assert signal.getsignal(signal.SIGTERM) == previous_handler
@@ -108,7 +111,45 @@ def test_main_preserves_unrelated_cancellation(monkeypatch):
     def run(**kwargs):
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(lean_lsp_mcp.mcp, "run", run)
+    monkeypatch.setattr(lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=run))
     with pytest.raises(asyncio.CancelledError):
         lean_lsp_mcp.main()
     assert signal.getsignal(signal.SIGTERM) == previous_handler
+
+
+def test_factory_observes_cli_overrides_before_server_construction(monkeypatch):
+    import os
+
+    monkeypatch.setenv("LEAN_MCP_INSTRUCTIONS", "environment instructions")
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "lean_goal")
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "stdio")
+    observed = {}
+
+    def factory():
+        observed.update(
+            instructions=os.environ["LEAN_MCP_INSTRUCTIONS"],
+            disabled=os.environ["LEAN_MCP_DISABLED_TOOLS"],
+            transport=os.environ["LEAN_LSP_MCP_ACTIVE_TRANSPORT"],
+        )
+        return SimpleNamespace(run=lambda **kwargs: None)
+
+    monkeypatch.setattr(lean_lsp_mcp, "create_server", factory)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lean-lsp-mcp",
+            "--instructions",
+            "CLI instructions",
+            "--disable-tools",
+            "lean_build",
+            "--transport",
+            "streamable-http",
+        ],
+    )
+    assert lean_lsp_mcp.main() == 0
+    assert observed == {
+        "instructions": "CLI instructions",
+        "disabled": "lean_build",
+        "transport": "streamable-http",
+    }

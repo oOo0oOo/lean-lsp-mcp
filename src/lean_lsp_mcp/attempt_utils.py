@@ -58,7 +58,7 @@ def build_attempt_text(
     """Build a trial document and return its text and cursor metadata."""
     snippet_str = snippet.rstrip("\n")
     snippet_lines = snippet_str.split("\n") if snippet_str else [""]
-    indent = line_context[:target_column]
+    indent = "".join(ch if ch.isspace() else " " for ch in line_context[:target_column])
     payload_lines = [
         line_context[:target_column] + snippet_lines[0],
         *[f"{indent}{part}" for part in snippet_lines[1:]],

@@ -219,7 +219,7 @@ This MCP server works out-of-the-box without any configuration. However, a few o
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt` (see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` or `.lake/packages/REPL/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
-- `LEAN_REPL_MEM_MB`: Max memory per REPL in MB (default: 16384). Only enforced on Linux/macOS.
+- `LEAN_REPL_MEM_MB`: Memory budget per REPL in MiB (default: 16384). Linux uses a kernel address-space limit (respecting any lower inherited hard limit). macOS samples resident memory of the REPL process tree every 100 ms and kills the group on excess; brief overshoot between samples is possible. Windows does not enforce this budget.
 - `LEAN_LSP_MCP_TOKEN`: Secret token for bearer authentication when using `streamable-http` or `sse` transport. If set, bearer auth is required for every request.
 - `LEAN_BUILD_CONCURRENCY`: Build concurrency mode for `lean_build`. Options: `allow` (default), `cancel`, `share`.
 - `LEAN_HAMMER_URL`: URL for a self-hosted [Lean Hammer Premise Search](https://github.com/hanwenzhu/lean-premise-server) instance. Rate limits are skipped when set to a custom backend.
@@ -270,6 +270,28 @@ uvx lean-lsp-mcp --transport sse --host localhost --port 12345 # Available at ht
 uvx lean-lsp-mcp --version # Print the installed version
 ```
 
+### Protocol compatibility and runtime
+
+This release uses the official Python MCP SDK 2.2.0. The same server supports
+2026-07-28 discovery and request metadata as well as legacy initialization;
+clients do not need a separate endpoint. Tool names, arguments, structured
+results, and text fallbacks are unchanged. Expected tool errors retain actionable
+messages; unexpected crash details stay in server logs. Tool configuration is read at startup
+(CLI options override environment variables); restart to change it. The tool
+catalog is sorted by name and carries a private 60-second cache hint for modern
+clients.
+
+Streamable HTTP uses the SDK's bounded request-body and legacy-session defaults.
+Expired sessions must reconnect; modern requests do not need session IDs. Keep
+streaming responses enabled for long-running build progress. A modern request
+must opt in before receiving MCP log notifications; stderr/file logging remains
+controlled by `LEAN_LOG_LEVEL` and the logging configuration.
+
+Build and analysis tools execute project or supplied Lean code, which can have
+I/O effects even when scratch documents leave source files unchanged. Their MCP
+annotations therefore make no read-only or idempotence promise. Use trusted
+projects and code.
+
 ### OpenAI Secure MCP Tunnel
 
 For ChatGPT, Codex, Responses API, or other OpenAI surfaces, use [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) instead of exposing `lean-lsp-mcp` to the public internet. Create a tunnel in [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels), then run `tunnel-client` on a host that can reach your Lean project:
@@ -309,7 +331,10 @@ export LEAN_LSP_MCP_TOKEN="your_secret_token"
 uvx lean-lsp-mcp --transport streamable-http
 ```
 
-Clients should then include the token in the `Authorization` header.
+Clients should then include the token in the `Authorization` header. This is an
+opaque secret checked by this server, not an OAuth access token. The compatibility
+mode explicitly disables SDK OAuth resource/audience validation; it does not
+provide an OAuth authorization server or per-user permissions.
 
 ### REPL Setup
 

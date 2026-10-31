@@ -38,8 +38,8 @@ def test_cli_signal_during_initial_loogle_install(
         if {ignore_sigint!r}:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
         original_run = LoogleManager._run
-        def controlled_run(self, cmd, timeout=300, cwd=None, env=None):
-            return original_run(self, [sys.executable, '-c', {installer!r}],
+        async def controlled_run(self, cmd, timeout=300, cwd=None, env=None):
+            return await original_run(self, [sys.executable, '-c', {installer!r}],
                                 timeout=15, cwd=cwd, env=env)
         LoogleManager._run = controlled_run
         LoogleManager._check_prerequisites = lambda self: (True, '')

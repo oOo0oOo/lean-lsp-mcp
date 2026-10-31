@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import threading
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -392,36 +391,28 @@ def test_load_tool_description_overrides_inline(
     assert overrides["lean_goal"] == "Goal tool from env"
 
 
-def test_apply_tool_configuration_disables_and_overrides(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mcp = server.MCPServer(name="test", instructions="base instructions")
-
-    @mcp.tool("enabled_tool")
-    def enabled_tool() -> str:
-        """enabled description"""
-        return "ok"
-
-    @mcp.tool("removed_tool")
-    def removed_tool() -> str:
-        """removed description"""
-        return "ok"
-
-    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "removed_tool")
+@pytest.mark.asyncio
+async def test_create_server_disables_and_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "lean_run_code")
     monkeypatch.setenv("LEAN_MCP_INSTRUCTIONS", "custom server instructions")
     monkeypatch.setenv(
         "LEAN_MCP_TOOL_DESCRIPTIONS",
-        json.dumps({"enabled_tool": "overridden description"}),
+        json.dumps({"lean_goal": "overridden description"}),
     )
-
-    server.apply_tool_configuration(mcp)
-
-    assert mcp.instructions == "custom server instructions"
-    assert mcp._tool_manager.get_tool("removed_tool") is None
+    instance = server.create_server()
+    tools = await instance.list_tools()
+    assert instance.instructions == "custom server instructions"
+    assert "lean_run_code" not in {tool.name for tool in tools}
     assert (
-        mcp._tool_manager.get_tool("enabled_tool").description
+        next(tool for tool in tools if tool.name == "lean_goal").description
         == "overridden description"
     )
+    assert [tool.name for tool in tools] == sorted(tool.name for tool in tools)
+    monkeypatch.delenv("LEAN_MCP_DISABLED_TOOLS")
+    assert "lean_run_code" in {
+        tool.name for tool in await server.create_server().list_tools()
+    }
+    assert "lean_run_code" not in {tool.name for tool in await instance.list_tools()}
 
 
 @pytest.mark.asyncio
@@ -597,19 +588,16 @@ async def test_shared_loogle_cancel_drains_install_and_allows_retry(
     monkeypatch.setattr(server, "_shared_loogle_lock", asyncio.Lock())
     monkeypatch.setenv("LEAN_LOOGLE_LOCAL", "true")
 
-    entered, finished, release = threading.Event(), threading.Event(), threading.Event()
+    entered, finished, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     installs = 0
 
-    def install():
+    async def install():
         nonlocal installs
         installs += 1
-        assert not manager._install_cancel.is_set()
         if installs == 1:
             entered.set()
             try:
-                while not manager._install_cancel.wait(0.01):
-                    if release.is_set():
-                        break
+                await release.wait()
                 return False
             finally:
                 finished.set()
@@ -617,7 +605,7 @@ async def test_shared_loogle_cancel_drains_install_and_allows_retry(
         manager.binary_path.touch()
         return True
 
-    monkeypatch.setattr(manager, "ensure_installed", install)
+    monkeypatch.setattr(manager, "_ensure_installed", install)
     process = MagicMock(pid=None, returncode=None)
     process.stdout = asyncio.StreamReader()
     process.stdout.feed_data(b"Loogle is ready.\n")
@@ -629,7 +617,7 @@ async def test_shared_loogle_cancel_drains_install_and_allows_retry(
 
     initial = asyncio.create_task(server._ensure_shared_loogle(project))
     try:
-        assert await asyncio.to_thread(entered.wait, 2)
+        await asyncio.wait_for(entered.wait(), timeout=2)
         initial.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(initial, timeout=2)
@@ -643,7 +631,6 @@ async def test_shared_loogle_cancel_drains_install_and_allows_retry(
         assert retried_manager is manager
         assert available and manager.is_running
         assert server._shared_loogle_init_done
-        assert not manager._install_cancel.is_set()
         assert installs == 2
         spawn.assert_awaited_once()
     finally:
@@ -651,7 +638,7 @@ async def test_shared_loogle_cancel_drains_install_and_allows_retry(
         if not initial.done():
             initial.cancel()
         await asyncio.gather(initial, return_exceptions=True)
-        assert await asyncio.to_thread(finished.wait, 2)
+        await asyncio.wait_for(finished.wait(), timeout=2)
         await manager.stop()
 
 
@@ -1381,8 +1368,10 @@ async def test_run_code_repl_process_failure_disables_fast_lane(
     class _DeadRepl:
         project_dir = str(project)
         close_calls = 0
+        run_calls = 0
 
         async def run_code(self, _code):
+            self.run_calls += 1
             raise ReplProcessError("No response; exit code -9; memory limit: 8192 MiB")
 
         async def close(self):
@@ -1401,6 +1390,9 @@ async def test_run_code_repl_process_failure_disables_fast_lane(
     assert repl.close_calls == 1
     assert "disabling it for this session" in caplog.text
     assert "8192 MiB" in caplog.text
+    assert await server._run_code_repl(ctx, "#check Nat") is None
+    assert repl.run_calls == 1
+    assert repl.close_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1414,8 +1406,10 @@ async def test_multi_attempt_repl_process_failure_disables_fast_lane(
     class _DeadRepl:
         project_dir = str(project)
         close_calls = 0
+        run_calls = 0
 
         async def run_snippets(self, _code, _snippets):
+            self.run_calls += 1
             raise ReplProcessError("No response; exit code -9")
 
         async def close(self):
@@ -1436,6 +1430,14 @@ async def test_multi_attempt_repl_process_failure_disables_fast_lane(
 
     assert result is None
     assert lifespan.repl_enabled is False
+    assert repl.close_calls == 1
+    assert (
+        await server._multi_attempt_repl(
+            ctx, file_path=str(lean_file), line=2, snippets=["trivial"]
+        )
+        is None
+    )
+    assert repl.run_calls == 1
     assert repl.close_calls == 1
 
 
@@ -1474,3 +1476,38 @@ def test_prewarm_files_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.prewarm_files() == []
     monkeypatch.setenv("LEAN_MCP_PREWARM_FILES", "A.lean, sub/B.lean ,")
     assert config.prewarm_files() == ["A.lean", "sub/B.lean"]
+
+
+@pytest.mark.asyncio
+async def test_factory_warns_for_unknown_and_disabled_overrides(monkeypatch, caplog):
+    monkeypatch.setenv("LEAN_MCP_DISABLED_TOOLS", "unknown_tool,lean_build")
+    monkeypatch.setenv(
+        "LEAN_MCP_TOOL_DESCRIPTIONS",
+        '{"unknown_tool":"unknown", "lean_build":"disabled", "lean_goal":"known"}',
+    )
+    instance = server.create_server()
+    tools = {tool.name: tool for tool in await instance.list_tools()}
+    assert "lean_build" not in tools
+    assert tools["lean_goal"].description == "known"
+    assert "Cannot disable unknown tool 'unknown_tool'" in caplog.text
+    assert "Cannot override description for unknown tool 'lean_build'" in caplog.text
+    assert "Cannot override description for unknown tool 'unknown_tool'" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_execution_annotations_do_not_promise_read_only_or_idempotent():
+    tools = {tool.name: tool for tool in await server.create_server().list_tools()}
+    for name in (
+        "lean_build",
+        "lean_run_code",
+        "lean_multi_attempt",
+        "lean_verify",
+        "lean_minimal_hypotheses",
+        "lean_profile_proof",
+    ):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is False
+        assert annotations.idempotent_hint is False
+        assert annotations.destructive_hint is True
+        assert annotations.open_world_hint is True

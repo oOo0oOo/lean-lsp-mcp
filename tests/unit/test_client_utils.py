@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+from leanclient.aio import LeanClientError
 import pytest
 
 from lean_lsp_mcp import client_utils
@@ -20,6 +23,7 @@ from lean_lsp_mcp.client_utils import (
     startup_client,
     valid_lean_project_path,
 )
+from lean_lsp_mcp.utils import LeanToolError
 
 
 class _FakeTransport:
@@ -369,7 +373,7 @@ async def test_build_in_progress_blocks_only_same_project(
     set_build_in_progress(project1, True)
 
     try:
-        with pytest.raises(ValueError, match="build is in progress"):
+        with pytest.raises(LeanToolError, match="build is in progress"):
             await startup_client(_Context(_LifespanContext(project1, None)))
 
         other_ctx = _Context(_LifespanContext(project2, None))
@@ -379,6 +383,79 @@ async def test_build_in_progress_blocks_only_same_project(
         assert len(patched_clients) == 1
     finally:
         set_build_in_progress(project1, False)
+
+
+@pytest.mark.parametrize(
+    "get_state",
+    [client_utils.get_path_policy, client_utils.get_client, get_serial_scratch_pool],
+)
+def test_missing_client_state_is_a_tool_error(get_state) -> None:
+    ctx = _Context(_LifespanContext(None, None))
+    with pytest.raises(LeanToolError, match="not set|not running"):
+        get_state(ctx)
+
+
+@pytest.mark.asyncio
+async def test_startup_client_invalid_project_is_a_tool_error(tmp_path: Path) -> None:
+    ctx = _Context(_LifespanContext(tmp_path / "missing", None))
+    with pytest.raises(LeanToolError, match="does not exist"):
+        await startup_client(ctx)
+
+
+@pytest.mark.asyncio
+async def test_setup_client_remote_project_switch_is_a_tool_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project1 = _make_project(tmp_path / "proj1")
+    project2 = _make_project(tmp_path / "proj2")
+    proof_file = project2 / "Proof.lean"
+    proof_file.write_text("theorem test : True := by trivial\n")
+    monkeypatch.setattr("lean_lsp_mcp.file_utils._stdlib_src_root", lambda _root: None)
+    ctx = _Context(
+        _LifespanContext(
+            project1,
+            None,
+            active_transport="streamable-http",
+            project_switching_allowed=False,
+        )
+    )
+    with pytest.raises(LeanToolError, match="Project switching is disabled"):
+        await setup_client_for_file(ctx, str(proof_file))
+    assert ctx.request_context.lifespan_context.lean_project_path == project1
+
+
+@pytest.mark.asyncio
+async def test_startup_client_does_not_reclassify_unexpected_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path / "proj")
+
+    async def crash(_project):
+        raise RuntimeError("private implementation detail")
+
+    monkeypatch.setattr(client_utils, "_get_or_create_shared_client", crash)
+    with pytest.raises(RuntimeError, match="private implementation detail"):
+        await startup_client(_Context(_LifespanContext(project, None)))
+
+
+@pytest.mark.parametrize(
+    "error,expected_type",
+    [
+        (FileNotFoundError("missing lake executable"), LeanToolError),
+        (LeanClientError("unsupported toolchain"), LeanToolError),
+        (asyncio.TimeoutError("initialize timed out"), LeanToolError),
+        (RuntimeError("private implementation detail"), RuntimeError),
+    ],
+)
+async def test_start_client_classifies_only_operational_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error, expected_type
+) -> None:
+    client = SimpleNamespace(start=AsyncMock(side_effect=error))
+    monkeypatch.setattr(
+        client_utils, "AsyncLeanLSPClient", lambda *_args, **_kwargs: client
+    )
+    with pytest.raises(expected_type, match=str(error)):
+        await client_utils._start_client(tmp_path)
 
 
 def test_close_shared_client_kills_process_group(tmp_path: Path) -> None:

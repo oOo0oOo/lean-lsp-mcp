@@ -34,11 +34,11 @@ def pipe_reader():
     reader, writer = os.pipe()
     os.set_blocking(reader, False)
     with os.fdopen(reader, "rb", closefd=False) as wire:
-        text = stdio.sdk_stdio._UnownedTextWrapper(wire, encoding="utf-8")
+        text = io.TextIOWrapper(wire, encoding="utf-8")
         try:
             yield stdio._NonblockingStdin(text), writer
         finally:
-            text.close()
+            text.detach()
             os.close(reader)
             os.close(writer)
 
@@ -48,11 +48,11 @@ def pipe_writer():
     reader, writer = os.pipe()
     os.set_blocking(writer, False)
     with os.fdopen(writer, "wb", closefd=False) as wire:
-        text = stdio.sdk_stdio._UnownedTextWrapper(wire, encoding="utf-8")
+        text = io.TextIOWrapper(wire, encoding="utf-8")
         try:
             yield reader, stdio._NonblockingStdout(text)
         finally:
-            text.close()
+            text.detach()
             os.close(reader)
             os.close(writer)
 
@@ -191,43 +191,35 @@ async def test_output_regular_file_and_broken_pipe(tmp_path, monkeypatch):
             await writer.write("message\n")
 
 
-@pytest.mark.parametrize("owned,released", [(False, True), (True, True), (True, False)])
-@pytest.mark.parametrize("fd", [0, 1])
-def test_stream_flags_and_descriptor_ownership(monkeypatch, owned, released, fd):
-    reader, writer = os.pipe()
-    original_fd = reader if fd == 0 else writer
-    mode = "rb" if fd == 0 else "wb"
-    private_fd = os.dup(original_fd) if owned else original_fd
-    wire = os.fdopen(private_fd, mode, closefd=False)
-    stream = io.TextIOWrapper(os.fdopen(original_fd, mode, closefd=False))
-    if not owned:
-        wire.close()
-        wire = stream.buffer
-    claims = {fd: object()}
+@pytest.mark.parametrize("fail", [False, True])
+def test_stream_flags_and_descriptor_ownership(monkeypatch, tmp_path, fail):
+    input_path = tmp_path / "input"
+    input_path.write_text("message\n")
+    original_dup = os.dup
+    private_fds = []
 
-    def restore():
-        if released:
-            claims.clear()
+    def duplicate(fd):
+        private_fd = original_dup(fd)
+        private_fds.append(private_fd)
+        return private_fd
 
-    monkeypatch.setattr(stdio.sdk_stdio, "_claim_fd", lambda *args: (wire, restore))
-    monkeypatch.setattr(stdio.sdk_stdio, "_claims", claims)
-    try:
-        with stdio._cancellable_stream(stream, fd):
-            assert not os.get_blocking(original_fd)
-        assert os.get_blocking(original_fd)
-        if owned and released:
+    monkeypatch.setattr(stdio.os, "dup", duplicate)
+    with input_path.open() as stdin, (tmp_path / "output").open("w") as stdout:
+        try:
+            with stdio._cancellable_stdio(stdin, stdout):
+                assert not os.get_blocking(stdin.fileno())
+                assert not os.get_blocking(stdout.fileno())
+                if fail:
+                    raise RuntimeError("interrupted")
+        except RuntimeError:
+            assert fail
+        assert os.get_blocking(stdin.fileno())
+        assert os.get_blocking(stdout.fileno())
+        for fd in private_fds:
             with pytest.raises(OSError):
-                os.fstat(private_fd)
-        else:
-            os.fstat(private_fd)
-        assert (fd in claims) is not released
-    finally:
-        stream.close()
-        if owned and not released:
-            wire.close()
-            os.close(private_fd)
-        os.close(reader)
-        os.close(writer)
+                os.fstat(fd)
+        assert stdin.readline() == "message\n"
+        stdout.write("still open\n")
 
 
 @pytest.mark.asyncio
@@ -240,22 +232,20 @@ async def test_no_descriptor_uses_sdk_runner(monkeypatch, stream):
     original.assert_awaited_once()
 
 
-def test_real_sdk_claim_exclusion_and_release():
+def test_real_stdio_isolation_exclusion_and_release():
     script = textwrap.dedent(r"""
         import asyncio, os, sys
-        from lean_lsp_mcp.stdio import _cancellable_stream
+        from lean_lsp_mcp.stdio import _cancellable_stdio
         async def check():
-            with (_cancellable_stream(sys.stdin, 0) as reader,
-                  _cancellable_stream(sys.stdout, 1) as writer):
+            with _cancellable_stdio(sys.stdin, sys.stdout) as (reader, writer):
                 private_fds = [reader.wrapped.fileno(), writer.wrapped.fileno()]
                 assert os.read(0, 1) == b''
                 os.write(1, b'diverted\n')
-                for fd, stream in enumerate([sys.stdin, sys.stdout]):
-                    try:
-                        with _cancellable_stream(stream, fd):
-                            raise AssertionError('second claim accepted')
-                    except RuntimeError:
-                        pass
+                try:
+                    with _cancellable_stdio(sys.stdin, sys.stdout):
+                        raise AssertionError('second transport accepted')
+                except RuntimeError:
+                    pass
                 assert await writer.write('∀ ' + await reader.readline()) == 8
                 await writer.flush()
             assert os.get_blocking(0)

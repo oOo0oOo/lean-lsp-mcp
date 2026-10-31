@@ -123,39 +123,39 @@ class TestLoogleManager:
         mgr.process.returncode = 1
         assert not mgr.is_running
 
-    def test_clone_repo_exists(self, mgr):
+    async def test_clone_repo_exists(self, mgr):
         (mgr.repo_dir / ".git").mkdir(parents=True)
         with patch.object(mgr, "_checkout_repo_ref", return_value=True):
-            assert mgr._clone_repo()
+            assert await mgr._clone_repo()
 
-    def test_clone_repo_rejects_non_git_directory(self, mgr):
+    async def test_clone_repo_rejects_non_git_directory(self, mgr):
         mgr.repo_dir.mkdir(parents=True)
-        assert not mgr._clone_repo()
+        assert not await mgr._clone_repo()
 
-    def test_checkout_repo_ref_reuses_pinned_revision(self, mgr, monkeypatch):
+    async def test_checkout_repo_ref_reuses_pinned_revision(self, mgr, monkeypatch):
         calls = []
 
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
+        async def fake_run(cmd, timeout=300, cwd=None, env=None):
             calls.append(cmd)
             return MagicMock(returncode=0, stdout=f"{mgr.REPO_REF}\n", stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._checkout_repo_ref()
+        assert await mgr._checkout_repo_ref()
         assert calls == [
             ["git", "rev-parse", "HEAD"],
             ["git", "checkout", "--detach", mgr.REPO_REF],
         ]
 
-    def test_checkout_repo_ref_fetches_pinned_revision(self, mgr, monkeypatch):
+    async def test_checkout_repo_ref_fetches_pinned_revision(self, mgr, monkeypatch):
         calls = []
 
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
+        async def fake_run(cmd, timeout=300, cwd=None, env=None):
             calls.append(cmd)
             stdout = "old\n" if "rev-parse" in cmd else ""
             return MagicMock(returncode=0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._checkout_repo_ref()
+        assert await mgr._checkout_repo_ref()
         assert calls[1] == [
             "git",
             "fetch",
@@ -166,18 +166,18 @@ class TestLoogleManager:
         ]
         assert calls[2] == ["git", "checkout", "--detach", mgr.REPO_REF]
 
-    def test_clone_repo_success(self, mgr):
+    async def test_clone_repo_success(self, mgr):
         with (
             patch.object(mgr, "_run", return_value=MagicMock(returncode=0)),
             patch.object(mgr, "_checkout_repo_ref", return_value=True),
         ):
-            assert mgr._clone_repo()
+            assert await mgr._clone_repo()
 
-    def test_clone_repo_fail(self, mgr):
+    async def test_clone_repo_fail(self, mgr):
         with patch.object(
             mgr, "_run", return_value=MagicMock(returncode=1, stderr="err")
         ):
-            assert not mgr._clone_repo()
+            assert not await mgr._clone_repo()
 
     def test_project_toolchain_controls_build_dir(self, tmp_path):
         project1 = tmp_path / "project1"
@@ -371,20 +371,20 @@ class TestLoogleManager:
         assert env["LAKE_ARTIFACT_CACHE"] == "false"
         assert env["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
 
-    def test_build_uses_project_toolchain_and_versioned_build_dir(
+    async def test_build_uses_project_toolchain_and_versioned_build_dir(
         self, mgr, monkeypatch
     ):
         mgr.repo_dir.mkdir(parents=True)
         captured = {}
 
-        def fake_run(cmd, timeout=300, cwd=None, env=None):
+        async def fake_run(cmd, timeout=300, cwd=None, env=None):
             captured["cmd"], captured["env"] = cmd, env
             mgr.binary_path.parent.mkdir(parents=True)
             mgr.binary_path.touch()
             return MagicMock(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(mgr, "_run", fake_run)
-        assert mgr._build_loogle()
+        assert await mgr._build_loogle()
         assert captured["cmd"] == ["lake", "build", "loogle"]
         assert captured["env"]["ELAN_TOOLCHAIN"] == "leanprover/lean4:v4.30.0"
         assert "LEAN_PATH" not in captured["env"]
@@ -429,7 +429,7 @@ class TestLoogleManager:
     ):
         calls = []
 
-        def fake_install():
+        async def fake_install():
             calls.append("install")
             mgr.binary_path.parent.mkdir(parents=True)
             mgr.binary_path.touch()
@@ -444,7 +444,7 @@ class TestLoogleManager:
             proc.stderr.read = AsyncMock(return_value=b"")
             return proc
 
-        monkeypatch.setattr(mgr, "ensure_installed", fake_install)
+        monkeypatch.setattr(mgr, "_ensure_installed", fake_install)
         monkeypatch.setattr(
             "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", fake_exec
         )
@@ -469,7 +469,7 @@ class TestLoogleInstall:
 
         project = Path(__file__).resolve().parents[1] / "test_project"
         mgr = LoogleManager(project_path=project)  # real cache dir
-        assert mgr.ensure_installed(), "Failed to install loogle"
+        assert await mgr._ensure_installed(), "Failed to install loogle"
         assert mgr.is_installed
 
 
@@ -632,25 +632,22 @@ class TestLoogleOwnedStartup:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cancel_start", [True, False])
-    async def test_cancellation_drains_installer_thread(
+    async def test_cancellation_drains_installer(
         self, manager, monkeypatch, cancel_start
     ):
-        import threading
-
-        started = threading.Event()
-        finished = threading.Event()
+        started, finished = asyncio.Event(), asyncio.Event()
         manager.binary_path.unlink()
 
-        def install():
+        async def install():
             started.set()
-            assert manager._install_cancel.wait(timeout=5)
-            finished.set()
-            return False
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
 
-        monkeypatch.setattr(manager, "ensure_installed", install)
+        monkeypatch.setattr(manager, "_ensure_installed", install)
         task = asyncio.create_task(manager.start())
-        while not started.is_set():
-            await asyncio.sleep(0.01)
+        await asyncio.wait_for(started.wait(), timeout=2)
         if cancel_start:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -662,7 +659,7 @@ class TestLoogleOwnedStartup:
         assert manager._install_task is None
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process group ownership")
-    def test_installer_timeout_kills_descendants(self, manager, tmp_path):
+    async def test_installer_timeout_kills_descendants(self, manager, tmp_path):
         import sys
         import subprocess
 
@@ -673,7 +670,7 @@ class TestLoogleOwnedStartup:
             f"Path({str(pid_path)!r}).write_text(str(p.pid));time.sleep(60)"
         )
         with pytest.raises(subprocess.TimeoutExpired):
-            manager._run([sys.executable, "-c", code], timeout=0.3, cwd=tmp_path)
+            await manager._run([sys.executable, "-c", code], timeout=0.3, cwd=tmp_path)
         child_pid = int(pid_path.read_text())
         _assert_process_exited(child_pid)
 
@@ -795,6 +792,53 @@ class TestLoogleOwnedStartup:
             if not start.done():
                 start.cancel()
                 await asyncio.gather(start, return_exceptions=True)
+            await manager.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("installing", [False, True])
+    async def test_cancel_during_spawn_reaps_process_before_returning(
+        self, manager, monkeypatch, installing
+    ):
+        import sys
+
+        if installing:
+            manager.binary_path.unlink()
+            (manager.repo_dir / ".git").mkdir()
+            monkeypatch.setattr(manager, "_check_prerequisites", lambda: (True, ""))
+        real_exec = asyncio.create_subprocess_exec
+        created, release = asyncio.Event(), asyncio.Event()
+        processes = []
+
+        async def launch(*args, **kwargs):
+            process = await real_exec(
+                sys.executable, "-c", "import time;time.sleep(60)", **kwargs
+            )
+            processes.append(process)
+            created.set()
+            await release.wait()
+            return process
+
+        monkeypatch.setattr(
+            "lean_lsp_mcp.loogle.asyncio.create_subprocess_exec", launch
+        )
+        start = asyncio.create_task(manager.start())
+        try:
+            await asyncio.wait_for(created.wait(), timeout=2)
+            start.cancel()
+            await asyncio.sleep(0)
+            start.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(start, timeout=3)
+            assert processes[0].returncode is not None
+            _assert_process_exited(processes[0].pid)
+            assert manager.process is None
+            assert manager._install_task is None
+        finally:
+            release.set()
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
             await manager.stop()
 
     @pytest.mark.asyncio
