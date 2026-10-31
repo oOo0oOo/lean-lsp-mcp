@@ -156,7 +156,14 @@ async def local_search(
             LocalSearchResult(name=r["name"], kind=r["kind"], file=r["file"])
             for r in raw_results
         ]
-        return LocalSearchResults(items=results, index=index_status)
+        sources_searched: list[Literal["source_text", "symbol_index"]] = ["source_text"]
+        if index_status in {IndexStatus.consulted, IndexStatus.warming}:
+            sources_searched.append("symbol_index")
+        return LocalSearchResults(
+            items=results,
+            sources_searched=sources_searched,
+            index=index_status,
+        )
     except RuntimeError as exc:
         raise LocalSearchError(f"Search failed: {exc}")
 

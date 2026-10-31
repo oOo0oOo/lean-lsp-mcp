@@ -10,7 +10,12 @@ from leanclient.utils import SYMBOL_KIND_MAP
 from lean_lsp_mcp.models import FileOutline, OutlineEntry
 
 METHOD_KIND = {6, "method"}
-KIND_TAGS = {"namespace": "Ns"}
+KIND_TAGS = {
+    "namespace": "Ns",
+    "struct": "Struct",
+    "structure": "Struct",
+    "class": "Class",
+}
 _OUTLINE_CACHE_MAX_SIZE = 32
 _OUTLINE_CACHE_LOCK = Lock()
 _OUTLINE_CACHE: "OrderedDict[tuple[str, str, str, int, int], FileOutline]" = (
@@ -113,7 +118,7 @@ _HASH_COMMAND_RE = re.compile(r"^#[A-Za-z_]")
 _DECLARATION_START_RE = re.compile(
     r"^(?:(?:@\[[^\]]*\]\s*)|"
     r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+))*"
-    r"(?P<keyword>theorem|lemma|def)\s+(?P<name>[^\s:]+)"
+    r"(?P<keyword>theorem|lemma|def|structure|class)\s+(?P<name>[^\s:]+)"
 )
 _NEXT_COMMAND_RE = re.compile(
     r"^(?:@\[|/--|"
@@ -183,7 +188,7 @@ def _signature_text(lines: list[str], start: int, end: int) -> str | None:
 
 
 def _extract_declarations(content: str, start: int, end: int) -> list[dict]:
-    """Extract theorem/lemma/def declarations from file content."""
+    """Extract outline declarations from file content."""
     lines = content.splitlines()
     decls, i = [], start
     stop = min(end, len(lines))
@@ -229,6 +234,8 @@ def _flatten_symbols(
     """Recursively flatten symbol hierarchy, extracting declarations from namespaces."""
     result = []
     for sym in symbols:
+        if isinstance(sym.get("kind"), int):
+            sym["kind"] = SYMBOL_KIND_MAP.get(sym["kind"], "unknown")
         result.append((sym, indent))
         children = sym.get("children", [])
 
@@ -272,6 +279,14 @@ def _detect_tag(
     name: str, kind: str, type_sig: str, has_fields: bool, keyword: str | None
 ) -> str:
     """Determine the appropriate tag for a symbol."""
+    if kind in {"struct", "structure"}:
+        return "Struct"
+    if kind == "class":
+        return "Class"
+    if keyword == "structure":
+        return "Struct"
+    if keyword == "class":
+        return "Class"
     if has_fields:
         return "Class" if "→" in type_sig else "Struct"
     if name == "example":
@@ -289,7 +304,7 @@ def _build_outline_entry(
     sym: dict, type_sigs: dict, fields_map: dict, indent: int
 ) -> OutlineEntry | None:
     """Build a structured outline entry for a symbol."""
-    name = sym["name"]
+    name = sym["name"].strip()
     type_sig = sym.get("_type") or type_sigs.get(name, "") or sym.get("detail", "")
     fields = fields_map.get(name, [])
 
@@ -320,6 +335,52 @@ def _build_outline_entry(
         type_signature=type_sig if type_sig else None,
         children=children,
     )
+
+
+def _symbol_completeness(symbol: dict) -> tuple[int, int, int, int]:
+    """Rank duplicate symbol records by the information they preserve."""
+    start = symbol.get("range", {}).get("start", {}).get("line", -1)
+    end = symbol.get("range", {}).get("end", {}).get("line", start)
+    signature = symbol.get("_type") or symbol.get("detail") or ""
+    return (
+        max(0, end - start),
+        bool(signature),
+        len(signature),
+        len(symbol.get("children", [])),
+    )
+
+
+def _deduplicate_symbols(symbols: list[tuple[dict, int]]) -> list[tuple[dict, int]]:
+    """Merge duplicate symbols by name and source position, preserving detail."""
+    result: list[tuple[dict, int]] = []
+    positions: dict[tuple[str, int], int] = {}
+    for symbol, indent in symbols:
+        name = symbol.get("name", "").strip()
+        start = symbol.get("range", {}).get("start", {}).get("line", -1)
+        key = (name.rsplit(".", 1)[-1], start)
+        existing_index = positions.get(key)
+        if existing_index is None:
+            positions[key] = len(result)
+            result.append((symbol, indent))
+            continue
+
+        existing, existing_indent = result[existing_index]
+        if _symbol_completeness(symbol) > _symbol_completeness(existing):
+            preferred, fallback = symbol, existing
+            preferred_indent = indent
+        else:
+            preferred, fallback = existing, symbol
+            preferred_indent = existing_indent
+
+        merged = dict(preferred)
+        for field in ("_keyword", "_type", "detail"):
+            if not merged.get(field) and fallback.get(field):
+                merged[field] = fallback[field]
+        if not merged.get("children") and fallback.get("children"):
+            merged["children"] = fallback["children"]
+        result[existing_index] = (merged, preferred_indent)
+
+    return result
 
 
 async def generate_outline_data(
@@ -353,10 +414,9 @@ async def generate_outline_data(
     # Flatten symbol tree and extract declarations from namespaces.
     all_symbols = _flatten_symbols(symbols, content=content)
 
-    # Document symbols omit `lemma` declarations in some Lean/Mathlib files.
-    # The source scanner also supplies signatures for declarations when Lean
-    # has not finished elaborating them yet. Merge by source range so a symbol
-    # already reported by the LSP is enriched instead of duplicated.
+    # Document symbols can omit declarations or their details while Lean is
+    # elaborating. Merge source-scan records by source range so reported LSP
+    # symbols are enriched instead of duplicated.
     for text_decl in _extract_declarations(content, 0, len(content.splitlines())):
         decl_line = text_decl["range"]["start"]["line"]
         decl_name = text_decl["name"].rsplit(".", 1)[-1]
@@ -379,6 +439,8 @@ async def generate_outline_data(
             if text_decl["_type"]:
                 match["_type"] = text_decl["_type"]
 
+    all_symbols = _deduplicate_symbols(all_symbols)
+
     type_sigs: dict[str, str] = {}
     fields_map = _fields_from_symbols(symbols)
 
@@ -389,10 +451,13 @@ async def generate_outline_data(
             sym.get("kind") in METHOD_KIND
             or sym.get("_keyword")
             or sym.get("kind") == "namespace"
+            or sym.get("kind") in {"struct", "structure", "class"}
         ):
             entry = _build_outline_entry(sym, type_sigs, fields_map, indent)
             if entry:
                 declarations.append(entry)
+
+    declarations.sort(key=lambda entry: entry.start_line)
 
     outline = FileOutline(imports=imports, declarations=declarations)
     # Do not freeze a syntax-only snapshot in the cache while Lean is still

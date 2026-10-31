@@ -1,7 +1,7 @@
 """Pydantic models for MCP tool structured outputs."""
 
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
@@ -354,6 +354,14 @@ class LocalSearchResults(ToolOutputModel):
 
     items: list[LocalSearchResult] = Field(
         default_factory=list, description="List of local search results"
+    )
+    sources_searched: list[Literal["source_text", "symbol_index"]] = Field(
+        default=["source_text"],
+        description=(
+            "Search sources that returned results or were searched successfully. "
+            "Source text is always searched; the symbol index is listed when "
+            "workspace/symbol returned, including while its index is warming."
+        ),
     )
     index: IndexStatus = Field(
         IndexStatus.unavailable,

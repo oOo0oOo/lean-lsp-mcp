@@ -91,7 +91,8 @@ class _LemmaOutlineClient:
         self.source = (
             "@[simp] lemma topLevel : True := trivial\n"
             "namespace Inside\n"
-            "lemma nested : True := trivial\n"
+            "lemma nested : True := by\n"
+            "  trivial\n"
             "end Inside\n"
         )
         self.requested_fresh_symbols = True
@@ -112,7 +113,77 @@ class _LemmaOutlineClient:
                     "start": {"line": 1, "character": 0},
                     "end": {"line": 3, "character": 10},
                 },
-                "children": [],
+                "children": [
+                    {
+                        "name": "Inside.nested",
+                        "kind": 6,
+                        "detail": ": True",
+                        "range": {
+                            "start": {"line": 2, "character": 0},
+                            "end": {"line": 3, "character": 10},
+                        },
+                        "children": [],
+                    }
+                ],
+            }
+        ]
+
+
+class _KindOutlineClient:
+    project_path = "/tmp/lean-lsp-mcp-outline-kinds-test"
+
+    async def reload_from_disk(self, path: str, wait: bool = False):
+        self.path = path
+
+    def content(self, path: str) -> str:
+        return (
+            "namespace KindDemo\n"
+            "structure Point where\n"
+            "  x : Nat\n"
+            "class PointClass where\n"
+            "  value : Nat\n"
+            "instance : Inhabited Point := ⟨⟨0⟩⟩\n"
+            "end KindDemo\n"
+        )
+
+    async def document_symbols(self, path: str, fresh: bool = True) -> list[dict]:
+        return [
+            {
+                "name": "KindDemo",
+                "kind": "namespace",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 6, "character": 13},
+                },
+                "children": [
+                    {
+                        "name": "KindDemo.Point",
+                        "kind": 6,
+                        "range": {
+                            "start": {"line": 1, "character": 0},
+                            "end": {"line": 2, "character": 9},
+                        },
+                        "children": [],
+                    },
+                    {
+                        "name": "KindDemo.PointClass",
+                        "kind": 5,
+                        "range": {
+                            "start": {"line": 3, "character": 0},
+                            "end": {"line": 4, "character": 13},
+                        },
+                        "children": [],
+                    },
+                    {
+                        "name": "instance : Inhabited Point ",
+                        "kind": 6,
+                        "range": {
+                            "start": {"line": 5, "character": 0},
+                            "end": {"line": 5, "character": 39},
+                        },
+                        "children": [],
+                    },
+                ],
             }
         ]
 
@@ -156,9 +227,7 @@ async def test_outline_cache_does_not_publish_stale_inflight_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outline_includes_top_level_and_namespaced_lemmas_without_barrier() -> (
-    None
-):
+async def test_outline_deduplicates_and_sorts_lemmas_without_barrier() -> None:
     with _OUTLINE_CACHE_LOCK:
         _OUTLINE_CACHE.clear()
 
@@ -166,9 +235,33 @@ async def test_outline_includes_top_level_and_namespaced_lemmas_without_barrier(
     outline = await generate_outline_data(client, "Lemmas.lean")
 
     lemmas = [entry for entry in outline.declarations if entry.kind == "Thm"]
-    assert [entry.name for entry in lemmas] == ["nested", "topLevel"]
+    assert [entry.name for entry in lemmas] == ["topLevel", "Inside.nested"]
+    assert sum(entry.name.endswith("nested") for entry in lemmas) == 1
+    nested = next(entry for entry in lemmas if entry.name.endswith("nested"))
+    assert nested.end_line == 4
     assert all(entry.type_signature == ": True" for entry in lemmas)
     assert client.requested_fresh_symbols is False
+
+
+@pytest.mark.asyncio
+async def test_outline_uses_structure_kind_and_cleans_instance_name() -> None:
+    with _OUTLINE_CACHE_LOCK:
+        _OUTLINE_CACHE.clear()
+
+    outline = await generate_outline_data(_KindOutlineClient(), "Kinds.lean")
+    point = next(
+        entry for entry in outline.declarations if entry.name.endswith("Point")
+    )
+    point_class = next(
+        entry for entry in outline.declarations if entry.name.endswith("PointClass")
+    )
+    instance = next(
+        entry for entry in outline.declarations if "Inhabited Point" in entry.name
+    )
+
+    assert point.kind == "Struct"
+    assert point_class.kind == "Class"
+    assert instance.name == "instance : Inhabited Point"
 
 
 @pytest.fixture
