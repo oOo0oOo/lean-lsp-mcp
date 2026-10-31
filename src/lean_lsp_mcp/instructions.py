@@ -23,10 +23,10 @@ INSTRUCTIONS = f"""## General Rules
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.
 - **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name. Only `index: consulted` makes an empty result proof of absence; `warming` means the symbol index is still loading, `unavailable` means no language server is running, `error` means the lookup failed.
-- **lean_file_outline**: Token-efficient file skeleton (slow-ish).
+- **lean_file_outline**: Fast token-efficient file skeleton with available type signatures.
 - **lean_multi_attempt**: Test tactics without editing at a proof position. Use `column` for an exact source position; omit it for fast line-based attempts: `["simp", "ring", "omega"]`
 - **lean_code_actions**: Quick fixes and `TryThis` suggestions (simp?, exact?) with resolved edits.
-- **lean_declaration_file**: Declaration source slice with context; `full_file=true` for the whole file (large).
+- **lean_declaration_file**: Declaration source slice with context and declaration line numbers; generated declarations include their source name when it can be determined. `full_file=true` returns the whole file (large).
 - **lean_references**: All usages of a symbol (capped by `max_results`, `total` reports the full count).
 - **lean_run_code**: Run standalone snippet. Must include imports.
 - **lean_verify**: Axiom check + source scan. Use fully qualified name (e.g. `Ns.thm`).

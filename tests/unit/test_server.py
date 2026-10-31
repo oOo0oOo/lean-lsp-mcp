@@ -883,11 +883,76 @@ async def test_declaration_file_reads_utf8_source(
     )
 
     result = await server.declaration_file(
-        ctx=ctx, file_path=str(project / "Unicode.lean"), symbol="unicodeTarget"
+        ctx=ctx,
+        file_path=str(project / "Unicode.lean"),
+        symbol="unicodeTarget",
+        context_lines=0,
     )
 
     assert "unicodeTarget" in result.content
     assert "ℕ" in result.content
+    assert result.start_line == 2
+    assert result.end_line == 2
+    assert result.declaration_start_line == 2
+    assert result.declaration_end_line == 2
+
+
+@pytest.mark.asyncio
+async def test_declaration_file_names_to_additive_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _make_project(tmp_path / "proj")
+    source = (
+        "\n".join(
+            [
+                "namespace Finset",
+                "@[to_additive]",
+                "lemma prod_range_succ : True := by trivial",
+                "end Finset",
+            ]
+        )
+        + "\n"
+    )
+    (project / "Generated.lean").write_text(source, encoding="utf-8")
+
+    class FakeClient:
+        project_path = str(project)
+
+        async def reload_from_disk(self, _path: str, wait: bool = False):
+            return None
+
+        def content(self, _path: str) -> str:
+            return "#check Finset.sum_range_succ\n"
+
+        async def goto(self, kind: str, _path: str, _line: int, _column: int):
+            assert kind == "declaration"
+            return [
+                {
+                    "path": "Generated.lean",
+                    "targetRange": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 14},
+                    },
+                }
+            ]
+
+    ctx = _make_ctx(lean_project_path=project)
+    ctx.request_context.lifespan_context.client = FakeClient()
+    monkeypatch.setattr(
+        navigation_tools, "require_client_for_file", _async_setup("Main.lean")
+    )
+
+    result = await server.declaration_file(
+        ctx=ctx,
+        file_path=str(project / "Main.lean"),
+        symbol="Finset.sum_range_succ",
+        context_lines=0,
+    )
+
+    assert result.content == "lemma prod_range_succ : True := by trivial"
+    assert result.declaration_start_line == 3
+    assert result.declaration_end_line is None
+    assert result.source_declaration == "Finset.prod_range_succ"
 
 
 @pytest.mark.asyncio
