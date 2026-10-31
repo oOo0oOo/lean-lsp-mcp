@@ -6,6 +6,7 @@ import pytest
 
 from lean_lsp_mcp.minimal_hypotheses import (
     _find_balanced_close,
+    disable_auto_implicit_for_theorem,
     drop_binder,
     explicit_hypotheses,
     find_theorem_binders,
@@ -124,3 +125,16 @@ def test_line_of_offset_one_indexed():
     assert line_of_offset(src, 0) == 1
     assert line_of_offset(src, 2) == 2
     assert line_of_offset(src, 5) == 3
+
+
+def test_auto_implicit_options_are_scoped_to_the_selected_declaration():
+    src = "lemma before : True := trivial\nlemma target (x : Nat) : x = x := rfl\n"
+
+    result = disable_auto_implicit_for_theorem(src, "target")
+
+    assert result == (
+        "lemma before : True := trivial\n"
+        "set_option autoImplicit false in\n"
+        "set_option relaxedAutoImplicit false in\n"
+        "lemma target (x : Nat) : x = x := rfl\n"
+    )

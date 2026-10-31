@@ -66,6 +66,27 @@ async def test_minimal_hypotheses_both_used(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
+async def test_minimal_hypotheses_disables_autoimplicit_during_trials(
+    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
+    test_project_path: Path,
+) -> None:
+    test_file = test_project_path / "MinimalHypothesesTest.lean"
+    async with mcp_client_factory() as client:
+        result = await client.call_tool(
+            "lean_minimal_hypotheses",
+            {
+                "file_path": str(test_file),
+                "theorem_name": "minhyp_autoimplicit_binder",
+            },
+        )
+        data = result_json(result)
+        by_binder = {v["binder"]: v for v in data["verdicts"]}
+        assert by_binder["(x : ℝ)"]["status"] == "load-bearing"
+        assert by_binder["(h : 0 < x)"]["status"] == "load-bearing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
 async def test_minimal_hypotheses_no_explicit(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
     test_project_path: Path,

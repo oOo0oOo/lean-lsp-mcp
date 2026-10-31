@@ -14,7 +14,6 @@ from pydantic import Field
 
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import (
-    get_client,
     get_path_policy,
     get_serial_scratch_pool,
     get_scratch_pool,
@@ -248,6 +247,7 @@ async def minimal_hypotheses(
 
     Variants are checked in parallel on scratch documents; the file is never edited."""
     from lean_lsp_mcp.minimal_hypotheses import (
+        disable_auto_implicit_for_theorem,
         drop_binder,
         explicit_hypotheses,
         find_theorem_binders,
@@ -257,7 +257,6 @@ async def minimal_hypotheses(
     theorem_name = server._validate_theorem_name(theorem_name)
     rel_path = await require_client_for_file(ctx, file_path)
 
-    client = get_client(ctx)
     doc = await open_synced(ctx, rel_path)
     original_content = doc.text
 
@@ -296,14 +295,18 @@ async def minimal_hypotheses(
             str(diag.get("message", ""))[:120],
         )
 
-    baseline = await client.diagnostics(rel_path, timeout=inactivity_timeout)
-    baseline_keys = {_error_key(d) for d in baseline.items if d.get("severity") == 1}
-
     pool = get_scratch_pool(ctx)
+    baseline_source = disable_auto_implicit_for_theorem(original_content, bare_name)
+    baseline = await pool.run_text(baseline_source, timeout=inactivity_timeout)
+    baseline_keys = {
+        _error_key(d) for d in baseline.diagnostics.items if d.get("severity") == 1
+    }
+
     from leanclient.aio import LeanClientError, LeanRequestTimeout
 
     async def probe(binder: str, start: int, end: int) -> HypothesisVerdict:
         modified = drop_binder(original_content, start, end)
+        modified = disable_auto_implicit_for_theorem(modified, bare_name)
         try:
             trial = await pool.run_text(modified, timeout=inactivity_timeout)
         except LeanRequestTimeout:

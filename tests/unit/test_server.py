@@ -1453,9 +1453,7 @@ async def test_run_code_repl_preserves_diagnostic_shape(tmp_path: Path) -> None:
             "message": "type mismatch",
             "line": 4,
             "column": 4,
-            "lean_tags": None,
             "category": "diagnostic",
-            "hint": None,
         }
     ]
 

@@ -14,3 +14,7 @@ theorem minhyp_no_hypotheses : True := trivial
 -- Mix of explicit + implicit + instance binders. Body uses h1 only.
 theorem minhyp_mixed_binders {α : Type} [DecidableEq α] (h1 : 1 + 1 = 2) (h2 : 2 + 2 = 4) : 1 + 1 = 2 :=
   h1
+
+-- Removing x must not let autoImplicit recreate it from h's type.
+lemma minhyp_autoimplicit_binder (x : ℝ) (h : 0 < x) : 0 < x ^ 2 := by
+  positivity
