@@ -20,6 +20,14 @@ def additive_reference_file(test_project_path: Path) -> Path:
     path.unlink(missing_ok=True)
 
 
+@pytest.fixture
+def declaration_probe_file(test_project_path: Path) -> Path:
+    path = test_project_path / "DeclarationProbeTest.lean"
+    path.write_text("import Mathlib\n", encoding="utf-8")
+    yield path
+    path.unlink(missing_ok=True)
+
+
 @pytest.mark.asyncio
 async def test_declaration_file_reports_additive_source_and_location(
     mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
@@ -44,3 +52,24 @@ async def test_declaration_file_reports_additive_source_and_location(
     assert declaration["start_line"] == declaration["declaration_start_line"]
     assert "prod_range_succ" in declaration["content"]
     assert declaration["source_declaration"] == "Finset.prod_range_succ"
+
+
+@pytest.mark.asyncio
+async def test_declaration_file_resolves_name_missing_from_source(
+    mcp_client_factory: Callable[[], AsyncContextManager[MCPClient]],
+    declaration_probe_file: Path,
+) -> None:
+    async with mcp_client_factory() as client:
+        result = await client.call_tool(
+            "lean_declaration_file",
+            {
+                "file_path": str(declaration_probe_file),
+                "symbol": "Nat.add_comm",
+                "context_lines": 0,
+            },
+        )
+
+    declaration = orjson.loads(result_text(result))
+    assert declaration["declaration_start_line"] is not None
+    assert declaration["file_path"].endswith(".lean")
+    assert "add_comm" in declaration["content"]

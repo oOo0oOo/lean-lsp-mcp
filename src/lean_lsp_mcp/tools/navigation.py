@@ -6,6 +6,7 @@ import asyncio
 import re
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -25,7 +26,7 @@ from lean_lsp_mcp.models import (
     ReferenceLocation,
     ReferencesResult,
 )
-from lean_lsp_mcp.lean_names import LEAN_ID_REST
+from lean_lsp_mcp.lean_names import LEAN_ID_REST, LEAN_NAME_RE
 from lean_lsp_mcp.tool_registry import tool
 from lean_lsp_mcp.utils import (
     COMPLETION_KIND,
@@ -138,6 +139,34 @@ def _to_additive_source_declaration(
     if namespace and not source_name.startswith(f"{namespace}."):
         source_name = f"{namespace}.{source_name}"
     return source_name
+
+
+async def _probe_declaration_location(client, content: str, symbol: str) -> list[dict]:
+    """Resolve an unreferenced project name from a temporary Lean document."""
+    probe_symbol = symbol.removeprefix("_root_.")
+    if LEAN_NAME_RE.fullmatch(probe_symbol) is None:
+        return []
+
+    imports = [
+        line.strip()
+        for line in content.splitlines()
+        if line.strip().startswith(("import ", "public import "))
+    ]
+    check_line = f"#check {probe_symbol}"
+    probe_content = "\n".join([*imports, check_line, ""])
+    probe_path = f"LeanLspMcpDeclarationProbe{uuid4().hex}.lean"
+    try:
+        await client.open(probe_path, text=probe_content, wait=False)
+        return await client.goto(
+            "declaration", probe_path, len(imports), len("#check "), fresh=True
+        )
+    except Exception:
+        return []
+    finally:
+        try:
+            await client.close_file(probe_path)
+        except Exception:
+            pass
 
 
 def _is_completion_name_char(char: str) -> bool:
@@ -332,7 +361,10 @@ async def declaration_file(
         str, Field(description="Absolute or project-root-relative path to Lean file")
     ],
     symbol: Annotated[
-        str, Field(description="Symbol (case sensitive, must be in file)")
+        str,
+        Field(
+            description="Case-sensitive Lean name in the file or project environment"
+        ),
     ],
     context_lines: Annotated[
         int,
@@ -352,18 +384,19 @@ async def declaration_file(
     await open_synced(ctx, rel_path)
     orig_file_content = client.content(rel_path)
 
-    # Find the first occurence of the symbol (line and column) in the file
+    # Keep the direct source lookup as the fast path.
     position = find_start_position(orig_file_content, symbol)
-    if not position:
-        raise server.LeanToolError(
-            f"Symbol `{symbol}` (case sensitive) not found in file. Add it first."
-        )
-
-    locations = await client.goto(
-        "declaration", rel_path, position["line"], position["column"]
+    locations = (
+        await client.goto("declaration", rel_path, position["line"], position["column"])
+        if position
+        else []
     )
     if not locations:
-        raise server.LeanToolError(f"No declaration available for `{symbol}`.")
+        locations = await _probe_declaration_location(client, orig_file_content, symbol)
+    if not locations:
+        raise server.LeanToolError(
+            f"Symbol `{symbol}` (case sensitive) not found in file or project environment."
+        )
 
     decl = locations[0]
     local_path = decl.get("path", "")

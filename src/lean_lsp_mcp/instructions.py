@@ -22,7 +22,7 @@ INSTRUCTIONS = f"""## General Rules
 - **lean_term_goal**: Expected type at a position.
 - **lean_hover_info**: Type signature + docs. Column at START of identifier.
 - **lean_completions**: IDE autocomplete on incomplete code.
-- **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name. Only `index: consulted` makes an empty result proof of absence; `warming` means the symbol index is still loading, `unavailable` means no language server is running, `error` means the lookup failed.
+- **lean_local_search**: Fast local declaration search. Use BEFORE trying a lemma name. `sources_searched` says whether source text and the symbol index were searched. Only `index: consulted` makes an empty result proof of absence; `warming` means the symbol index is still loading, `unavailable` means no language server is running, `error` means the lookup failed.
 - **lean_file_outline**: Fast token-efficient file skeleton with available type signatures.
 - **lean_multi_attempt**: Test tactics without editing at a proof position. Use `column` for an exact source position; omit it for fast line-based attempts: `["simp", "ring", "omega"]`
 - **lean_code_actions**: Quick fixes and `TryThis` suggestions (simp?, exact?) with resolved edits.

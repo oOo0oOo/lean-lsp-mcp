@@ -1,5 +1,6 @@
 """Unit tests for the symbol index enrichment behind lean_local_search."""
 
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,47 @@ async def test_a_partial_index_is_reported_as_warming_not_consulted(
 
     assert index is IndexStatus.warming
     assert [match["name"] for match in result] == ["Ns.thing", "Ns.thing_long"]
+
+
+@pytest.mark.parametrize(
+    ("index_status", "expected_sources"),
+    [
+        (IndexStatus.warming, ["source_text", "symbol_index"]),
+        (IndexStatus.unavailable, ["source_text"]),
+    ],
+)
+async def test_local_search_reports_which_sources_were_searched(
+    index_status, expected_sources, monkeypatch, tmp_path
+):
+    """An empty warming result explicitly says that source text was searched."""
+    monkeypatch.setattr(search_tool.server, "_RG_AVAILABLE", True)
+    monkeypatch.setattr(
+        search_tool,
+        "bind_lean_project_path",
+        lambda _ctx, _path: tmp_path,
+    )
+    monkeypatch.setattr(
+        search_tool, "build_lean_path_policy", lambda _root: _policy(tmp_path)
+    )
+    monkeypatch.setattr(search_tool.server, "lean_local_search", lambda **_kwargs: [])
+
+    async def fake_index_matches(source_matches, _query, _limit, _policy):
+        return source_matches, index_status
+
+    monkeypatch.setattr(search_tool, "_with_index_matches", fake_index_matches)
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            lifespan_context=SimpleNamespace(lean_project_path=tmp_path)
+        )
+    )
+
+    result = await search_tool.local_search(
+        ctx=ctx, query="nothing_here", project_root=str(tmp_path)
+    )
+
+    assert result.items == []
+    assert result.index is index_status
+    assert result.sources_searched == expected_sources
 
 
 def test_compiler_helpers_are_kept_out_of_index_results(tmp_path) -> None:
