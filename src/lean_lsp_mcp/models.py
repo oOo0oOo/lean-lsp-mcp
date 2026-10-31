@@ -273,6 +273,19 @@ class DeclarationInfo(ToolOutputModel):
     end_line: int | None = Field(
         None, description="Last line of the returned slice (1-indexed)"
     )
+    declaration_start_line: int | None = Field(
+        None, description="Declaration start line (1-indexed)"
+    )
+    declaration_end_line: int | None = Field(
+        None, description="Declaration end line (1-indexed), when known"
+    )
+    source_declaration: str | None = Field(
+        None,
+        description=(
+            "Source declaration for a generated declaration such as one created "
+            "by @[to_additive], when it can be determined reliably"
+        ),
+    )
     total_lines: int | None = Field(
         None, description="Total lines in the declaration file"
     )

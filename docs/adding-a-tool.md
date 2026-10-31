@@ -186,7 +186,7 @@ class FileOutline(BaseModel):
 
 Note the recursive `children: list["OutlineEntry"]` (forward reference as a string), the wrapper pattern (`FileOutline` holds a list field rather than being a bare list), and `int | None` with a `None` default for optional fields.
 
-**2. Helper module** — heavy lifting lives in [`src/lean_lsp_mcp/outline_utils.py`](../src/lean_lsp_mcp/outline_utils.py), exposing `async generate_outline_data(client, pool, path, max_declarations) -> FileOutline`. No MCP imports — just plain Python plus `leanclient`.
+**2. Helper module** — heavy lifting lives in [`src/lean_lsp_mcp/outline_utils.py`](../src/lean_lsp_mcp/outline_utils.py), exposing `async generate_outline_data(client, path, max_declarations) -> FileOutline`. It reads document symbols without waiting for a full elaboration barrier and fills declaration signatures from source text. No MCP imports — just plain Python plus `leanclient`.
 
 **3. Tool registration** — [`src/lean_lsp_mcp/tools/diagnostics.py`](../src/lean_lsp_mcp/tools/diagnostics.py):
 
@@ -213,8 +213,7 @@ async def file_outline(
     rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
-    pool = get_serial_scratch_pool(ctx)
-    return await generate_outline_data(client, pool, rel_path, max_declarations)
+    return await generate_outline_data(client, rel_path, max_declarations)
 ```
 
 What to notice:
@@ -222,7 +221,7 @@ What to notice:
 - The decorator name (`"lean_file_outline"`) is the public identifier; the Python function is named `file_outline`.
 - `ctx: server.ToolContext` first, `file_path` required, `max_declarations` optional with `int | None` + `None` default + `ge=1` bound.
 - Path validation through `require_client_for_file`, which raises `LeanToolError` for a bad path — no project-root logic in the tool body.
-- The body is short: validate the path, fetch the client and scratch pool, delegate to the helper.
+- The body is short: validate the path, fetch the client, and delegate to the helper.
 
 **4. Test** — [`tests/test_outline.py`](../tests/test_outline.py) calls `client.call_tool("lean_file_outline", {...})` against a real Lean project under `tests/test_project/`; [`tests/unit/test_outline_signatures.py`](../tests/unit/test_outline_signatures.py) covers the helper.
 

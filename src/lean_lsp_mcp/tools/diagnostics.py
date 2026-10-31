@@ -11,7 +11,6 @@ from pydantic import Field
 from lean_lsp_mcp import server
 from lean_lsp_mcp.client_utils import (
     get_client,
-    get_serial_scratch_pool,
     open_synced,
     require_client_for_file,
 )
@@ -111,8 +110,7 @@ async def file_outline(
     rel_path = await require_client_for_file(ctx, file_path)
 
     client = get_client(ctx)
-    pool = get_serial_scratch_pool(ctx)
-    return await generate_outline_data(client, pool, rel_path, max_declarations)
+    return await generate_outline_data(client, rel_path, max_declarations)
 
 
 @tool(

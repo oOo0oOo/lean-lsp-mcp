@@ -35,6 +35,111 @@ from lean_lsp_mcp.utils import (
 )
 
 
+_SOURCE_DECLARATION_RE = re.compile(
+    r"^(?:@\[[^\]]*\]\s*)*"
+    r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+)*"
+    r"(?:theorem|lemma|def|abbrev|opaque|axiom)\s+([^\s:]+)"
+)
+_NAMESPACE_RE = re.compile(r"^namespace\s+(\S+)")
+_SECTION_RE = re.compile(r"^section(?:\s+(\S+))?")
+
+
+def _source_decl_name(lines: list[str], start_line: int) -> tuple[str, int] | None:
+    """Find the declaration beginning at or just after an LSP target range."""
+    if 0 <= start_line < len(lines) and "@[" in lines[start_line]:
+        high = min(len(lines), start_line + 40)
+        for line_number in range(start_line, high):
+            match = _SOURCE_DECLARATION_RE.match(lines[line_number].strip())
+            if match:
+                return match.group(1), line_number
+
+    low = max(0, start_line - 2)
+    high = min(len(lines), start_line + 12)
+    matches = []
+    for line_number in range(low, high):
+        match = _SOURCE_DECLARATION_RE.match(lines[line_number].strip())
+        if match:
+            matches.append((match.group(1), line_number))
+    if not matches:
+        return None
+    return min(matches, key=lambda match: abs(match[1] - start_line))
+
+
+def _to_additive_attribute(lines: list[str], declaration_line: int) -> str | None:
+    """Return the nearby to_additive attribute attached to a declaration."""
+    lower = max(0, declaration_line - 40)
+    for attribute_line in range(declaration_line, lower - 1, -1):
+        if "@[" not in lines[attribute_line]:
+            continue
+        if any(
+            _SOURCE_DECLARATION_RE.match(lines[index].strip())
+            for index in range(attribute_line + 1, declaration_line)
+        ):
+            break
+        attribute = "\n".join(lines[attribute_line : declaration_line + 1])
+        if re.search(r"@\[\s*to_additive\b", attribute):
+            return attribute
+    return None
+
+
+def _namespace_at(lines: list[str], declaration_line: int) -> str:
+    """Get the namespace prefix active at a source declaration."""
+    scopes: list[tuple[str, str]] = []
+    for line in lines[:declaration_line]:
+        text = line.strip()
+        if match := _NAMESPACE_RE.match(text):
+            scopes.append(("namespace", match.group(1)))
+        elif match := _SECTION_RE.match(text):
+            scopes.append(("section", match.group(1) or ""))
+        elif text == "end" or text.startswith("end "):
+            ending = text[4:].strip() if text.startswith("end ") else ""
+            if not ending and scopes:
+                scopes.pop()
+            else:
+                for index in range(len(scopes) - 1, -1, -1):
+                    if scopes[index][1] == ending:
+                        del scopes[index:]
+                        break
+    return ".".join(name for scope, name in scopes if scope == "namespace")
+
+
+def _to_additive_source_declaration(
+    lines: list[str], symbol: str, start_line: int | None
+) -> str | None:
+    """Name the source declaration when a target is clearly to_additive output."""
+    if start_line is None:
+        return None
+    declaration = _source_decl_name(lines, start_line)
+    if declaration is None:
+        return None
+    declaration_name, declaration_line = declaration
+    attribute = _to_additive_attribute(lines, declaration_line)
+    if attribute is None:
+        return None
+
+    target_name = symbol.rsplit(".", 1)[-1]
+    source_name = declaration_name.rsplit(".", 1)[-1]
+    explicit_target = re.search(
+        r"\bto_additive(?:\s+\([^)]*\))*\s+([A-Za-z_][\w'.]*)", attribute
+    )
+    if explicit_target:
+        generated_name = explicit_target.group(1).rsplit(".", 1)[-1]
+    elif source_name.startswith("prod_"):
+        # `prod` -> `sum` is the naming rule used by Lean for this common
+        # Mathlib-generated additive counterpart.
+        generated_name = f"sum_{source_name[5:]}"
+    else:
+        return None
+    if target_name != generated_name or target_name == source_name:
+        return None
+
+    namespace = _namespace_at(lines, declaration_line)
+    source_name = declaration_name.removeprefix("_root_.")
+    if namespace and not source_name.startswith(f"{namespace}."):
+        source_name = f"{namespace}.{source_name}"
+    return source_name
+
+
 def _is_completion_name_char(char: str) -> bool:
     return char == "." or re.fullmatch(LEAN_ID_REST, char) is not None
 
@@ -237,8 +342,9 @@ async def declaration_file(
         bool, Field(description="Return the entire declaration file (large!)")
     ] = False,
 ) -> DeclarationInfo:
-    """Get the source of a symbol's declaration (declaration slice + context).
+    """Get declaration source with the source-line range and surrounding context.
 
+    Generated declarations include their source declaration when it is clear.
     Set full_file=True for the whole file (can be very large)."""
     rel_path = await require_client_for_file(ctx, file_path)
 
@@ -280,6 +386,50 @@ async def declaration_file(
     file_content = server.get_file_contents(abs_path)
     file_lines = file_content.splitlines()
     total_lines = len(file_lines)
+    target_range = decl.get("targetRange") or decl.get("range") or {}
+    target_start = target_range.get("start") or {}
+    target_end = target_range.get("end") or {}
+    raw_decl_start_index = target_start.get("line")
+    decl_end_index = target_end.get("line")
+    declaration_end_known = decl_end_index is not None
+    if (
+        raw_decl_start_index is not None
+        and decl_end_index is not None
+        and target_end.get("character") == 0
+        and decl_end_index > raw_decl_start_index
+    ):
+        decl_end_index -= 1
+
+    source_position = (
+        _source_decl_name(file_lines, raw_decl_start_index)
+        if raw_decl_start_index is not None
+        else None
+    )
+    source_declaration = _to_additive_source_declaration(
+        file_lines, symbol, raw_decl_start_index
+    )
+    decl_start_index = raw_decl_start_index
+    if (
+        source_position is not None
+        and raw_decl_start_index is not None
+        and source_position[1] > raw_decl_start_index
+        and "@[" in "\n".join(file_lines[raw_decl_start_index : source_position[1] + 1])
+    ):
+        # Lean may map a generated declaration to only its `@[to_additive]`
+        # attribute. Anchor the result on the actual theorem/def line instead.
+        decl_start_index = source_position[1]
+        if decl_end_index is None or decl_end_index < decl_start_index:
+            decl_end_index = decl_start_index
+            declaration_end_known = False
+
+    declaration_start_line = (
+        decl_start_index + 1 if decl_start_index is not None else None
+    )
+    declaration_end_line = (
+        decl_end_index + 1
+        if declaration_end_known and decl_end_index is not None
+        else None
+    )
 
     if full_file:
         return DeclarationInfo(
@@ -288,11 +438,13 @@ async def declaration_file(
             start_line=1,
             end_line=total_lines,
             total_lines=total_lines,
+            declaration_start_line=declaration_start_line,
+            declaration_end_line=declaration_end_line,
+            source_declaration=source_declaration,
         )
 
-    target_range = decl.get("targetRange") or decl.get("range") or {}
-    decl_start = target_range.get("start", {}).get("line", 0)
-    decl_end = target_range.get("end", {}).get("line", decl_start)
+    decl_start = decl_start_index if decl_start_index is not None else 0
+    decl_end = decl_end_index if decl_end_index is not None else decl_start
     start = max(0, decl_start - context_lines)
     end = min(total_lines, decl_end + 1 + context_lines)
 
@@ -302,6 +454,9 @@ async def declaration_file(
         start_line=start + 1,
         end_line=end,
         total_lines=total_lines,
+        declaration_start_line=declaration_start_line,
+        declaration_end_line=declaration_end_line,
+        source_declaration=source_declaration,
     )
 
 
