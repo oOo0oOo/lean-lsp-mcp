@@ -14,6 +14,7 @@ from orjson import loads as _json_loads
 from pathlib import Path
 
 from lean_lsp_mcp.file_utils import LeanPathPolicy, build_lean_path_policy
+from lean_lsp_mcp.lean_names import LEAN_ID_FIRST, LEAN_ID_REST
 
 INSTALL_URL = "https://github.com/BurntSushi/ripgrep#installation"
 
@@ -42,6 +43,10 @@ _DECL_MODIFIERS = (
     "scoped",
     "local",
 )
+# Declaration names follow Lean's identifier syntax, so `mul_comm₀`, `bound_ε`
+# and `𝔽x` count; a pattern limited to ASCII drops or truncates them.
+_LEAN_ID = f"{LEAN_ID_FIRST}{LEAN_ID_REST}*"
+_LEAN_ID_OR_DOT = rf"(?:{LEAN_ID_REST}|\.)"
 # Leading `@[...]` attributes and zero or more modifiers before the keyword.
 _DECL_LEAD = (
     r"^\s*(?:@\[[^\]]*\]\s*)*"
@@ -52,7 +57,7 @@ _DECL_KEYWORD_ALT = "|".join(_DECL_KEYWORDS)
 # skipping any attributes/modifiers that precede the keyword.
 _DECL_LINE_RE = re.compile(
     _DECL_LEAD
-    + rf"(?P<kind>{_DECL_KEYWORD_ALT})\s+(?P<name>[A-Za-z0-9_']+(?:\.[A-Za-z0-9_']+)*)"
+    + rf"(?P<kind>{_DECL_KEYWORD_ALT})\s+(?P<name>{_LEAN_ID}(?:\.{_LEAN_ID})*)"
 )
 
 _PLATFORM_INSTRUCTIONS: dict[str, Iterable[str]] = {
@@ -365,7 +370,7 @@ def lean_local_search(
         + rf"(?:{_DECL_KEYWORD_ALT})\s+"
         # `$`: a long signature may begin on the next line, leaving the name at
         # the end of its own line with no trailing space or colon.
-        + rf"(?:[A-Za-z0-9_'.]+\.)*{re.escape(search_term)}[A-Za-z0-9_'.]*(?:\s|:|$)"
+        + rf"(?:{_LEAN_ID_OR_DOT}+\.)*{re.escape(search_term)}{_LEAN_ID_OR_DOT}*(?:\s|:|$)"
     )
 
     command = [
