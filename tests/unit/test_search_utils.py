@@ -1224,3 +1224,44 @@ def test_fully_qualified_query_resolves_to_its_own_namespace(
     assert partial == {"Alpha.Inner.shared"}, (
         f"a partially qualified query must still resolve; got {partial}"
     )
+
+
+def test_declarations_with_unicode_names_are_found(tmp_path, reload_search_utils):
+    """Lean identifiers may hold Greek, subscript and script letters.
+
+    Mathlib names such as `mul_comm₀` and `Finset.sum_ε` are common. A name
+    pattern limited to ASCII drops those declarations, or cuts the name at
+    the first such character, so the search reports a lemma that exists as
+    absent.
+    """
+    search_utils = reload_search_utils
+    available, message = search_utils.check_ripgrep_status()
+    if not available:
+        pytest.skip(message)
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lakefile.toml").write_text('name = "proj"\n')
+    (project / "lean-toolchain").write_text(LEAN_TOOLCHAIN)
+    (project / "Sample.lean").write_text(
+        "theorem plain_name (h : True) : True := h\n"
+        "theorem mul_comm₀ (h : True) : True := h\n"
+        "theorem bound_ε (h : True) : True := h\n"
+        "def \U0001d53dx : Nat := 1\n"
+        "lemma α_pos (h : True) : True := h\n",
+        encoding="utf-8",
+    )
+
+    def names(query: str) -> list[str]:
+        # The standard library is searched too; keep the fixture's own hits.
+        return [
+            m["name"]
+            for m in search_utils.lean_local_search(query, project_root=project)
+            if m["file"] == "Sample.lean"
+        ]
+
+    assert names("plain_name") == ["plain_name"], "ASCII control must resolve"
+    assert names("mul_comm") == ["mul_comm₀"]
+    assert names("bound") == ["bound_ε"]
+    assert names("\U0001d53dx") == ["\U0001d53dx"]
+    assert names("α_pos") == ["α_pos"]
