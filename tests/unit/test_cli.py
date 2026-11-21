@@ -103,6 +103,35 @@ def test_main_sigterm_cancels_stdio_and_restores_handler(
     assert signal.getsignal(signal.SIGTERM) == previous_handler
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shutdown signals")
+def test_main_duplicate_sigterm_ignored(monkeypatch):
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "__original__")
+    monkeypatch.setattr(sys, "argv", ["lean-lsp-mcp", "--transport", "stdio"])
+
+    sigint_count = 0
+
+    def interrupt(sig):
+        nonlocal sigint_count
+        assert sig == signal.SIGINT
+        sigint_count += 1
+        raise KeyboardInterrupt
+
+    def run(**kwargs):
+        assert kwargs["transport"] == "stdio"
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler) and handler is not previous_handler
+        handler(signal.SIGTERM, None)
+        handler(signal.SIGTERM, None)
+
+    monkeypatch.setattr(signal, "raise_signal", interrupt)
+    monkeypatch.setattr(lean_lsp_mcp, "create_server", lambda: SimpleNamespace(run=run))
+
+    assert lean_lsp_mcp.main() == 143
+    assert sigint_count == 1
+    assert signal.getsignal(signal.SIGTERM) == previous_handler
+
+
 def test_main_preserves_unrelated_cancellation(monkeypatch):
     previous_handler = signal.getsignal(signal.SIGTERM)
     monkeypatch.setenv("LEAN_LSP_MCP_ACTIVE_TRANSPORT", "__original__")
