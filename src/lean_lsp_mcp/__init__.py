@@ -165,6 +165,8 @@ def main():
 
         def cancel_on_sigterm(_signum, frame):
             nonlocal sigterm_received
+            if sigterm_received:
+                return
             sigterm_received = True
             # AnyIO's SIGINT handler cancels startup before draining workers.
             # Background launches may inherit an ignored SIGINT instead.
