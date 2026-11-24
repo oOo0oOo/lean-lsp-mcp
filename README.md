@@ -216,6 +216,11 @@ This MCP server works out-of-the-box without any configuration. However, a few o
   diagnostic messages. Defaults to `6000`; oversized text is elided from the
   middle so both the local context and the goal target survive. Set to `0` to
   return everything untruncated.
+- `LEAN_MCP_SYMBOL_SEARCH_BUDGET`: Seconds `lean_local_search` waits for the
+  language server's symbol index (`workspace/symbol`) before answering from
+  source text alone. Defaults to `5`. A lookup still running when the budget
+  runs out is not cancelled: the search reports `index: pending`, and repeating
+  it picks up the same request. Set to `0` to never wait.
 - `LEAN_REPL`: Set to `true`, `1`, or `yes` to enable fast REPL-based `lean_run_code` and line-based `lean_multi_attempt` (see [REPL Setup](#repl-setup)).
 - `LEAN_REPL_PATH`: Path to the `repl` binary. Auto-detected from `.lake/packages/repl/` or `.lake/packages/REPL/` if not set.
 - `LEAN_REPL_TIMEOUT`: Per-command timeout in seconds (default: 60).
