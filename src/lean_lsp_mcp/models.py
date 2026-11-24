@@ -54,7 +54,10 @@ class IndexStatus(str, Enum):
     warming = "warming"
     # No language server is running for this project. Open a file first.
     unavailable = "unavailable"
-    # A server is running but the symbol lookup failed or timed out.
+    # The lookup did not answer within the search's time budget and is still
+    # running in the background; repeating the search can pick it up.
+    pending = "pending"
+    # A server is running but the symbol lookup failed or hit its deadline.
     error = "error"
 
 

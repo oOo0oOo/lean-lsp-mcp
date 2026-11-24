@@ -96,3 +96,15 @@ def test_repl_numeric_getters(monkeypatch: pytest.MonkeyPatch):
     assert config.repl_mem_mb() == 8192
     monkeypatch.setenv(config.REPL_MEM_MB_ENV, "0")
     assert config.repl_mem_mb() == 16384
+
+
+def test_symbol_search_budget(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(config.SYMBOL_SEARCH_BUDGET_ENV, raising=False)
+    assert config.symbol_search_budget() == config.DEFAULT_SYMBOL_SEARCH_BUDGET
+    monkeypatch.setenv(config.SYMBOL_SEARCH_BUDGET_ENV, "12.5")
+    assert config.symbol_search_budget() == 12.5
+    monkeypatch.setenv(config.SYMBOL_SEARCH_BUDGET_ENV, "0")
+    assert config.symbol_search_budget() == 0.0
+    for invalid in ("soon", "-1", "nan"):
+        monkeypatch.setenv(config.SYMBOL_SEARCH_BUDGET_ENV, invalid)
+        assert config.symbol_search_budget() == config.DEFAULT_SYMBOL_SEARCH_BUDGET

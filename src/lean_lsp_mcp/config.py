@@ -253,6 +253,42 @@ def max_output_chars() -> int:
     return max(value, 0)
 
 
+SYMBOL_SEARCH_BUDGET_ENV = "LEAN_MCP_SYMBOL_SEARCH_BUDGET"
+DEFAULT_SYMBOL_SEARCH_BUDGET = 5.0
+
+
+def symbol_search_budget() -> float:
+    """Seconds `lean_local_search` waits for the symbol index before answering.
+
+    This is how long the search waits, not how long the lookup may run: a
+    lookup still pending when the budget runs out keeps going in the
+    background, and the search reports `index: pending`. Set to 0 to never
+    wait (the lookup still starts, so a repeated search can use it).
+    """
+    raw_value = os.environ.get(
+        SYMBOL_SEARCH_BUDGET_ENV, str(DEFAULT_SYMBOL_SEARCH_BUDGET)
+    )
+    try:
+        value = float(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%s, defaulting to %s.",
+            SYMBOL_SEARCH_BUDGET_ENV,
+            raw_value,
+            DEFAULT_SYMBOL_SEARCH_BUDGET,
+        )
+        return DEFAULT_SYMBOL_SEARCH_BUDGET
+    if value != value or value < 0:  # NaN or negative
+        logger.warning(
+            "Invalid %s=%s, defaulting to %s.",
+            SYMBOL_SEARCH_BUDGET_ENV,
+            raw_value,
+            DEFAULT_SYMBOL_SEARCH_BUDGET,
+        )
+        return DEFAULT_SYMBOL_SEARCH_BUDGET
+    return value
+
+
 def user_agent() -> str:
     """User-Agent for outgoing search requests, with the installed version."""
     try:

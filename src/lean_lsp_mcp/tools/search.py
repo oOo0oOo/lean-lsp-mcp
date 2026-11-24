@@ -49,6 +49,48 @@ class LocalSearchError(LeanToolError):
     pass
 
 
+# The deadline of the workspace/symbol request itself (leanclient's default).
+# On Mathlib the first queries of a session can take tens of seconds, so the
+# request is given far longer than any search waits for it; see #223.
+_SYMBOL_REQUEST_TIMEOUT = 30.0
+
+# Lookups still running after their search returned, by client and query, so
+# that repeating a search waits on the request already under way instead of
+# sending a second one.
+_pending_lookups: dict[tuple[object, str, int], asyncio.Task] = {}
+
+
+def _symbol_lookup(client, query: str, limit: int) -> asyncio.Task:
+    key = (client, query, limit)
+    task = _pending_lookups.get(key)
+    if task is not None:
+        return task
+    # wait_for_index=0: report what the index has now rather than stalling
+    # a search behind index loading.
+    task = asyncio.ensure_future(
+        client.workspace_symbol(
+            query,
+            max_results=limit,
+            wait_for_index=0.0,
+            timeout=_SYMBOL_REQUEST_TIMEOUT,
+        )
+    )
+    _pending_lookups[key] = task
+
+    def _done(finished: asyncio.Task) -> None:
+        if _pending_lookups.get(key) is finished:
+            del _pending_lookups[key]
+        # Retrieve the outcome so an error after the search returned is
+        # logged once instead of as an unretrieved task exception.
+        if not finished.cancelled() and finished.exception() is not None:
+            server.logger.debug(
+                f"workspace/symbol lookup failed: {finished.exception()}"
+            )
+
+    task.add_done_callback(_done)
+    return task
+
+
 async def _with_index_matches(
     source_matches: list[dict[str, str]],
     query: str,
@@ -73,13 +115,19 @@ async def _with_index_matches(
         # search is not the right moment to pay it.
         return source_matches, IndexStatus.unavailable
 
+    lookup = _symbol_lookup(client, query, limit)
     try:
-        # wait_for_index=0: report what the index has now rather than stalling
-        # a search behind index loading.
-        symbols, index_ready = await client.workspace_symbol(
-            query, max_results=limit, wait_for_index=0.0, timeout=2.0
+        # The budget bounds how long this search waits, not how long the
+        # lookup runs: `shield` keeps the request alive past the budget, so a
+        # slow server finishes the work instead of having it cancelled, and a
+        # repeated search joins the same request.
+        symbols, index_ready = await asyncio.wait_for(
+            asyncio.shield(lookup), timeout=config.symbol_search_budget()
         )
     except Exception as exc:  # a search must survive a symbol query failure
+        if not lookup.done():
+            # The budget ran out; the lookup itself is still running.
+            return source_matches, IndexStatus.pending
         server.logger.warning(f"workspace/symbol lookup failed: {exc}")
         return source_matches, IndexStatus.error
 
